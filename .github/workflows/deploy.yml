@@ -1,9 +1,9 @@
 name: Deploy
 on:
   push:
-    branches: deno-edge
+    branches: [deno-edge]
   pull_request:
-    branches: deno-edge
+    branches: [deno-edge]
 
 jobs:
   deploy:
@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
@@ -24,7 +24,7 @@ jobs:
           deno-version: v2.x
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: lts/*
 
@@ -37,8 +37,6 @@ jobs:
       - name: Upload to Deno Deploy
         uses: denoland/deployctl@v1
         with:
-          project: "okikiojo-bundlejs-85"
+          project: "bundlejs"
           entrypoint: "edge/mod.ts"
           root: "."
-          
-          
