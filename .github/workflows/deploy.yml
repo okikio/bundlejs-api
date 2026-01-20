@@ -38,7 +38,7 @@ jobs:
         run: pnpm install
 
       - name: Build step
-        run: "deno task build:wasm"
+        run: "ls; deno task build:wasm"
 
       - name: Upload to Deno Deploy
         uses: denoland/deployctl@v1
