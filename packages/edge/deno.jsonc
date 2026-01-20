@@ -13,6 +13,7 @@
     "esbuild-wasm/package.json": "npm:esbuild-wasm/package.json",
     "esbuild-wasm": "npm:esbuild-wasm",
     "esbuild": "https://deno.land/x/esbuild/wasm.js",
+    "json5": "npm:json5@^2.2.3",
     "resolve.exports": "npm:resolve.exports",
     "velo": "https://deno.land/x/velo@1.0.0/mod.ts",
     "@octokit/core": "npm:@octokit/core",

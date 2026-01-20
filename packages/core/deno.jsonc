@@ -43,7 +43,8 @@
     "./package.json": "./package.json"
   },
   "tasks": {
-    "dev": "deno run -A --watch repl.ts"
+    "dev": "deno run -A --watch repl.ts",
+    "build:wasm": "deno run -A ./scripts/build-wasm.ts"
   },
   "imports": {
     "@std/path": "jsr:@std/path@^1",

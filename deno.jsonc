@@ -4,11 +4,13 @@
     "./packages/edge"
   ],
   "tasks": {
-    "build:wasm": "deno run -A ./packages/core/scripts/build-wasm.ts"
   },
   "imports": {
     "@okikio/emitter": "npm:@okikio/emitter",
     "@std/async": "jsr:@std/async",
+    "@std/path": "jsr:@std/path",
+    "@std/encoding": "jsr:@std/encoding",
+    "@std/media-types": "jsr:@std/media-types",
     "esbuild-wasm/esm/browser.d.ts": "npm:esbuild-wasm/esm/browser.d.ts",
     "esbuild-wasm/package.json": "npm:esbuild-wasm/package.json",
     "esbuild-wasm": "npm:esbuild-wasm",
@@ -18,10 +20,7 @@
     "@octokit/core": "npm:@octokit/core",
     "@octokit/rest": "npm:@octokit/rest",
     "@octokit/plugin-throttling": "npm:@octokit/plugin-throttling",
-    "@upstash/redis": "npm:@upstash/redis",
-    "@std/path": "jsr:@std/path",
-    "@std/encoding": "jsr:@std/encoding",
-    "@std/media-types": "jsr:@std/media-types"
+    "@upstash/redis": "npm:@upstash/redis"
   },
   "deploy": {
     "project": "bundlejs",

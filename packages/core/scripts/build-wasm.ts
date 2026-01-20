@@ -9,15 +9,22 @@ import { bytes } from "../src/utils/pretty-bytes.ts";
 import { compress as brotli, decompress as unbrotli } from "../src/deno/brotli/mod.ts";
 import { compress as zstd, decompress as unzstd } from "../src/deno/zstd/mod.ts";
 
-import { dirname, join } from 'node:path';
-import * as fs from "node:fs/promises";
+import { dirname, join } from '@std/path';
+
+// Absolute filesystem path to the wasm file:
+const esbuildWasmPath = import.meta.resolve("esbuild-wasm/esbuild.wasm");
 const encoder = new TextEncoder();
 
-export async function build([mode = "zstd", encoding = "base64"]: Partial<["zstd" | "brotli" | "gzip" | "lz4" | "none", "base64" | "ascii85"]> = [], src: string | Uint8Array | Promise<string | Uint8Array> = "./node_modules/esbuild-wasm/esbuild.wasm", target = "src/wasm.ts", importsPaths?: Partial<Record<"gzip" | "zstd" | "lz4" | "brotli", string>>) {
+export async function build(
+  [mode = "zstd", encoding = "base64"]: Partial<["zstd" | "brotli" | "gzip" | "lz4" | "none", "base64" | "ascii85"]> = [], 
+  src: string | Uint8Array | Promise<string | Uint8Array> = esbuildWasmPath, 
+  target = "src/wasm.ts", 
+  importsPaths?: Partial<Record<"gzip" | "zstd" | "lz4" | "brotli", string>>
+) {
   const value = await src;
 
   if (typeof value === "string") console.log(`\n- Source file: ${value}`);
-  const res = typeof value === "string" ? await fs.readFile(join(import.meta.dirname!, "..", "..", "..", value)) : value;
+  const res = typeof value === "string" ? await Deno.readFile(new URL(value)) : value;
   const wasm = new Uint8Array(res);
   console.log(`- Read WASM (size: ${bytes(wasm.length)} bytes)`);
 
@@ -112,11 +119,11 @@ export async function build([mode = "zstd", encoding = "base64"]: Partial<["zstd
   })
   
   await Promise.all([
-    fs.writeFile(esbuildPath, res),
-    fs.writeFile(targetPath, encoder.encode(source)),
+    Deno.writeFile(esbuildPath, res),
+    Deno.writeFile(targetPath, encoder.encode(source)),
   ]);
 
-  const outputFile = await fs.stat(targetPath);
+  const outputFile = await Deno.stat(targetPath);
   console.log(
     `- Output file (${target}), final size is: ${bytes(outputFile.size)}\n`
   );

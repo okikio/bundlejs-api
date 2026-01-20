@@ -1,6 +1,5 @@
 {
   "editor.tabSize": 2,
-  "typescript.tsdk": "node_modules/typescript/lib",
   "deno.config": "./packages/edge/deno.jsonc",
   "deno.enable": true
 }

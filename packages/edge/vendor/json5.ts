@@ -1,7 +1,7 @@
 /**
  * Based on https://deno.land/x/json5@v1.0.0/mod.ts
  */
-import JSON5_MOD from "npm:json5";
+import JSON5_MOD from "json5";
 
 /**
  * Converts a JSON5 string into an object.
@@ -20,8 +20,7 @@ export function parse<T = any>(text: string, reviver?: ((this: any, key: string,
  * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
  */
 export function stringify(value: any, replacer?: ((this: any, key: string, value: any) => any) | null, space?: string | number | undefined): string {
-  // @ts-ignore
-  return JSON5_MOD.stringify(value, replacer, parseInt(space) || undefined);
+  return JSON5_MOD.stringify(value, replacer, (space ? parseInt(`${space}`) || undefined : undefined));
 }
 
 /**
@@ -41,7 +40,7 @@ export function require(path: string | URL): any {
  * @param path File path or url
  */
 export async function requireAsync(path: string | URL): Promise<any> {
-  const data = await Deno.readFileSync(path);
+  const data = await Deno.readFile(path);
   const decoder = new TextDecoder("utf8");
   const raw = decoder.decode(data);
 
