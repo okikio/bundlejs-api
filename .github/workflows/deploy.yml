@@ -16,33 +16,29 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-
-      - name: Use Node.js
-        uses: actions/setup-node@v6
+      - name: Install Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          cache: 'pnpm'
 
-      - name: Install dependencies
-        run: pnpm install
+      - name: Install step
+        run: "deno install"
 
       - name: Build step
-        run: "deno task build:wasm"
+        run: "deno task -r build:wasm"
 
       - name: Upload to Deno Deploy
         uses: denoland/deployctl@v1
         with:
-          project: "bundlejs"
+          project: "okikiojo-bundlejs-85"
           entrypoint: "packages/edge/mod.ts"
-          root: "."
+          root: ""
+          
+          exclude: **/node_modules
