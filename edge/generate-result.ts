@@ -1,10 +1,10 @@
 import type { Redis } from "@upstash/redis";
-import type { CompressionType } from "@bundle/core/src/compress.ts";
+import type { CompressionType } from "@bundle/core/compress";
 import type { BundleResult } from "./bundle.ts";
 
 import { encodeBase64 } from "@std/encoding/base64";
 
-import { LOGGER_INFO, dispatchEvent, getEsbuild, ansi } from "@bundle/core/src/index.ts";
+import { LOGGER_INFO, dispatchEvent, getEsbuild, ansi } from "@bundle/core";
 import { getFile } from "./gist.ts";
 import { headers } from "./mod.ts";
 import styleText from "./style.ts";;
@@ -75,7 +75,7 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
     url.searchParams.has("analyze") ||
     ["/analysis", "/analyze"].includes(url.pathname);
 
-  const analysisResult = url.searchParams.get("analysis") || 
+  const analysisResult = url.searchParams.get("analysis") ||
     url.searchParams.get("analyze");
 
   const metafileQuery = url.searchParams.has("metafile") ||
@@ -83,7 +83,7 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
   const fileQuery = url.searchParams.has("file") || url.pathname === "/file";
 
   const badgeQuery = url.searchParams.has("badge") || ["/badge", "/badge/raster", "/badge-raster"].includes(url.pathname);
-  const warningsQuery = url.searchParams.has("warnings") || 
+  const warningsQuery = url.searchParams.has("warnings") ||
     url.searchParams.has("warning") || ["/warnings"].includes(url.pathname);
 
   const rawQuery = url.searchParams.has("raw") || url.pathname === "/raw";
@@ -93,7 +93,7 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
 
   const badgeRasterQuery = url.searchParams.has("badge-raster") || url.searchParams.has("png") || ["/badge/raster", "/badge-raster"].includes(url.pathname);
   const query = (
-    url.searchParams.get("q") || 
+    url.searchParams.get("q") ||
     url.searchParams.get("query")
   ) || "spring-easing";
 
@@ -111,7 +111,7 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
     badgeRasterQuery,
   }
 
-  if (badgeQuery) {    
+  if (badgeQuery) {
     const { size } = value;
     const uncompressedBadge = /uncompress/.exec(badgeResult ?? "");
     const minifiedBadge = /minify|minified/.exec(badgeResult ?? "");
@@ -124,7 +124,7 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
     const detailBadgeName = sanitizeShieldsIO(
       `bundlejs${detailedBadge ? ` (${value.modules?.map(([p]) => p)?.join(", ") ?? query})` : ""}`
     );
-    
+
     let badgeType: CompressionType | "minified" | "uncompressed" | undefined = size.type;
     let badgeBundleSize: string = size.compressedSize;
 
@@ -150,8 +150,8 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
 
     try {
       if (!redis) throw new Error("Redis not available");
-      await redis.hset<string>(badgeKey, { 
-        [badgeID]: typeof imgShield === "string" ? imgShield : encodeBase64(imgShield) 
+      await redis.hset<string>(badgeKey, {
+        [badgeID]: typeof imgShield === "string" ? imgShield : encodeBase64(imgShield)
       })
     } catch (e) {
       console.warn(e);
@@ -200,9 +200,9 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
               color: true,
               verbose: verboseAnlysis
             })
-          ) 
+          )
         )
-      ]), 
+      ]),
       {
         status: 200,
         headers: [
@@ -251,13 +251,13 @@ export async function generateResult([badgeKey, badgeID]: string[], [value, resu
 
   const { metafile: _metafile, warnings: _warnings, ...usefulInfo } = value;
   const addDocs = (url.search === "" ? docs : "");
-  const finalResult = Object.assign({}, usefulInfo, addDocs, 
+  const finalResult = Object.assign({}, usefulInfo, addDocs,
     cached ? {
       time: timeFormatter.format(duration / 1000, "seconds"),
       rawTime: duration
     } : null
   );
-  
+
   return new Response(JSON.stringify(finalResult), {
     status: 200,
     headers: [

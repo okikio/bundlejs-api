@@ -1,0 +1,22 @@
+{
+  "name": "@bundle/edge",
+  "version": "0.0.0",
+  "exports": "./mod.ts",
+  "tasks": {
+    "dev": "deno serve -A --watch mod.ts"
+  },
+  "imports": {
+    "@std/async": "jsr:@std/async",
+    "@std/path": "jsr:@std/path",
+    "@std/encoding": "jsr:@std/encoding",
+    "json5": "npm:json5@^2",
+    "velo": "https://deno.land/x/velo@1.0.0/mod.ts",
+    "@octokit/core": "npm:@octokit/core",
+    "@octokit/rest": "npm:@octokit/rest",
+    "@octokit/plugin-throttling": "npm:@octokit/plugin-throttling",
+    "@upstash/redis": "npm:@upstash/redis"
+  },
+  "deploy": {
+    "entrypoint": "mod.ts"
+  }
+}

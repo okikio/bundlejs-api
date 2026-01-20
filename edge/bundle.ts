@@ -5,16 +5,14 @@ globalThis.Worker = worker ?? class {
   constructor() { }
 };
 
-import { debounce } from "@bundle/core/src/util.ts";
+import { debounce, createNotice } from "@bundle/core/util";
 
-import type { createDefaultFileSystem, ESBUILD } from "@bundle/core/src/index.ts";
+import type { createDefaultFileSystem, ESBUILD } from "@bundle/core";
 import type { Config } from "./mod.ts";
 import { headers } from "./mod.ts";
 import { setFile as setGist } from "./gist.ts";
 
-import { build, setFile, useFileSystem, createConfig, compress, resolveVersion } from "@bundle/core/src/index.ts";
-
-import { createNotice } from "@bundle/core/src/utils/create-notice.ts";
+import { build, setFile, useFileSystem, createConfig, compress, resolveVersion } from "@bundle/core";
 
 const FileSystem = useFileSystem();
 export const timeFormatter = new Intl.RelativeTimeFormat("en", {

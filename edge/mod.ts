@@ -1,4 +1,4 @@
-import type { BuildConfig, CompressConfig, PackageJson } from "@bundle/core/src/index.ts";
+import type { BuildConfig, CompressConfig, PackageJson } from "@bundle/core";
 import type { BundleResult } from "./bundle.ts";
 
 import JSON5 from "./vendor/json5.ts";
@@ -8,15 +8,8 @@ import { dirname, fromFileUrl, join, extname, basename } from "@std/path/posix";
 
 import { decodeBase64 } from "@std/encoding/base64";
 
-// @ts-ignore Workers are undefined
-const worker = globalThis?.Worker;
-// @ts-ignore Workers are undefined
-globalThis.Worker = worker ?? class {
-  constructor() { }
-};
-
-import { deepAssign, createConfig, resolveVersion, parsePackageName, dispatchEvent, LOGGER_INFO, BUILD_CONFIG } from "@bundle/core/src/index.ts";
-import ESBUILD_WASM from "@bundle/core/src/wasm.ts";
+import { deepAssign, createConfig, resolveVersion, parsePackageName, dispatchEvent, LOGGER_INFO, BUILD_CONFIG } from "@bundle/core";
+import ESBUILD_WASM from "@bundle/core/wasm";
 
 import { parseShareURLQuery, parseConfig, parseTreeshakeExports } from "./parse-query.ts";
 import { generateHTMLMessages, generateResult } from "./generate-result.ts";
@@ -163,7 +156,7 @@ export default {
       const { init: _, entryPoints: _2, ansi: _3, ...initialConfig } = (parseConfig(url) || {}) as Config;
 
       const configQuery = url.searchParams.get("config");
-      
+
       const treeshakeQuery = url.searchParams.has("treeshake");
       const treeshake = url.searchParams.get("treeshake");
       const treeshakeArr = parseTreeshakeExports(
@@ -215,7 +208,7 @@ export default {
 
       const formatQuery = url.searchParams.has("format");
       const format = initialConfig?.esbuild?.format || url.searchParams.get("format");
-      
+
       const earlyConfigObj: Config = deepAssign(
         {},
         BUILD_CONFIG,
@@ -260,7 +253,7 @@ export default {
         formatQuery || configQuery || badgeQuery || sourcemapQuery || analysisQuery || metafileQuery;
       const rootPkg = earlyConfigObj["package.json"] ?? {} as PackageJson;
       const dependecies = Object.assign({}, rootPkg.devDependencies, rootPkg.peerDependencies, rootPkg.dependencies)
-      
+
       const versionsList = await Promise.allSettled(
         !hasQuery && (shareQuery || textQuery) ? [] :
           query

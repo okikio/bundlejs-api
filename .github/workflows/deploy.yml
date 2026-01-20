@@ -23,26 +23,20 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-
-      - name: Use Node.js
+      - name: Install Node.js
         uses: actions/setup-node@v6
         with:
           node-version: lts/*
-          cache: 'pnpm'
 
-      - name: Install dependencies
-        run: pnpm install
+      - name: Install step
+        run: "deno install --allow-import"
 
       - name: Build step
-        run: "ls; deno task build:wasm"
+        run: "deno task -f core build:wasm"
 
       - name: Upload to Deno Deploy
         uses: denoland/deployctl@v1
         with:
           project: "bundlejs"
-          entrypoint: "packages/edge/mod.ts"
+          entrypoint: "edge/mod.ts"
           root: "."

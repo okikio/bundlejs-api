@@ -1,5 +1,5 @@
-import { deepAssign, lzstring, parsePackageName } from "@bundle/core/src/index.ts";
-import { basename, extname } from "@bundle/core/src/utils/path.ts";
+import { deepAssign, lzstring, parsePackageName } from "@bundle/core/util";
+import { basename, extname } from "@bundle/core/utils/path";
 import JSON5 from "./vendor/json5.ts";
 
 const { decompressFromURL } = lzstring;
@@ -23,7 +23,7 @@ export const parseTreeshakeExports = (str: string) =>
 /**
  * Grab the basename w/o an extension
  */
-export const fromBasename = (path: string) => 
+export const fromBasename = (path: string) =>
   basename(path.replace(/^https?\:\/\//, ""), extname(path));
 
 /**
@@ -39,7 +39,7 @@ export const getModuleName = (str: string) => {
     _str = name + (path ? fromBasename(path) : "")
   }
   return _str.split(/(?:-|_|\/)/g)
-    .map((x: string|any[], i: number) => i > 0 && x.length > 0 ? (x[0].toUpperCase() + x.slice(1)) : x)
+    .map((x: string | any[], i: number) => i > 0 && x.length > 0 ? (x[0].toUpperCase() + x.slice(1)) : x)
     .join("")
     .replace(/[^\w\s]/gi, "")
 }
@@ -101,15 +101,13 @@ export const parseShareURLQuery = (shareURL: URL) => {
             if (!(counts.has(module))) counts.set(module, 0);
             const count = (counts.set(module, counts.get(module)! + 1).get(module)! - 1);
             const countStr = count <= 0 ? "" : count;
-            
+
             return `${declaration} ${treeshakeExports} from ${JSON5.stringify(
               module
-            )};${
-              (treeshake ?? "").trim().length <= 0 ? 
-                `\n${declaration} { default ${
-                  declaration === "import" || queryArrLen > 1 ? `as ${getModuleName(module) + "Default" + countStr} ` : ""
+            )};${(treeshake ?? "").trim().length <= 0 ?
+                `\n${declaration} { default ${declaration === "import" || queryArrLen > 1 ? `as ${getModuleName(module) + "Default" + countStr} ` : ""
                 }} from ${JSON5.stringify(module)};` : ``
-            }`;
+              }`;
           })
           .join("\n")
       );
@@ -143,7 +141,7 @@ export const parseShareURLQuery = (shareURL: URL) => {
     }
 
     return result.trim();
-  } catch (e) { 
+  } catch (e) {
     console.warn(e);
   }
 };
@@ -158,7 +156,7 @@ export const parseConfig = (shareURL: URL) => {
     const searchParams = shareURL.searchParams;
     const config = searchParams.get("config") ?? "{}";
     return deepAssign({}, JSON5.parse(config ? config : "{}"));
-  } catch (e) { 
+  } catch (e) {
     console.warn(e);
   }
 };

@@ -32,11 +32,11 @@ jobs:
         run: "deno install --allow-import"
 
       - name: Build step
-        run: "deno task build:wasm"
+        run: "deno task -f core build:wasm"
 
       - name: Upload to Deno Deploy
         uses: denoland/deployctl@v1
         with:
           project: "okikiojo-bundlejs-85"
-          entrypoint: "packages/edge/mod.ts"
+          entrypoint: "edge/mod.ts"
           root: "."
