@@ -7,12 +7,13 @@ const initialized = (() =>
   }))();
 
 
-let initWASM: Uint8Array;
+let initWASM: Uint8Array<ArrayBuffer>;
 export const getWASM = async () => {
   if (initWASM) return initWASM;
 
   const { source } = await import("./zstd.encoded.wasm.ts");
-  return (initWASM = await source());
+  initWASM = await source();
+  return (initWASM);
 };
 
 let initResolved = false;
@@ -115,7 +116,7 @@ export const compressUsingDict = async (
   }
 };
 
-export const compress = async (buf: ArrayBuffer, level?: number) => {
+export const compress = async (buf: Uint8Array, level?: number) => {
   await init();
 
   const bound = await compressBound(buf.byteLength);
@@ -232,7 +233,7 @@ export type DecompressOption = {
 };
 
 export const decompress = async (
-  buf: ArrayBuffer,
+  buf: Uint8Array,
   opts: DecompressOption = { defaultHeapSize: 1024 * 1024 } // Use 1MB on default if it is failed to get content size.
 ): Promise<Uint8Array> => {
   await init();

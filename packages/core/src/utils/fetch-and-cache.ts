@@ -39,7 +39,8 @@ export async function newRequest(request: RequestInfo, cache?: Cache, fetchOpts?
 export let OPEN_CACHE: Cache;
 export async function openCache() {
   if (OPEN_CACHE) return OPEN_CACHE;
-  return (OPEN_CACHE = await caches.open(CACHE_NAME));
+  OPEN_CACHE = await caches.open(CACHE_NAME);
+  return (OPEN_CACHE);
 }
 
 export async function getRequest(url: RequestInfo | URL, permanent = false, fetchOpts?: RequestInit) {
