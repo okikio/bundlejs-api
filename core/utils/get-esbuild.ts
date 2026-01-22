@@ -6,7 +6,7 @@ import { resolveVersion } from "@bundle/utils/npm-search";
 import { PLATFORM_AUTO } from "../configs/platform.ts";
 // import pkg from "esbuild-wasm/package.json" with { type: "json" };
 // export const { version: defaultVersion } = pkg;
-const defaultVersion = "0.27.2";
+export const defaultVersion = "0.27.2";
 
 import * as ESBUILD_IMPORT from "esbuild"
 
