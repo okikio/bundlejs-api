@@ -1,18 +1,12 @@
-// @ts-ignore Workers are undefined
-const worker = globalThis?.Worker;
-// @ts-ignore Workers are undefined
-globalThis.Worker = worker ?? class {
-  constructor() { }
-};
-
-import { debounce, createNotice } from "@bundle/core/util";
-
 import type { createDefaultFileSystem, ESBUILD } from "@bundle/core";
 import type { Config } from "./mod.ts";
 import { headers } from "./mod.ts";
 import { setFile as setGist } from "./gist.ts";
 
-import { build, setFile, useFileSystem, createConfig, compress, resolveVersion } from "@bundle/core";
+
+import { compress } from "@bundle/compress";
+import { build, setFile, useFileSystem, createConfig, createNotice } from "@bundle/core";
+import { debounce, resolveVersion } from "@bundle/utils";
 
 const FileSystem = useFileSystem();
 export const timeFormatter = new Intl.RelativeTimeFormat("en", {
@@ -50,6 +44,7 @@ export async function bundle(url: URL, initialValue: string, configObj: Config, 
   const modulesArr = Array.from(new Set(modules))
 
   const { entryPoints = ["/index.ts"] } = configObj;
+
   if (Array.isArray(entryPoints)) {
     setFile(fs, (entryPoints as string[])[0], initialValue);
   } else if (typeof entryPoints === "string") {
@@ -57,6 +52,10 @@ export async function bundle(url: URL, initialValue: string, configObj: Config, 
   } else {
     setFile(fs, entryPoints.in, initialValue);
   }
+
+  console.log({
+    configObj
+  })
 
   const metafileQuery = url.searchParams.has("metafile");
   const analysisQuery = url.searchParams.has("analysis") ||
@@ -69,12 +68,12 @@ export async function bundle(url: URL, initialValue: string, configObj: Config, 
   const result = await build(configObj, FileSystem);
   const end = performance.now();
 
-  debounce(async () => (await (fs as ReturnType<typeof createDefaultFileSystem>).files()).clear(), 1000 * 60, true);
+  debounce(async () => (await (fs as ReturnType<typeof createDefaultFileSystem>).files()).clear(), 1000 * 60);
 
   let resultValue: string = result.contents[0].text;
-  const entryPointInputFile = Array.isArray(entryPoints) ? entryPoints[0] 
-    :  "in" in entryPoints ? entryPoints.in 
-    : entryPoints
+  const entryPointInputFile = Array.isArray(entryPoints) ? entryPoints[0]
+    : "in" in entryPoints ? entryPoints.in
+      : entryPoints
   const { content: _content, ...size } = await compress(
     result.contents.map((x: { contents: Uint8Array; path: string; text: string }) => { 
       if (x.path === entryPointInputFile) resultValue = x.text;

@@ -1,0 +1,19 @@
+{
+  "name": "@bundle/compress",
+  "version": "0.0.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./types": "./types.ts",
+    "./compress": "./compress.ts",
+    "./config": "./config.ts",
+    "./decompress": "./decompress.ts",
+    "./brotli": "./deno/brotli/mod.ts",
+    "./gzip": "./deno/gzip/mod.ts",
+    "./lz4": "./deno/lz4/mod.ts",
+    "./zstd": "./deno/zstd/mod.ts"
+  },
+  "tasks": {
+    "dev": "deno run -A --watch _repl.ts",
+    "build:wasm": "deno run -A ./scripts/build-wasm.ts"
+  }
+}

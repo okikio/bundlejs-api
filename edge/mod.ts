@@ -1,15 +1,19 @@
-import type { BuildConfig, CompressConfig, PackageJson } from "@bundle/core";
+import type { BuildConfig } from "@bundle/core";
+import type { PackageJson } from "@bundle/utils/types";
+import type { CompressConfig } from "@bundle/compress";
 import type { BundleResult } from "./bundle.ts";
 
 import JSON5 from "./vendor/json5.ts";
+import ESBUILD_WASM from "@bundle/core/wasm";
 
 import { Redis } from "@upstash/redis";
 import { dirname, fromFileUrl, join, extname, basename } from "@std/path/posix";
 
 import { decodeBase64 } from "@std/encoding/base64";
 
-import { deepAssign, createConfig, resolveVersion, parsePackageName, dispatchEvent, LOGGER_INFO, BUILD_CONFIG } from "@bundle/core";
-import ESBUILD_WASM from "@bundle/core/wasm";
+import { createCompressConfig } from "@bundle/compress";
+import { deepMerge, resolveVersion, parsePackageName } from "@bundle/utils";
+import { dispatchEvent, LOGGER_INFO, BUILD_CONFIG } from "@bundle/core";
 
 import { parseShareURLQuery, parseConfig, parseTreeshakeExports } from "./parse-query.ts";
 import { generateHTMLMessages, generateResult } from "./generate-result.ts";
@@ -209,17 +213,19 @@ export default {
       const formatQuery = url.searchParams.has("format");
       const format = initialConfig?.esbuild?.format || url.searchParams.get("format");
 
-      const earlyConfigObj: Config = deepAssign(
-        {},
-        BUILD_CONFIG,
+      const earlyConfigObj: Config = Object.assign(deepMerge(
+        deepMerge(
+          deepMerge(
+            Object.assign({}, BUILD_CONFIG),
+            {
+              polyfill,
+              compression: createCompressConfig(initialConfig.compression),
+            }
+          ),
+          initialConfig,
+        ),
         {
-          polyfill,
-          compression: createConfig("compress", initialConfig.compression),
-        } as Config,
-        initialConfig,
-        {
-          entryPoints: [`/index${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
-          esbuild: deepAssign(
+          esbuild: Object.assign(
             {},
             enableMetafile ? { metafile: enableMetafile } : {},
             minifyQuery || prettyQuery ? { minify } : {},
@@ -227,13 +233,15 @@ export default {
             formatQuery ? { format } : {},
           ),
           init: {
-            platform: "deno-wasm",
+            platform: "builtin",
             worker: false,
             wasmModule
           },
         } as Config
-      );
-      console.log({ earlyConfigObj })
+      ), {
+        entryPoints: [`/index${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
+      });
+      // console.log({ earlyConfigObj })
 
       const hasQuery = (
         url.searchParams.has("q") ||
@@ -265,7 +273,7 @@ export default {
             .filter(x => !/^https?\:\/\//.exec(x[0]))
             .map(async (x) => {
               const [pkgName, imported] = x;
-              const { name = pkgName, version, path } = parsePackageName(pkgName, true)
+              const { name = pkgName, version, path } = parsePackageName(pkgName, { ignoreError: true })
               return [name, await resolveVersion(dependecies[name] ? `${name}@${dependecies[name]}` : pkgName) ?? version, path, imported]
             })
       );
@@ -276,7 +284,7 @@ export default {
         if (version.status === "fulfilled" && version.value) {
           const [name, ver, path, imported] = version.value;
           versions.push(`${name}@${ver}`);
-          modules.push([`${name}@${ver}${path}`, imported])
+          modules.push([`${name}@${ver}${path}`, imported ?? "export"])
         }
       }
 
@@ -300,10 +308,11 @@ export default {
         jsonKey
       })
 
-      const inputFileHash = hashString(jsonKey)
-      const configObj = deepAssign({}, jsonKeyObj, {
+      const inputFileHash = await hashString(jsonKey)
+      const configObj = Object.assign({}, jsonKeyObj, {
         entryPoints: [`/index.${inputFileHash}${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
       })
+
 
       const badgeResult = url.searchParams.get("badge");
       const badgeStyle = url.searchParams.get("badge-style");

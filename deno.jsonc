@@ -1,0 +1,16 @@
+{
+  "workspace": [
+    "./core",
+    "./edge",
+    "./utils",
+    "./compress"
+  ],
+  "deploy": {
+    "project": "bundlejs",
+    "exclude": [
+      "**/node_modules"
+    ],
+    "include": [],
+    "entrypoint": "edge/mod.ts"
+  }
+}

@@ -1,10 +1,12 @@
 import type { Redis } from "@upstash/redis";
-import type { CompressionType } from "@bundle/core/compress";
+import type { CompressionType } from "@bundle/compress";
 import type { BundleResult } from "./bundle.ts";
 
 import { encodeBase64 } from "@std/encoding/base64";
 
-import { LOGGER_INFO, dispatchEvent, getEsbuild, ansi } from "@bundle/core";
+import { ansi } from "@bundle/utils";
+
+import { LOGGER_INFO, dispatchEvent, getEsbuild } from "@bundle/core";
 import { getFile } from "./gist.ts";
 import { headers } from "./mod.ts";
 import styleText from "./style.ts";;

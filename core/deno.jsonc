@@ -1,0 +1,45 @@
+{
+  "name": "@bundle/core",
+  "version": "0.0.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./build": "./build.ts",
+    "./context": "./context.ts",
+    "./deno.jsonc": "./deno.jsonc",
+    "./esbuild.wasm": "./esbuild.wasm",
+    "./index": "./index.ts",
+    "./init": "./init.ts",
+    "./transform": "./transform.ts",
+    "./types": "./types.ts",
+    "./wasm": "./wasm.ts",
+    "./configs/config": "./configs/config.ts",
+    "./configs/events": "./configs/events.ts",
+    "./configs/logger": "./configs/logger.ts",
+    "./configs/platform": "./configs/platform.ts",
+    "./utils/cdn-format": "./utils/cdn-format.ts",
+    "./utils/create-notice": "./utils/create-notice.ts",
+    "./utils/filesystem": "./utils/filesystem.ts",
+    "./utils/get-esbuild": "./utils/get-esbuild.ts",
+    "./utils": "./utils/index.ts",
+    "./utils/loader": "./utils/loader.ts",
+    "./utils/resolve-conditions": "./utils/resolve-conditions.ts",
+    "./utils/types": "./utils/types.ts",
+    "./context/context": "./context/context.ts",
+    "./plugins/alias": "./plugins/alias.ts",
+    "./plugins/cdn": "./plugins/cdn.ts",
+    "./plugins/external": "./plugins/external.ts",
+    "./plugins/fs": "./plugins/fs.ts",
+    "./plugins/http": "./plugins/http.ts",
+    "./plugins/tar": "./plugins/tar.ts"
+  },
+  "tasks": {
+    "dev": "deno run -A --watch _repl.ts",
+    "build:wasm": "deno run -A ./scripts/build-wasm.ts"
+  },
+  "imports": {
+    "@logtape/logtape": "jsr:@logtape/logtape@^2",
+    "@std/tar": "jsr:@std/tar@^0",
+    "esbuild-wasm": "npm:esbuild-wasm",
+    "esbuild": "https://deno.land/x/esbuild/wasm.js"
+  }
+}

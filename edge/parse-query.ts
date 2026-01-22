@@ -1,5 +1,5 @@
-import { deepAssign, lzstring, parsePackageName } from "@bundle/core/util";
-import { basename, extname } from "@bundle/core/utils/path";
+import { deepMerge, lzstring, parsePackageName } from "@bundle/utils";
+import { basename, extname } from "@bundle/utils/path";
 import JSON5 from "./vendor/json5.ts";
 
 const { decompressFromURL } = lzstring;
@@ -31,7 +31,7 @@ export const fromBasename = (path: string) =>
  * e.g. "@okikio/animate" -> okikioAnimate
  */
 export const getModuleName = (str: string) => {
-  const { name, path } = parsePackageName(str, true);
+  const { name, path } = parsePackageName(str, { ignoreError: true });
   let _str = str;
   if (/^https?\:\/\//.test(str)) {
     _str = fromBasename(str);
@@ -155,7 +155,7 @@ export const parseConfig = (shareURL: URL) => {
   try {
     const searchParams = shareURL.searchParams;
     const config = searchParams.get("config") ?? "{}";
-    return deepAssign({}, JSON5.parse(config ? config : "{}"));
+    return deepMerge({}, JSON5.parse(config ? config : "{}"));
   } catch (e) {
     console.warn(e);
   }

@@ -1,0 +1,47 @@
+{
+  "name": "@bundle/utils",
+  "version": "0.0.0",
+  "tasks": {
+    "dev": "deno run -A --watch _repl.ts"
+  },
+  "exports": {
+    ".": "./mod.ts",
+    "./ansi": "./ansi.ts",
+    "./assert": "./assert.ts",
+    "./async": "./async.ts",
+    "./deep-object": "./deep-object.ts",
+    "./encode-decode": "./encode-decode.ts",
+    "./encoding": "./encoding.ts",
+    "./fetch-and-cache": "./fetch-and-cache.ts",
+    "./fmt": "./fmt.ts",
+    "./html": "./html.ts",
+    "./json5": "./json5.ts",
+    "./lru": "./lru.ts",
+    "./lz-string": "./lz-string.ts",
+    "./media-types": "./media-types.ts",
+    "./npm-search": "./npm-search.ts",
+    "./outdent": "./outdent.ts",
+    "./parse-package-name": "./parse-package-name.ts",
+    "./path": "./path.ts",
+    "./resolve-exports-imports": "./resolve-exports-imports.ts",
+    "./semver": "./semver.ts",
+    "./types": "./types.ts",
+    "./url": "./url.ts"
+  },
+  "imports": {
+    "@opentf/obj-diff": "jsr:@opentf/obj-diff@^0",
+    "@std/assert": "jsr:@std/assert@^1",
+    "@std/async": "jsr:@std/async@^1",
+    "@std/collections": "jsr:@std/collections@^1",
+    "@std/encoding": "jsr:@std/encoding@^1",
+    "@std/fmt": "jsr:@std/fmt@^1",
+    "@std/html": "jsr:@std/html@^1",
+    "@std/media-types": "jsr:@std/media-types@^1",
+    "@std/path": "jsr:@std/path@^1",
+    "@std/semver": "jsr:@std/semver@^1",
+    "@std/tar": "jsr:@std/tar@^0",
+    "outdent": "jsr:@cspotcode/outdent@^0",
+    "resolve.exports": "npm:resolve.exports@^2",
+    "json5": "npm:json5@^2"
+  }
+}

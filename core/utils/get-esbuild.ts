@@ -1,0 +1,58 @@
+import type * as ESBUILD_WASM from "esbuild-wasm";
+import type * as ESBUILD from "esbuild";
+import type { Platform } from "../configs/platform.ts";
+import { resolveVersion } from "@bundle/utils/npm-search";
+
+import { PLATFORM_AUTO } from "../configs/platform.ts";
+import pkg from "esbuild-wasm/package.json" with { type: "json" };
+export const { version: defaultVersion } = pkg;
+
+import * as ESBUILD_IMPORT from "esbuild"
+
+/**
+ * Determines which esbuild skew to use depending on the platform option supplied, 
+ * by default it will choose the most performant esbuild skew, 
+ * so on deno and node it will choose the native while on browsers it will choose WASM.
+ * 
+ * You can specifiy which platform skew you would like, 
+ * for example you can choose "deno-wasm" as a skew, where you can run the esbuild but in WASM
+ * 
+ * @param platform Which platform skew of esbuild should be used
+ * @param version Which esbuild version to load
+ * @returns esbuild module
+ */
+export async function getEsbuild(platform: Platform = PLATFORM_AUTO, version?: string | null): Promise<typeof ESBUILD | typeof ESBUILD_WASM> {
+  version ??= defaultVersion;
+
+  try {
+    switch (platform) {
+      case "builtin":
+        return ESBUILD_IMPORT;
+    case "deno":
+      return await import(
+        /* @vite-ignore */
+        `https://deno.land/x/esbuild@v${version}/mod.js`
+      );
+      case "deno-wasm":
+        return await import(
+          /* @vite-ignore */
+          `https://deno.land/x/esbuild@v${version}/wasm.js`
+        );
+      case "node":
+        return await import("esbuild");
+      case "browser":
+      case "edge":
+      default:
+        return await import("esbuild-wasm");
+    }
+  } catch (e) {
+    throw e;
+  }
+}
+
+export async function getEsbuildVersion(_version = defaultVersion) {
+  return _version !== defaultVersion ?
+    // Resolve semver version, e.g. `~0.19`, `latest`, etc...
+    await resolveVersion(`esbuild@${_version.replace(/^(v|@)/, "")}`) :
+    _version;
+}
