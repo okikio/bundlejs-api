@@ -1,53 +1,67 @@
-// utils/archive-detect.ts
+// core/utils/archive-detect.ts
 //
-// Archive detection utilities for resolver pipelines.
+// Resolver-grade archive detection.
 //
-// This module is meant for “resolver-grade” detection, not general-purpose archiving.
+// This file is not an “archiver” and it is not trying to unpack anything by itself.
+// It exists to answer one question as cheaply and as reliably as possible:
 //
-// Resolver-grade means:
+//   “Given a URL and a Response, is this payload an archive, and if so, what kind?”
 //
-// - It must be cheap to run on every candidate response.
-// - It must not buffer entire bodies just to decide how to route.
-// - It must be debuggable years later (diagnostics must explain the reasoning).
-// - It must be spec-driven where specs exist, then pragmatic where the network is messy.
+// In a Node resolution pipeline, this question is a gate:
 //
-// The primary mental model:
+// - If we think it’s a tarball, we might mount/extract it into a virtual filesystem.
+// - If we think it’s a JS/TS module, we might parse it as code and continue resolving imports.
+// - If we think it’s HTML or something else, we should stop and emit a meaningful diagnostic.
 //
-// - A *container* is the thing that holds files (tar, zip).
-// - A *compression wrapper* is what shrinks the container for transport (gzip, zstd, xz...).
+// The trick is that the network often lies:
 //
-// In the common case:
+// - Content-Type is frequently "application/octet-stream" even when the bytes are gzip.
+// - Content-Encoding might be absent even when the payload is compressed.
+// - A “tarball URL” might redirect to an HTML page or a JS entry file.
+// - Some servers set Content-Disposition filename but omit everything else.
 //
-//   ".tgz"   -> tar container + gzip wrapper
-//   ".tar"   -> tar container + no wrapper
-//   ".zip"   -> zip container + no wrapper
+// So we treat detection like a courtroom:
 //
-// The hard part is that servers often lie or omit headers:
-// - Content-Type might be "application/octet-stream"
-// - Content-Encoding might be missing
-// - redirects might serve HTML
+// - URL/path extensions are testimony (helpful, but can be wrong).
+// - Headers are sworn testimony (more formal, still can be wrong).
+// - Magic bytes are physical evidence (usually the most trustworthy).
 //
-// So the decision process is layered:
+// We structure the code so the “physical evidence” can override hints,
+// and we always keep the chain-of-reasoning in `reasons` so diagnostics can explain
+// what happened without guessing.
 //
-// 1) Filename/URL hint: cheap, medium-signal, can be wrong.
-// 2) Header hint: spec-defined but still not authoritative.
-// 3) Byte sniff: authoritative for compression wrappers and certain containers.
-// 4) Container confirmation: for tar we confirm via "ustar" signature.
+// The central mental model: container vs wrapper.
 //
-// If in doubt, we do not “force tar”; we surface uncertainty with confidence + diagnostics.
+// - A *container* is the thing that holds files: tar, zip.
+// - A *compression wrapper* is what shrinks bytes for transport: gzip, zstd, xz, etc.
+//
+// Examples people recognize:
+//
+// - .tar.gz  => tar container wrapped in gzip
+// - .tgz     => same thing, different shorthand
+// - .tar.zst => tar container wrapped in zstd
+// - .zip     => zip container (zip is both container and has its own internal compression)
+// - .gz      => ambiguous: could be “a single gzipped file”, or “a gzipped tar”
+//
+// The detection policy is layered:
+//
+// 1) Path hint (URL or filename)  -> cheap, medium-signal.
+// 2) Header hint                  -> spec-defined, still not authoritative.
+// 3) Byte sniff (wire prefix)     -> authoritative for wrapper/container signatures.
+// 4) Tar confirmation (ustar)     -> authoritative for tar specifically.
+//
+// We keep this file “policy-level”. Strict parsing lives in archive-spec.ts.
+// This file consumes those parsers and turns them into practical routing decisions.
 
-import { basename } from "./path.ts";
+import { basename } from "@std/path";
 
 import {
   extractFilenameFromContentDisposition,
   getPrimaryContentCoding,
   parseContentEncodingStrict,
   parseContentTypeStrict,
-  type ContentCodingList,
-  type MediaType,
   type ParseIssue,
 } from "./archive-spec.ts";
-
 
 /* -------------------------------------------------------------------------------------------------
  * Public types
@@ -56,10 +70,12 @@ import {
 /**
  * Compression wrapper applied to a payload.
  *
- * Even if you do not currently support decompressing all of these in your runtime,
- * detection should still identify them so the resolver can:
- * - emit precise diagnostics (“zstd tarballs detected but not supported”),
- * - or route into an optional native decompressor layer later.
+ * Resolver context:
+ * - You can detect more formats than you can currently decompress.
+ * - Detection is about routing and diagnostics, not necessarily about “supporting extraction”.
+ *
+ * That’s why the union includes formats that your runtime may not be able to decode yet.
+ * The resolver can still surface “this is .tar.zst” rather than “unknown blob”.
  */
 export type ArchiveCompression =
   | "none"
@@ -71,13 +87,13 @@ export type ArchiveCompression =
   | "lz4"
   | "lzma"
   | "lzip"
-  | "compress" // classic Unix ".Z"
+  | "compress"
   | "deflate"
   | "deflate-raw"
   | "unknown";
 
 /**
- * Container format once decompressed (if decompression applies).
+ * Container format after any outer compression wrapper is removed.
  */
 export type ArchiveContainer =
   | "tar"
@@ -85,8 +101,8 @@ export type ArchiveContainer =
   | "unknown";
 
 /**
- * “Where did this clue come from?” is essential for debugging and future refactors.
- * In resolution pipelines, these become breadcrumbs in logs.
+ * Each reason has a signal source so you can understand “why we believe this”.
+ * This is the difference between “works” and “debuggable”.
  */
 export type ArchiveSignal =
   | "url"
@@ -97,8 +113,7 @@ export type ArchiveSignal =
   | "tar-ustar";
 
 /**
- * One specific reason we believe something.
- * These are stored in the detection result and are also printed in diagnostics.
+ * Small structured breadcrumb for diagnostics.
  */
 export type ArchiveReason = {
   signal: ArchiveSignal;
@@ -106,12 +121,12 @@ export type ArchiveReason = {
 };
 
 /**
- * Final merged detection result.
+ * Final detection result.
  *
  * `confidence` is intentionally conservative:
- * - high: bytes confirm tar container (ustar).
- * - medium: bytes confirm wrapper/container, or strong label hints.
- * - low: only weak hints; caller should be ready for “this is actually HTML/JS”.
+ * - high: we have strong byte-based confirmation (e.g. tar ustar header)
+ * - medium: magic bytes indicate wrapper/container, or strong filename hints
+ * - low: mostly hints; caller should be prepared for “it’s actually HTML/JS”
  */
 export type ArchiveDetection = {
   container: ArchiveContainer;
@@ -120,16 +135,22 @@ export type ArchiveDetection = {
   confidence: "high" | "medium" | "low";
   reasons: Iterable<ArchiveReason>;
 
-  // Helpful context for debugging. These are not “truth”; they’re the inputs.
+  // Evidence (inputs) captured for debugging and future refactors.
   filenameHint?: string;
   urlHint?: string;
+
   contentType?: string | null;
   contentEncoding?: string | null;
+
+  // Content-Disposition parsing is strict-first with controlled lenient fallback.
+  // We store the mode and issues so we can diagnose “why strict failed”.
+  contentDispositionMode?: "strict" | "lenient";
+  contentDispositionIssues?: readonly ParseIssue[];
 };
 
 /**
- * A human-readable diagnostic for logs.
- * The idea is: if someone pastes this into an issue, you can triage without reproducing locally.
+ * Debug output meant for logs.
+ * The guiding principle is: if someone pastes this into an issue, you can triage quickly.
  */
 export type ArchiveDiagnostic = {
   summary: string;
@@ -143,13 +164,13 @@ export type ArchiveDiagnostic = {
 /**
  * Multi-extensions for tarballs, sorted by descending specificity.
  *
- * Spec note:
- * - Extensions are not standardized by HTTP specs. They are a publisher convention.
- * - Still, they are useful hints in a resolver because they often reflect intent.
+ * Why we prefer multi-extension matches over single-extension matches:
+ * - `.tar.zst` means “tar container” with “zstd wrapper”.
+ * - If you only look at `.zst`, you lose the container identity.
  *
- * Real-life note:
- * - We include extensions beyond what we can decompress today because detection
- *   should be stable even if decompression support changes later.
+ * Spec note:
+ * - File extensions are conventions, not HTTP standards.
+ * - Still useful as early hints because publishers encode intent into filenames.
  */
 export const TAR_MULTI_EXTENSIONS: readonly string[] = [
   ".tar.zstd",
@@ -167,7 +188,7 @@ export const TAR_MULTI_EXTENSIONS: readonly string[] = [
 ] as const;
 
 /**
- * Short tarball extensions that imply tar container + a wrapper.
+ * Short tarball extensions (publisher conventions).
  */
 export const TAR_SHORT_EXTENSIONS: readonly string[] = [
   ".tgz",
@@ -180,15 +201,11 @@ export const TAR_SHORT_EXTENSIONS: readonly string[] = [
 ] as const;
 
 /**
- * Content-Types that commonly show up for tarballs.
+ * Content-Types that show up in tarball delivery endpoints.
  *
- * Spec note:
- * - Content-Type is defined by RFC 9110 + media type registrations.
- * - Content-Type is about the representation *as sent*, not necessarily “what it semantically is”.
- *
- * Real-life note:
- * - Many CDNs use application/octet-stream for everything.
- * - Therefore: never hard-gate on this list.
+ * Policy note:
+ * - This is never a hard gate.
+ * - It’s a “raise your eyebrows” hint, not a conviction.
  */
 export const TAR_CONTENT_TYPES: readonly string[] = [
   "application/tar",
@@ -202,167 +219,31 @@ export const TAR_CONTENT_TYPES: readonly string[] = [
 ] as const;
 
 /* -------------------------------------------------------------------------------------------------
- * Spec-first header parsing helpers
- * ------------------------------------------------------------------------------------------------- */
-
-/**
- * Parse Content-Disposition (RFC 6266) for a filename.
- *
- * Spec-first behavior:
- * - Prefer filename* (RFC 8187 / RFC 5987 encoding) when present.
- * - Fall back to filename.
- *
- * Real-life behavior:
- * - We accept common variants even if not perfectly formatted.
- * - We do not attempt full parameter parsing beyond the filename fields,
- *   because we only need a filename hint for extension-based detection.
- *
- * @example
- * parseContentDispositionFilename('attachment; filename="pkg.tgz"') -> "pkg.tgz"
- *
- * @example
- * parseContentDispositionFilename("attachment; filename*=UTF-8''pkg.tar.zst") -> "pkg.tar.zst"
- */
-export function parseContentDispositionFilename(
-  headerValue: string | null,
-): string | null {
-  if (!headerValue) return null;
-
-  // Spec note: parameters are generally semicolon-separated.
-  // We implement a “good enough” parser for filename / filename* only.
-  const parts = headerValue.split(";").map((p) => p.trim());
-
-  // First pass: filename* (encoded). Spec says it should take precedence.
-  for (const part of parts) {
-    const [kRaw, vRaw] = part.split("=", 2);
-    const k = kRaw?.trim().toLowerCase();
-    const v = vRaw?.trim();
-    if (!k || !v) continue;
-
-    if (k === "filename*") {
-      // Spec note: charset'lang'%xx...
-      // Example: UTF-8''pkg.tar.zst
-      const match = v.match(/^[^']*'[^']*'(.*)$/);
-      if (match?.[1]) {
-        try {
-          return decodeURIComponent(match[1]);
-        } catch {
-          // If decoding fails, fall back to raw.
-          return match[1];
-        }
-      }
-    }
-  }
-
-  // Second pass: filename (quoted-string often)
-  for (const part of parts) {
-    const [kRaw, vRaw] = part.split("=", 2);
-    const k = kRaw?.trim().toLowerCase();
-    const v = vRaw?.trim();
-    if (!k || !v) continue;
-
-    if (k === "filename") {
-      // Strip simple quotes. This does not handle all quoted-string escapes, but works in practice.
-      return v.replace(/^"(.*)"$/, "$1");
-    }
-  }
-
-  return null;
-}
-
-/**
- * Normalize Content-Type to its media type (type/subtype), dropping parameters.
- *
- * Spec basis:
- * - RFC 9110: Content-Type field.
- * - Media type grammar: "type/subtype" followed by optional parameters.
- *
- * Why this exists:
- * - Many servers append "; charset=utf-8" or boundary parameters.
- * - For routing decisions, we usually only care about the base type/subtype.
- *
- * @example
- * normalizeContentType("application/x-tar; charset=utf-8") -> "application/x-tar"
- */
-export function normalizeContentType(contentType: string | null): string | null {
-  if (!contentType) return null;
-
-  // Spec note: parameter delimiter is ";".
-  // We lower-case because media types are case-insensitive by spec.
-  const lower = contentType.trim().toLowerCase();
-  const semi = lower.indexOf(";");
-  return semi === -1 ? lower : lower.slice(0, semi).trim();
-}
-
-/**
- * Normalize Content-Encoding to a primary compression wrapper.
- *
- * Spec basis:
- * - RFC 9110: Content-Encoding is an ordered list of codings applied to the representation.
- *
- * Why this exists:
- * - Servers sometimes send "gzip, br".
- * - For archive detection we mainly care about the outermost encoding first.
- *
- * Important nuance:
- * - Content-Encoding is *not* the same as “file extension compression”.
- * - A tar.gz might come with Content-Encoding: gzip, or it might be sent as-is with
- *   Content-Type: application/gzip and no Content-Encoding. Both happen.
- *
- * @example
- * normalizeContentEncoding("gzip, br") -> "gzip"
- * @example
- * normalizeContentEncoding(null) -> "none"
- */
-export function normalizeContentEncoding(
-  contentEncoding: string | null,
-): ArchiveCompression {
-  if (!contentEncoding) return "none";
-
-  const first = contentEncoding
-    .split(",")[0]
-    ?.trim()
-    .toLowerCase();
-
-  switch (first) {
-    case "gzip":
-      return "gzip";
-    case "br":
-      return "brotli";
-    case "deflate":
-      return "deflate";
-    case "deflate-raw":
-      return "deflate-raw";
-    default:
-      return "unknown";
-  }
-}
-
-/* -------------------------------------------------------------------------------------------------
  * Path / URL hint detection
  * ------------------------------------------------------------------------------------------------- */
 
 /**
  * Detect archive hints from a URL or filename.
  *
- * This is a hinting stage. It is intentionally not authoritative.
+ * This is the earliest and cheapest stage: it does not touch the network and it does not read bytes.
+ * It is also the least reliable stage, because URLs can lie and CDNs can rewrite paths.
  *
- * Why it still matters:
- * - When bytes are unavailable (no body, network error), hints are all you have.
- * - In resolver pipelines, early hints decide whether to even attempt an archive code path.
+ * The “why” of this function:
+ * - In resolvers, we often want to decide early whether to even attempt a tarball pipeline.
+ * - If the response body is missing (HEAD requests, errors), this might be all we have.
  *
- * The hardest nuance here is multi-extension parsing:
- * - `.tar.zst` should be treated as tar container + zstd wrapper, not “just zst”.
+ * The “how” in plain terms:
+ * - We look for “most specific” multi-extensions first (.tar.zst beats .zst).
+ * - Then we look for short-hand tar extensions (.tgz, .txz).
+ * - Then we fall back to single extensions (.tar, .gz) with lower confidence.
  *
  * @example
  * detectArchiveFromPathHint("pkg.tar.zst")
- * // -> container: "tar"
- * // -> compression: "zstd"
+ * // container="tar", compression="zstd", confidence="medium"
  *
  * @example
  * detectArchiveFromPathHint("pkg.gz")
- * // -> compression: "gzip"
- * // -> container: "unknown" (because `.gz` alone does not imply tar)
+ * // compression="gzip", container="unknown" (ambiguous), confidence="low"
  */
 export function detectArchiveFromPathHint(
   input: string | URL,
@@ -378,6 +259,8 @@ export function detectArchiveFromPathHint(
 > {
   const urlHint = typeof input === "string" ? input : input.toString();
 
+  // basename() gives us the last path segment which is the best extension signal we can get.
+  // If URL parsing fails for some reason, we fall back to a best-effort basename on the whole string.
   const filenameHint = (() => {
     try {
       if (typeof input === "string") return basename(input);
@@ -395,6 +278,9 @@ export function detectArchiveFromPathHint(
   let confidence: ArchiveDetection["confidence"] = "low";
   let isTarballLike = false;
 
+  // The most common “hard to follow” bug in archive detection is checking ".zst" before ".tar.zst".
+  // That makes `.tar.zst` look like “some zstd blob” instead of “a tar container wrapped in zstd”.
+  // So we always check the multi-extensions first.
   for (const ext of TAR_MULTI_EXTENSIONS) {
     if (lower.endsWith(ext.toLowerCase())) {
       container = "tar";
@@ -404,13 +290,14 @@ export function detectArchiveFromPathHint(
 
       reasons.push({
         signal: "url",
-        detail: `Filename ends with ${ext} (publisher intent hint)`,
+        detail: `Filename ends with ${ext} (publisher intent hint: tar container + wrapper)`,
       });
 
       return { container, compression, isTarballLike, confidence, reasons, filenameHint, urlHint };
     }
   }
 
+  // Next: short tarball conventions.
   for (const ext of TAR_SHORT_EXTENSIONS) {
     if (lower.endsWith(ext)) {
       container = "tar";
@@ -420,13 +307,15 @@ export function detectArchiveFromPathHint(
 
       reasons.push({
         signal: "url",
-        detail: `Filename ends with ${ext} (short tarball hint)`,
+        detail: `Filename ends with ${ext} (short tarball convention hint)`,
       });
 
       return { container, compression, isTarballLike, confidence, reasons, filenameHint, urlHint };
     }
   }
 
+  // Finally: single-extension hints.
+  // These are lower-confidence because they do not uniquely identify a “tarball”.
   if (lower.endsWith(".tar")) {
     container = "tar";
     compression = "none";
@@ -437,16 +326,18 @@ export function detectArchiveFromPathHint(
   } else if (lower.endsWith(".gz")) {
     compression = "gzip";
     confidence = "low";
+
     reasons.push({
       signal: "url",
-      detail: "Filename ends with .gz (ambiguous: could be a single compressed file or a tarball)",
+      detail: "Filename ends with .gz (ambiguous: could be a gzipped tar or a single gzipped file)",
     });
   } else if (lower.endsWith(".zst") || lower.endsWith(".zstd")) {
     compression = "zstd";
     confidence = "low";
+
     reasons.push({
       signal: "url",
-      detail: "Filename ends with .zst/.zstd (ambiguous without tar hint)",
+      detail: "Filename ends with .zst/.zstd (ambiguous without an explicit tar hint)",
     });
   }
 
@@ -454,16 +345,10 @@ export function detectArchiveFromPathHint(
 }
 
 /**
- * Map known tar multi-extensions to a compression wrapper.
+ * Map known tar multi-extensions to wrapper types.
  *
- * Spec note:
- * - There is no universal standard for these extensions.
- * - We treat this mapping as a “convention dictionary” that we keep stable.
- *
- * Real-life note:
- * - Some extensions (.tar.lz, .tar.z) are ambiguous across ecosystems.
- * - For those, we choose the best-known meaning *and* keep diagnostics rich
- *   so a mismatch is easy to spot.
+ * We keep this mapping explicit because it becomes a long-lived “convention dictionary”.
+ * When new extensions appear in the wild, you add them here, and diagnostics automatically improve.
  */
 export function mapTarMultiExtensionToCompression(ext: string): ArchiveCompression {
   const lower = ext.toLowerCase();
@@ -477,17 +362,17 @@ export function mapTarMultiExtensionToCompression(ext: string): ArchiveCompressi
   if (lower === ".tar.lzma") return "lzma";
   if (lower === ".tar.lzip") return "lzip";
 
-  // Classic Unix compress (.Z) often appears as ".tar.Z". We lower-case comparisons, so ".tar.z".
+  // “compress” is the classic Unix .Z encoding; it still appears occasionally.
   if (lower === ".tar.z") return "compress";
 
-  // ".tar.lz" is not consistently defined across ecosystems. Treat as unknown wrapper.
+  // ".tar.lz" is not consistently defined across ecosystems; treat as unknown wrapper.
   if (lower === ".tar.lz") return "unknown";
 
   return "unknown";
 }
 
 /**
- * Map known tar short extensions to a compression wrapper.
+ * Map known tar short extensions to wrapper types.
  */
 export function mapTarShortExtensionToCompression(ext: string): ArchiveCompression {
   switch (ext) {
@@ -510,20 +395,28 @@ export function mapTarShortExtensionToCompression(ext: string): ArchiveCompressi
 }
 
 /* -------------------------------------------------------------------------------------------------
- * Header hint detection (spec-first, then pragmatic)
+ * Header hint detection (spec-first via archive-spec.ts)
  * ------------------------------------------------------------------------------------------------- */
 
 /**
  * Detect archive hints from headers.
  *
- * A spec-driven mindset here is useful:
- * - Headers are “what the server intends you to believe”.
- * - They are informative, but not authoritative.
+ * There are three useful header sources:
  *
- * We keep the detection conservative:
- * - Content-Type can hint at container or wrapper.
- * - Content-Encoding can hint at wrapper.
- * - Content-Disposition can provide a filename hint, which then feeds into path logic.
+ * - Content-Type:
+ *   “What the server claims the representation is.”
+ *   Helpful, but often generic or wrong.
+ *
+ * - Content-Encoding:
+ *   “What transformations were applied *in transit*.”
+ *   This can indicate gzip/brotli even if the URL says nothing.
+ *
+ * - Content-Disposition:
+ *   “Suggested filename for a download.”
+ *   Surprisingly helpful because CDNs sometimes include a real filename even when the URL is opaque.
+ *
+ * We parse headers strictly in archive-spec.ts (source of truth),
+ * and only do controlled recovery for Content-Disposition filename extraction.
  */
 export function detectArchiveFromHeaders(
   headers: Headers,
@@ -537,69 +430,122 @@ export function detectArchiveFromHeaders(
   | "contentEncoding"
   | "isTarballLike"
   | "confidence"
+  | "contentDispositionMode"
+  | "contentDispositionIssues"
 > {
   const reasons: ArchiveReason[] = [];
 
-  const contentType = normalizeContentType(headers.get("content-type"));
+  const contentTypeRaw = headers.get("content-type");
   const contentEncodingRaw = headers.get("content-encoding");
-  const contentEncoding = contentEncodingRaw?.trim().toLowerCase() ?? null;
+  const contentDispositionRaw = headers.get("content-disposition");
 
-  const cdFilename = parseContentDispositionFilename(headers.get("content-disposition"));
+  // Content-Type parsing is spec-level and delegated to @std/media-types by archive-spec.ts.
+  // We store both the raw and the parsed base type because:
+  // - raw is what you print in logs,
+  // - parsed base type is what you compare in policy decisions.
+  const contentTypeParsed = parseContentTypeStrict(contentTypeRaw);
+  let contentTypeBase: string | null = null;
 
-  let compression: ArchiveCompression = normalizeContentEncoding(contentEncoding);
+  if (contentTypeParsed.ok) {
+    contentTypeBase = contentTypeParsed.value.type;
+    reasons.push({
+      signal: "content-type",
+      detail: `Content-Type parsed as ${contentTypeBase}`,
+    });
+  } else if (contentTypeRaw) {
+    reasons.push({
+      signal: "content-type",
+      detail: `Content-Type present but unparseable: ${contentTypeRaw}`,
+    });
+  }
+
+  // Content-Encoding parsing is strict: a comma-separated list of tokens.
+  // We keep the entire list in the spec layer, but here we mostly care about the “outermost”
+  // encoding (the first coding), because that’s what you would need to undo first.
+  const encodingParsed = parseContentEncodingStrict(contentEncodingRaw);
+  const codingList = encodingParsed.ok ? encodingParsed.value : [];
+  const primaryCoding = getPrimaryContentCoding(codingList);
+
+  if (contentEncodingRaw) {
+    reasons.push({
+      signal: "content-encoding",
+      detail: `Content-Encoding raw=${contentEncodingRaw}`,
+    });
+  }
+
+  // Content-Disposition filename extraction: strict first, then controlled lenient.
+  // We track the mode and issues because “why did strict fail?” matters in resolver debugging.
+  const cd = extractFilenameFromContentDisposition(contentDispositionRaw);
+  let filenameHint: string | undefined;
+
+  if (cd.filename) {
+    filenameHint = cd.filename;
+
+    reasons.push({
+      signal: "content-disposition",
+      detail: `Content-Disposition filename=${cd.filename} (mode=${cd.mode})`,
+    });
+  } else if (contentDispositionRaw) {
+    reasons.push({
+      signal: "content-disposition",
+      detail: `Content-Disposition present but no filename extracted (mode=${cd.mode})`,
+    });
+  }
+
   let container: ArchiveContainer = "unknown";
+  let compression: ArchiveCompression = "unknown";
   let confidence: ArchiveDetection["confidence"] = "low";
   let isTarballLike = false;
 
-  if (contentEncoding) {
-    reasons.push({ signal: "content-encoding", detail: `Content-Encoding=${contentEncoding}` });
-  }
-
-  if (contentType) {
-    reasons.push({ signal: "content-type", detail: `Content-Type=${contentType}` });
-
-    // Weak hint: “this could be a tarball-ish payload”.
-    if (TAR_CONTENT_TYPES.includes(contentType)) {
+  // Header hints are intentionally not “authoritative”. They move suspicion up or down,
+  // but the byte sniff stage gets the final say when available.
+  if (contentTypeBase) {
+    // This is a “tar-ish payload might be here” hint. We do not assert tar.
+    if (TAR_CONTENT_TYPES.includes(contentTypeBase)) {
       isTarballLike = true;
       confidence = "low";
     }
 
-    // Stronger hint: container explicitly declared.
-    if (contentType === "application/tar" || contentType === "application/x-tar") {
+    // When the media type is explicitly tar, that’s a stronger claim.
+    if (contentTypeBase === "application/tar" || contentTypeBase === "application/x-tar") {
       container = "tar";
       isTarballLike = true;
       confidence = "medium";
     }
 
-    // Wrapper hints from content-type registrations used in practice.
-    if (contentType === "application/gzip" || contentType === "application/x-gzip") {
-      if (compression === "none" || compression === "unknown") compression = "gzip";
+    // Some servers label the wrapper type instead of the container.
+    if (contentTypeBase === "application/gzip" || contentTypeBase === "application/x-gzip") {
+      compression = "gzip";
       isTarballLike = true;
-      confidence = "low";
     }
 
-    if (contentType === "application/zstd") {
-      if (compression === "none" || compression === "unknown") compression = "zstd";
+    if (contentTypeBase === "application/zstd") {
+      compression = "zstd";
       isTarballLike = true;
-      confidence = "low";
     }
 
-    if (contentType === "application/xz") {
-      if (compression === "none" || compression === "unknown") compression = "xz";
+    if (contentTypeBase === "application/xz") {
+      compression = "xz";
       isTarballLike = true;
-      confidence = "low";
     }
   }
 
-  if (cdFilename) {
-    reasons.push({
-      signal: "content-disposition",
-      detail: `Content-Disposition filename=${cdFilename}`,
-    });
+  // Content-Encoding is about the transport wrapper.
+  // We normalize to our union so later code doesn’t have to reason about strings.
+  if (primaryCoding) {
+    const normalized = normalizeContentEncodingToken(primaryCoding);
+    if (normalized !== "unknown") {
+      compression = normalized;
+      isTarballLike = true;
+    }
+  }
 
-    // Spec-first: Content-Disposition filename* is a better filename source than guessing from URL.
-    // We reuse the same path-hint logic for consistency.
-    const byName = detectArchiveFromPathHint(cdFilename);
+  // If Content-Disposition gave us a filename, treat it like a “path hint”
+  // and merge it using the exact same path-hint logic.
+  //
+  // This avoids a subtle inconsistency where URL hints and filename hints drift apart over time.
+  if (filenameHint) {
+    const byName = detectArchiveFromPathHint(filenameHint);
 
     if (byName.container !== "unknown") container = byName.container;
     if (byName.compression !== "unknown") compression = byName.compression;
@@ -616,16 +562,47 @@ export function detectArchiveFromHeaders(
     isTarballLike,
     confidence,
     reasons,
-    filenameHint: cdFilename ?? undefined,
-    contentType,
-    contentEncoding,
+    filenameHint,
+    contentType: contentTypeRaw,
+    contentEncoding: contentEncodingRaw,
+    contentDispositionMode: cd.mode,
+    contentDispositionIssues: cd.issues,
   };
 }
 
 /**
- * Confidence merging is intentionally simple so it stays stable over time.
+ * Normalize a Content-Encoding token into our wrapper union.
  *
- * If this function becomes complex, it’s a sign we should introduce explicit scoring.
+ * Content-Encoding is a token list; tokens are case-insensitive in practice.
+ * We normalize to lowercase and then map known values.
+ *
+ * Note:
+ * - If you later add support for zstd via Content-Encoding (some servers do),
+ *   this is the function you’d extend.
+ */
+export function normalizeContentEncodingToken(token: string): ArchiveCompression {
+  const lower = token.trim().toLowerCase();
+
+  switch (lower) {
+    case "gzip":
+      return "gzip";
+    case "br":
+      return "brotli";
+    case "deflate":
+      return "deflate";
+    case "deflate-raw":
+      return "deflate-raw";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * Confidence merging stays intentionally tiny.
+ *
+ * When confidence merging becomes complicated, it usually means:
+ * - we’re encoding a scoring system implicitly
+ * - and we should introduce an explicit scoring function instead.
  */
 export function upgradeConfidence(
   current: ArchiveDetection["confidence"],
@@ -637,19 +614,23 @@ export function upgradeConfidence(
 }
 
 /* -------------------------------------------------------------------------------------------------
- * Magic byte sniffing (authoritative where possible)
+ * Byte sniffing (“physical evidence”)
  * ------------------------------------------------------------------------------------------------- */
 
 /**
- * Magic bytes are small fixed prefixes that identify common formats.
+ * Sniff compression/container using magic bytes at the beginning of the wire payload.
  *
- * Why we use hex in comments and diagnostics:
- * - Magic byte sequences are almost always documented in hexadecimal.
- * - “1F 8B” is gzip; writing that in decimal would be harder to recognize.
+ * Why magic bytes matter:
+ * - For wrapper formats like gzip and zstd, the signature is near byte 0.
+ * - Headers and filenames can be wrong, but bytes rarely lie.
  *
- * This function returns:
- * - compression wrapper (gzip/zstd/xz/etc) if identified
- * - optional container hint (zip)
+ * What we return:
+ * - compression wrapper, if recognized
+ * - container hint for zip, because zip has a strong signature at byte 0
+ *
+ * What we do not claim:
+ * - we do not confirm tar here, because tar has no signature at byte 0.
+ *   Tar confirmation happens later via the ustar marker at offset 257.
  */
 export function sniffCompressionMagic(bytes: Uint8Array): {
   compression: ArchiveCompression;
@@ -664,7 +645,7 @@ export function sniffCompressionMagic(bytes: Uint8Array): {
     };
   }
 
-  // bzip2: "BZh" (42 5A 68)
+  // bzip2: "BZh" -> 42 5A 68
   if (bytes.length >= 3 && bytes[0] === 0x42 && bytes[1] === 0x5a && bytes[2] === 0x68) {
     return {
       compression: "bzip2",
@@ -704,7 +685,7 @@ export function sniffCompressionMagic(bytes: Uint8Array): {
     };
   }
 
-  // lzip: "LZIP" (4C 5A 49 50)
+  // lzip: "LZIP" -> 4C 5A 49 50
   if (bytes.length >= 4 && bytes[0] === 0x4c && bytes[1] === 0x5a && bytes[2] === 0x49 && bytes[3] === 0x50) {
     return {
       compression: "lzip",
@@ -720,7 +701,7 @@ export function sniffCompressionMagic(bytes: Uint8Array): {
     };
   }
 
-  // zip container magic: "PK.."
+  // zip container magic: PK..
   if (isZipMagic(bytes)) {
     return {
       compression: "none",
@@ -733,17 +714,16 @@ export function sniffCompressionMagic(bytes: Uint8Array): {
 }
 
 /**
- * zip container detection via magic bytes.
- *
- * This is a container hint, not a compression hint.
- * It helps avoid trying to run tar logic on a zip archive.
+ * Zip is easier to confirm than tar because it has a signature at byte 0.
  */
 export function isZipMagic(bytes: Uint8Array): boolean {
   if (bytes.length < 4) return false;
 
   const b0 = bytes[0], b1 = bytes[1], b2 = bytes[2], b3 = bytes[3];
 
-  // PK\x03\x04 (local file header), PK\x05\x06 (empty archive), PK\x07\x08 (spanned archive)
+  // PK\x03\x04 (local file header)
+  // PK\x05\x06 (empty archive)
+  // PK\x07\x08 (spanned archive)
   if (b0 === 0x50 && b1 === 0x4b) {
     if (b2 === 0x03 && b3 === 0x04) return true;
     if (b2 === 0x05 && b3 === 0x06) return true;
@@ -754,19 +734,21 @@ export function isZipMagic(bytes: Uint8Array): boolean {
 }
 
 /**
- * Tar container confirmation via ustar signature.
+ * Confirm tar via the POSIX “ustar” marker.
  *
- * Tar doesn’t have a “magic number at byte 0”.
- * Instead, the POSIX ustar marker appears at offset 257 inside the first 512-byte header block.
+ * This is where tar differs from most formats:
+ * - There is no “magic number” at the beginning of the file.
+ * - Instead, the first file header is 512 bytes and includes the ustar marker at offset 257.
  *
- * This matters because:
- * - you cannot confirm tar by looking at just the first 4 bytes,
- * - for tar.gz you must decompress a prefix before you can even look for ustar.
+ * Why offset 257?
+ * - That’s defined by the tar header layout (POSIX ustar).
+ * - So to confirm tar, we must have at least 262 bytes of the *tar stream* (not the gz stream).
+ *
+ * This function is a pure check:
+ * - it does not try to validate checksums or parse headers,
+ * - it only answers “does this look like a ustar tar header?”
  */
-export function sniffTarUstar(bytes: Uint8Array): {
-  isTar: boolean;
-  reason?: ArchiveReason;
-} {
+export function sniffTarUstar(bytes: Uint8Array): { isTar: boolean; reason?: ArchiveReason } {
   if (bytes.length < 262) return { isTar: false };
 
   const off = 257;
@@ -786,22 +768,25 @@ export function sniffTarUstar(bytes: Uint8Array): {
 }
 
 /* -------------------------------------------------------------------------------------------------
- * Stream peeking utilities
+ * Stream peeking helpers
  * ------------------------------------------------------------------------------------------------- */
 
 /**
- * Read up to `limit` bytes from a ReadableStream.
+ * Read up to `limit` bytes from a stream and return them as a single Uint8Array.
  *
- * In a resolver, we do this because sniffing only needs a prefix, not the whole payload.
+ * Resolver context:
+ * - For sniffing, we only need a prefix (e.g., first 1KB).
+ * - We want to avoid buffering entire responses just to detect gzip vs zstd vs HTML.
  *
- * The usual usage pattern is:
+ * Important workflow note:
+ * - This function assumes you already split the stream via `tee()`.
+ * - That’s the “resolver trick” that keeps sniffing cheap:
  *
- * - response.body.tee() -> [sniffBranch, consumeBranch]
- * - peekStreamBytes(sniffBranch, N) -> prefix bytes
- * - consumeBranch is passed to the actual extractor/downloader
+ *   const [sniffBranch, consumeBranch] = response.body.tee();
+ *   const prefix = await peekStreamBytes(sniffBranch, 1024);
+ *   // consumeBranch continues to stream full payload for extraction or compilation
  *
- * That is why this function does not attempt to “put bytes back” into the stream.
- * The tee branch separation makes that unnecessary.
+ * We do not “put bytes back” into the stream because the tee() split avoids that need.
  */
 export async function peekStreamBytes(
   stream: ReadableStream<Uint8Array<ArrayBuffer>>,
@@ -822,6 +807,7 @@ export async function peekStreamBytes(
         continue;
       }
 
+      // Only take the prefix we need from the last chunk.
       const needed = limit - total;
       chunks.push(value.subarray(0, needed));
       total += needed;
@@ -844,15 +830,19 @@ export async function peekStreamBytes(
 }
 
 /**
- * Inflate a small prefix if gzip is detected.
+ * Inflate a small prefix when gzip is detected.
  *
- * We keep this intentionally small and intentionally gzip-only:
- * - gzip is supported by DecompressionStream in modern Web/Deno.
- * - other formats are not generally available as built-ins.
+ * Why we do this:
+ * - For .tar.gz, ustar confirmation requires looking into the tar stream.
+ * - The tar stream is inside gzip, so we must inflate at least a small window first.
  *
- * Resolver intent:
- * - confirm tar via ustar when possible (high confidence),
- * - otherwise remain conservative.
+ * Why we only do gzip here:
+ * - Web/Deno provides DecompressionStream("gzip") in many runtimes.
+ * - zstd/xz/bzip2 are not generally available as built-ins.
+ *
+ * Policy implication:
+ * - gzip tarballs can become “high confidence” (ustar confirmed).
+ * - zstd tarballs may remain “medium confidence” unless you add a zstd inflater later.
  */
 export async function gunzipPrefixIfPossible(
   gzipBytes: Uint8Array<ArrayBuffer>,
@@ -876,24 +866,35 @@ export async function gunzipPrefixIfPossible(
 /**
  * Detect archive/container characteristics from a fetch Response.
  *
- * The output includes a `bodyForConsumption` stream branch so callers can:
- * - sniff using the other tee branch, and
- * - still stream the full payload into an extractor without buffering.
+ * This function is designed to plug directly into a tarball “mount” step in a resolver.
+ * It returns:
  *
- * The “binary logic” that can be hardest to follow is the precedence:
+ * - `detection`: what we believe, with confidence and reasons.
+ * - `diagnostic`: human-readable summary/details for logs.
+ * - `bodyForConsumption`: a stream branch that still contains the full payload.
  *
- * - We start with merged hints (url + headers).
- * - Magic bytes override compression guesses.
- * - ustar confirmation overrides container guesses.
- * - confidence is computed last to preserve uncertainty.
+ * The core idea is to split the response body:
+ * - One branch is used for sniffing a small prefix.
+ * - The other branch is preserved for the actual consumer (extractor/compiler).
+ *
+ * The slightly tricky part is the precedence order:
+ * - We start with hints (URL + headers).
+ * - Magic bytes override wrapper guesses.
+ * - Tar ustar confirmation overrides container guesses.
+ * - Confidence is computed last based on what we actually confirmed.
+ *
+ * @example
+ * const { detection, bodyForConsumption } = await detectArchiveFromResponse(url, res);
+ * if (detection.container === "tar") {
+ *   // route into tarball mount/extract path using bodyForConsumption
+ * } else {
+ *   // treat as module/html/etc and handle accordingly
+ * }
  */
 export async function detectArchiveFromResponse(
   url: string | URL,
   response: Response,
-  opts: {
-    peekWireBytes?: number;
-    peekTarBytes?: number;
-  } = {},
+  opts: { peekWireBytes?: number; peekTarBytes?: number } = {},
 ): Promise<{
   detection: ArchiveDetection;
   diagnostic: ArchiveDiagnostic;
@@ -909,6 +910,8 @@ export async function detectArchiveFromResponse(
   for (const r of urlHint.reasons) reasons.push(r);
   for (const r of headerHint.reasons) reasons.push(r);
 
+  // Start with the best hints we have.
+  // Later stages (magic bytes / ustar) can override these.
   let container = pickContainer(urlHint.container, headerHint.container);
   let compression = pickCompression(urlHint.compression, headerHint.compression);
 
@@ -937,6 +940,8 @@ export async function detectArchiveFromResponse(
   const [sniffBranch, consumeBranch] = body.tee();
   const wirePrefix = await peekStreamBytes(sniffBranch, peekWireBytes);
 
+  // Magic bytes can conclusively identify wrapper formats (gzip, zstd, xz, etc).
+  // If magic disagrees with hints, we trust magic.
   const magic = sniffCompressionMagic(wirePrefix);
   const magicKnown = magic.compression !== "unknown" || Boolean(magic.containerHint);
 
@@ -949,6 +954,11 @@ export async function detectArchiveFromResponse(
     container = magic.containerHint;
   }
 
+  // Tar confirmation requires tar bytes, not wrapper bytes.
+  //
+  // For plain tar (no wrapper), wirePrefix might already be tar bytes.
+  // For gzip-wrapped tar, we can inflate a prefix and check ustar.
+  // For other wrappers, we currently cannot inflate without extra dependencies, so we stop at hints.
   let tarPrefix: Uint8Array | null = null;
 
   if (compression === "none" || compression === "unknown") {
@@ -964,6 +974,7 @@ export async function detectArchiveFromResponse(
   }
 
   let tarConfirmed = false;
+
   if (tarPrefix) {
     const ustar = sniffTarUstar(tarPrefix);
     if (ustar.isTar) {
@@ -994,10 +1005,10 @@ export async function detectArchiveFromResponse(
 }
 
 /**
- * Choose a container guess from two candidates.
+ * Container merging rule: prefer known over unknown.
  *
- * This function stays intentionally simple because it implements a stable rule:
- * - if we already know the container from one source, prefer it.
+ * This looks trivial, and that’s a feature:
+ * - you want this kind of merge logic to be stable, boring, and hard to break.
  */
 export function pickContainer(a: ArchiveContainer, b: ArchiveContainer): ArchiveContainer {
   if (a !== "unknown") return a;
@@ -1006,7 +1017,7 @@ export function pickContainer(a: ArchiveContainer, b: ArchiveContainer): Archive
 }
 
 /**
- * Choose a compression guess from two candidates.
+ * Compression merging rule: prefer known over unknown.
  */
 export function pickCompression(a: ArchiveCompression, b: ArchiveCompression): ArchiveCompression {
   if (a !== "unknown") return a;
@@ -1015,16 +1026,27 @@ export function pickCompression(a: ArchiveCompression, b: ArchiveCompression): A
 }
 
 /**
- * @internal
+ * Finalize a detection into a stable output shape.
  *
- * Finalize merged detection into a stable output format.
- * Kept separate to reduce cognitive load in the main detection function.
+ * This is separated out because the end-to-end function is already “branchy”.
+ * Branchy logic is where future bugs hide, so we keep the final assembly step pure and obvious.
+ *
+ * @internal
  */
 export function finalizeDetection(input: {
   container: ArchiveContainer;
   compression: ArchiveCompression;
   urlHint: Pick<ArchiveDetection, "isTarballLike" | "confidence" | "filenameHint" | "urlHint">;
-  headerHint: Pick<ArchiveDetection, "isTarballLike" | "confidence" | "filenameHint" | "contentType" | "contentEncoding">;
+  headerHint: Pick<
+    ArchiveDetection,
+    | "isTarballLike"
+    | "filenameHint"
+    | "confidence"
+    | "contentType"
+    | "contentEncoding"
+    | "contentDispositionMode"
+    | "contentDispositionIssues"
+  >;
   reasons: ArchiveReason[];
   magicKnown: boolean;
   tarConfirmed: boolean;
@@ -1051,15 +1073,22 @@ export function finalizeDetection(input: {
     urlHint: input.urlHint.urlHint,
     contentType: input.headerHint.contentType,
     contentEncoding: input.headerHint.contentEncoding,
+    contentDispositionMode: input.headerHint.contentDispositionMode,
+    contentDispositionIssues: input.headerHint.contentDispositionIssues,
   };
 }
 
 /**
- * Confidence rules are intentionally conservative and explainable:
+ * Confidence rules are intentionally conservative and explainable.
  *
- * - Tar confirmation via ustar is the strongest signal we have -> high.
- * - Known magic bytes gives medium confidence even if container is unknown.
- * - Otherwise we rely on hints -> medium if any hint is medium, else low.
+ * Think of confidence like a “how surprised would we be if we were wrong?” meter:
+ *
+ * - Tar ustar confirmation: we would be very surprised -> high.
+ * - Known magic bytes: we would be somewhat surprised -> medium.
+ * - Only hints: we would not be surprised -> low.
+ *
+ * This function is tiny on purpose. If you need more nuance later,
+ * add an explicit scoring system rather than letting a pile of if-statements grow here.
  */
 export function computeConfidence(input: {
   urlHint: ArchiveDetection["confidence"];
@@ -1078,7 +1107,7 @@ export function computeConfidence(input: {
  * ------------------------------------------------------------------------------------------------- */
 
 /**
- * Create a one-line summary suitable for logs.
+ * Produce a one-line summary for logs.
  */
 export function formatDetectionSummary(det: ArchiveDetection): string {
   const wrap = det.compression === "none" ? "" : `+${det.compression}`;
@@ -1087,7 +1116,13 @@ export function formatDetectionSummary(det: ArchiveDetection): string {
 }
 
 /**
- * Create a multi-line debug report.
+ * Produce a multi-line debug report.
+ *
+ * The goal is not to dump everything; it’s to show the evidence that drives decisions:
+ * - what we saw in URL/filename
+ * - what headers said
+ * - what the first bytes looked like
+ * - which reasons were used to reach the conclusion
  */
 export function formatDetectionDetails(
   det: ArchiveDetection,
@@ -1101,9 +1136,21 @@ export function formatDetectionDetails(
   lines.push(`contentType: ${det.contentType ?? "(none)"}`);
   lines.push(`contentEncoding: ${det.contentEncoding ?? "(none)"}`);
 
-  // Hex previews are intentionally used here because:
-  // - Magic byte signatures are specified and commonly communicated in hex.
-  // - Seeing “1f 8b” immediately tells you gzip; decimal would obscure that.
+  if (det.contentDispositionMode) {
+    lines.push(`contentDispositionMode: ${det.contentDispositionMode}`);
+  }
+
+  if (det.contentDispositionIssues && det.contentDispositionIssues.length > 0) {
+    lines.push(`contentDispositionIssues: ${det.contentDispositionIssues.length}`);
+    for (const issue of det.contentDispositionIssues) {
+      lines.push(`  - ${issue.code}: ${issue.message}`);
+    }
+  }
+
+  // Hex previews are the most practical way to debug magic-byte sniffing:
+  // - gzip is 1f 8b
+  // - zstd is 28 b5 2f fd
+  // - zip starts with 50 4b
   lines.push(`wirePrefix(${wirePrefix.length}): ${formatHexPreview(wirePrefix)}`);
 
   if (tarPrefix) {
@@ -1121,20 +1168,21 @@ export function formatDetectionDetails(
 /**
  * Format a short hex preview of bytes.
  *
- * This function looks “small”, but it saves hours of debugging.
+ * This looks like a tiny helper, but it’s one of the best “future maintainer gifts”:
+ * when someone is diagnosing a tarball failure, they can recognize signatures instantly.
  *
  * Why `.toString(16)`?
- * - That converts a byte value (0..255) into base-16 (hexadecimal) text.
- * - Magic bytes are almost always documented in hex.
- * - So when someone sees: "1f 8b", they can recognize gzip immediately.
+ * - Bytes are numbers 0..255.
+ * - Magic signatures are universally documented in hexadecimal.
+ * - Converting each byte to hex makes the output match specs, docs, and tooling.
  *
  * Why `padStart(2, "0")`?
- * - Hex bytes are conventionally shown as two digits.
- * - 0x0a should print as "0a", not "a", otherwise alignment and readability degrade.
+ * - A byte in hex is conventionally shown as two characters.
+ * - 0x0a should be “0a”, not “a”, otherwise the preview becomes hard to scan.
  *
- * Why limit to 16 bytes?
- * - We want a hint, not a hexdump.
- * - If you need more, increase the limit or print the full buffer in a dedicated debug mode.
+ * Why we cap at 16 bytes?
+ * - We want a fingerprint, not a full hexdump.
+ * - Logs should stay readable.
  *
  * @example
  * formatHexPreview(new Uint8Array([0x1f, 0x8b, 0x08]))
@@ -1145,7 +1193,6 @@ export function formatHexPreview(bytes: Uint8Array): string {
   const parts: string[] = [];
 
   for (let i = 0; i < max; i++) {
-    // Convert each byte to two-digit hex.
     parts.push(bytes[i].toString(16).padStart(2, "0"));
   }
 

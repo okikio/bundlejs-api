@@ -13,6 +13,9 @@ export * from "./fmt.ts";
 export * from "./resolve-exports-imports.ts";
 export * from "./tar.ts";
 
+export * from "./archive-detect.ts";
+export * from "./archive-spec.ts";
+
 export * as semver from "./semver.ts";
 export * as url from "./url.ts";
 
@@ -26,3 +29,6 @@ export * as encoding from "./encoding.ts"
 export * as outdent from "./outdent.ts";
 
 export * as mediaTypes from "./media-types.ts";
+
+export * as archiveDetect from "./archive-detect.ts";
+export * as archiveSpec from "./archive-spec.ts";
