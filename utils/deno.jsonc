@@ -16,6 +16,7 @@
     "./fmt": "./fmt.ts",
     "./html": "./html.ts",
     "./json5": "./json5.ts",
+    "./tar": "./tar.ts",
     "./lru": "./lru.ts",
     "./lz-string": "./lz-string.ts",
     "./media-types": "./media-types.ts",

@@ -67,7 +67,7 @@ export async function newRequest(
 
       // Check if the response status indicates success (2xx status codes)
       if (!networkResponse.ok) {
-        throw new Error(`Failed to fetch ${request.toString()}: ${networkResponse.statusText}`);
+        throw new Error(`Failed to fetch ${typeof request === "string" ? request : request.url}: ${networkResponse.statusText}`);
       }
 
       // If the request is successful, break out of the retry loop
