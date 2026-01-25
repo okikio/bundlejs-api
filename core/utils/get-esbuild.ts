@@ -8,7 +8,7 @@ import { PLATFORM_AUTO } from "../configs/platform.ts";
 // export const { version: defaultVersion } = pkg;
 export const defaultVersion = "0.27.2";
 
-import * as ESBUILD_IMPORT from "esbuild-wasm"
+import * as ESBUILD_IMPORT from "esbuild"
 
 /**
  * Determines which esbuild skew to use depending on the platform option supplied, 

@@ -57,7 +57,7 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
 
   try {
     if (!context)
-      throw new Error("Initialization failed, couldn't access esbuild context function");
+      throw new Error("Initialization failed, couldn't access esbuild.context(...) function");
 
     try {
       context_result = await context({

@@ -78,6 +78,7 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
     failedManifestUrls: new Set(),
     host: DEFAULT_CDN_HOST,
     versions: new Map(),
+
     tarballInflight: new Map(),
     tarballMounts: new Map(),
 
@@ -100,7 +101,7 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
 
   try {
     if (!bundle)
-      throw new Error("Initialization failed, couldn't access esbuild build function");
+      throw new Error("Initialization failed, couldn't access esbuild.build(...) function");
 
     try {
       build_result = await bundle({
