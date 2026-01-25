@@ -15,6 +15,7 @@ export * from "./tar.ts";
 
 export * from "./archive-detect.ts";
 export * from "./archive-spec.ts";
+export * from "./npm-deps-spec.ts";
 
 export * as semver from "./semver.ts";
 export * as url from "./url.ts";
@@ -32,3 +33,5 @@ export * as mediaTypes from "./media-types.ts";
 
 export * as archiveDetect from "./archive-detect.ts";
 export * as archiveSpec from "./archive-spec.ts";
+
+export * as npmDepsSpec from "./npm-deps-spec.ts";

@@ -20,6 +20,7 @@
     "./lru": "./lru.ts",
     "./archive-spec": "./archive-spec.ts",
     "./archive-detect": "./archive-detect.ts",
+    "./npm-deps-spec": "./npm-deps-spec.ts",
     "./lz-string": "./lz-string.ts",
     "./media-types": "./media-types.ts",
     "./npm-search": "./npm-search.ts",

@@ -898,7 +898,7 @@ export async function detectArchiveFromResponse(
 ): Promise<{
   detection: ArchiveDetection;
   diagnostic: ArchiveDiagnostic;
-  bodyForConsumption: ReadableStream<Uint8Array> | null;
+  bodyForConsumption: ReadableStream<Uint8Array<ArrayBuffer>> | null;
 }> {
   const peekWireBytes = opts.peekWireBytes ?? 1024;
   const peekTarBytes = opts.peekTarBytes ?? 512;
