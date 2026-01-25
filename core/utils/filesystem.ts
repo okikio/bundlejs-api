@@ -98,7 +98,8 @@ export async function getFile<T, F extends IFileSystem<T, Content>, Content = Ui
 }
 
 /**
- * Determines if file from virtual file system storage in either string or uint8array exists
+ * Determines if entity from virtual file system storage in either string or uint8array exists,
+ * this technically also includes directories
  * 
  * @param fs virtual file system 
  * @param path path of file in virtual file system storage
@@ -112,6 +113,25 @@ export async function hasFile<T, F extends IFileSystem<T, Content>, Content = Ui
     // deno-lint-ignore no-empty
   } catch (_) { }
   return false;
+}
+
+/**
+ * Similar to {@link hasFile} except it doesn't just check if the file is in the file system, 
+ * it also validates that the file contains valid content, avoiding directories. 
+ * 
+ * > Note: still treats empty files as existing (Uint8Array length can be 0).
+ * > Note: has slightly higher overhead than `hasFile`
+ * 
+ * @param fs virtual file system 
+ * @param path path of file in virtual file system storage
+ * @param importer an absolute path to use to determine a relative file path
+ * @returns boolean of if file from file system storage in either string format or as a Uint8Array buffer
+ */
+export async function fileExists<T>(fs: IFileSystem<T>, path: string, importer?: string): Promise<boolean> {
+	// This treats empty files as existing (Uint8Array length can be 0).
+	// It also avoids counting directories as “existing modules”.
+	const content = await getFile(fs, path, "buffer", importer);
+	return content !== null;
 }
 
 /**
