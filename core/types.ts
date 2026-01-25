@@ -3,8 +3,9 @@ import type * as ESBUILD_WASM from "esbuild-wasm";
 import type { FullPackageVersion, PackageJson } from "@bundle/utils/types";
 import type { InitOptions } from "./init.ts";
 
-import type { IFileSystem } from "./utils/filesystem.ts";
 import type { record } from "./context/context.ts";
+import type { IFileSystem } from "./utils/filesystem.ts";
+import type { TarballState } from "./plugins/tar.ts";
 
 export type { ESBUILD, ESBUILD_WASM };
 
@@ -18,7 +19,7 @@ export interface CommonConfigOptions extends record {
 /**
  * Local state available to all plugins
  */
-export interface LocalState<T = unknown> extends record {
+export interface LocalState<T = unknown> extends TarballState, record {
   filesystem: IFileSystem<T>,
 
   /**

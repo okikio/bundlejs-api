@@ -1,6 +1,12 @@
-import type { TarStreamEntry } from "@std/tar/untar-stream";
-import { UntarStream } from "@std/tar/untar-stream";
+import type { TarStreamEntry } from "@bundle/utils/tar";
+import { UntarStream } from "@bundle/utils/tar";
 import { normalize, join } from "@bundle/utils/path";
+
+import { getFile, setFile, PLATFORM_AUTO, TheFileSystem } from "./mod.ts";
+import { context, cancel, dispose, rebuild, } from "./mod.ts";
+
+const fs = await TheFileSystem;
+
 
 // const response = await fetch("https://pkg.pr.new/@tanstack/react-query@7988");
 // const content = await response.arrayBuffer();
@@ -63,36 +69,36 @@ import { normalize, join } from "@bundle/utils/path";
 //       console.log({
 //         path: join("./", path)
 //       })
-//       // setFile(args.namespace + ":" + join("./", path), uint8arr);
+//       setFile(fs, join("./tar/", path), uint8arr);
 //   }
 
 // }
 
 
 
-import { getFile, setFile, PLATFORM_AUTO, TheFileSystem } from "./mod.ts";
-import { context, cancel, dispose, rebuild, } from "./mod.ts";
 
-
-const fs = await TheFileSystem;
 
 // console.log({
 //   version: await resolveVersion(`esbuild@0.18`)
 // })
 console.log("\n");
-await setFile(fs, "/index.tsx", `\
-export * as Other from "/new.tsx";
-export * from "@okikio/animate";`);
-await setFile(fs, "/new.tsx", "export * from \"@okikio/native\";");
-await setFile(fs, "/other.tsx", `\
-export * as Other from "/index.tsx";
-export * from "@okikio/emitter";`);
+// await setFile(fs, "/index.tsx", `\
+// export * as Other from "/new.tsx";
+// export * from "@okikio/animate";`);
+// await setFile(fs, "/new.tsx", "export * from \"@okikio/native\";");
+await setFile(fs, "/new.tsx", "export * from \"https://pkg.pr.new/@tanstack/react-query@7988\"")
+// await setFile(fs, "/other.tsx", `\
+// export * as Other from "/index.tsx";
+// export * from "@okikio/emitter";`);
 
-console.log(await getFile(fs, "/index.tsx", "string") )
+// console.log(await getFile(fs, "/index.tsx", "string") )
+
+console.log(await getFile(fs, "/new.tsx", "string") )
 console.log(fs)
 
 const ctx = await context({
-  entryPoints: ["/index.tsx", "/new.tsx"],
+  // "/index.tsx",
+  entryPoints: ["/new.tsx"],
   esbuild: {
     treeShaking: true,
     splitting: true,
@@ -116,20 +122,20 @@ console.log({
 });
 
 
-await setFile(fs, "/index.tsx", `\
-  export * as Other from "/new.tsx";
-  export * from "spring-easing";`);
-const result2 = await rebuild(ctx);
+// await setFile(fs, "/index.tsx", `\
+//   export * as Other from "/new.tsx";
+//   export * from "spring-easing";`);
+// const result2 = await rebuild(ctx);
 
 
-console.log({
-  result2,
-  // packageManifests: result2.state.packageManifests,
-  //   // await compress(
-  //   //   result.contents.map((x: any) => x?.contents),
-  //   //   { type: "gzip" }
-  //   // )
-});
+// console.log({
+//   result2,
+//   // packageManifests: result2.state.packageManifests,
+//   //   // await compress(
+//   //   //   result.contents.map((x: any) => x?.contents),
+//   //   //   { type: "gzip" }
+//   //   // )
+// });
 
 await cancel(ctx);
 await dispose(ctx);

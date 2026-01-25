@@ -3,6 +3,7 @@ import type { FullPackageVersion, PackageJson } from "@bundle/utils/types";
 
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
 import { ExternalPlugin } from "./plugins/external.ts";
+import { TarballPlugin } from "./plugins/tar.ts";
 import { AliasPlugin } from "./plugins/alias.ts";
 import { HttpPlugin } from "./plugins/http.ts";
 import { CdnPlugin } from "./plugins/cdn.ts";
@@ -73,12 +74,14 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
     filesystem: await filesystem,
     assets: [],
     config: createConfig("build", opts),
-    failedExtensionChecks: new Set<string>(),
-    failedManifestUrls: new Set<string>(),
+    failedExtensionChecks: new Set(),
+    failedManifestUrls: new Set(),
     host: DEFAULT_CDN_HOST,
-    versions: new Map<string, string>(),
+    versions: new Map(),
+    tarballInflight: new Map(),
+    tarballMounts: new Map(),
 
-    packageManifests: new Map<string, PackageJson | FullPackageVersion>(),
+    packageManifests: new Map(),
   });
 
   const LocalConfig = fromContext("config", StateContext)!;
@@ -121,6 +124,7 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
           AliasPlugin(StateContext),
           ExternalPlugin(StateContext),
           VirtualFileSystemPlugin(StateContext),
+          TarballPlugin(StateContext),
           HttpPlugin(StateContext),
           CdnPlugin(StateContext.with({ origin: host }) as Context<LocalState & { origin: string }>),
         ],
@@ -211,7 +215,10 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
     // FileSystem.clear();
     // console.log({ contentsLen: contents.length })
 
-    const packageManifests = fromContext('packageManifests', StateContext) ?? new Map<string, PackageJson | FullPackageVersion>();
+    const packageManifests = 
+      fromContext('packageManifests', StateContext)
+      ?? new Map<string, PackageJson | FullPackageVersion>();
+    
     const packageSizeArr: [string, string][] = [];
     let totalInstallSize = 0;
 

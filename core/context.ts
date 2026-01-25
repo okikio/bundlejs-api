@@ -1,9 +1,9 @@
-import type { FullPackageVersion, PackageJson } from "@bundle/utils/types";
 import type { BuildConfig, ESBUILD, LocalState } from "./types.ts";
 import type { BuildResult } from "./build.ts";
 
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
 import { ExternalPlugin } from "./plugins/external.ts";
+import { TarballPlugin } from "./plugins/tar.ts";
 import { AliasPlugin } from "./plugins/alias.ts";
 import { HttpPlugin } from "./plugins/http.ts";
 import { CdnPlugin } from "./plugins/cdn.ts";
@@ -30,11 +30,15 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
     filesystem: await filesystem,
     assets: [],
     config: createConfig("build", opts),
-    failedExtensionChecks: new Set<string>(),
-    failedManifestUrls: new Set<string>(),
+    failedExtensionChecks: new Set(),
+    failedManifestUrls: new Set(),
     host: DEFAULT_CDN_HOST,
-    versions: new Map<string, string>(),
-    packageManifests: new Map<string, PackageJson | FullPackageVersion>(),
+    versions: new Map(),
+    
+    tarballInflight: new Map(),
+    tarballMounts: new Map(),
+
+    packageManifests: new Map(),
   });
 
   const LocalConfig = fromContext("config", StateContext)!;
@@ -77,6 +81,7 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
           AliasPlugin(StateContext),
           ExternalPlugin(StateContext),
           VirtualFileSystemPlugin(StateContext),
+          TarballPlugin(StateContext),
           HttpPlugin(StateContext),
           CdnPlugin(StateContext.with({ origin: host }) as Context<LocalState & { origin: string }>),
         ],
