@@ -1,313 +1,612 @@
-import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
+/**
+ * Tarball Plugin for esbuild
+ * 
+ * Handles tarball-based package sources like `pkg.pr.new` by:
+ * 1. Fetching and extracting tarballs into the virtual filesystem
+ * 2. Resolving package entry points via exports/main fields
+ * 3. Enabling imports from within extracted packages (including self-references)
+ * 
+ * @example
+ * ```ts
+ * // Direct tarball URL import
+ * import { useQuery } from "https://pkg.pr.new/@tanstack/react-query@7988";
+ * 
+ * // Subpath import
+ * import { QueryClient } from "https://pkg.pr.new/@tanstack/react-query@7988/build/modern";
+ * ```
+ */
+import type { TarStreamEntry } from "@bundle/utils/tar";
 import type { LocalState, ESBUILD } from "../types.ts";
-import type { Context, record } from "../context/context.ts";
+import type { PackageJson } from "@bundle/utils/types";
+import type { Context } from "../context/context.ts";
 
-import { fromContext } from "../context/context.ts";
+import { fromContext, toContext } from "../context/context.ts";
 
+import { UntarStream } from "@bundle/utils/tar";
 import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
-import { parsePackageName } from "@bundle/utils/parse-package-name";
-import { getPackageOfVersion, getRegistryURL } from "@bundle/utils/npm-search";
-import { decompress } from "@bundle/compress/gzip"
 
-import { extname, isBareImport, join } from "@bundle/utils/path";
+import { normalize, join } from "@bundle/utils/path";
 import { getRequest } from "@bundle/utils/fetch-and-cache";
-import { deepMerge } from "@bundle/utils/deep-object";
 
-import { determineExtension, HTTP_NAMESPACE } from "./http.ts";
-import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
+import { VIRTUAL_FILESYSTEM_NAMESPACE } from "./fs.ts";
+import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../configs/events.ts";
 
-import { getCDNUrl, getCDNStyle, DEFAULT_CDN_HOST } from "../utils/cdn-format.ts";
 import { getResolverConditions } from "../utils/resolve-conditions.ts";
+import { setFile, getFile } from "../utils/filesystem.ts";
+import { getCDNStyle } from "../utils/cdn-format.ts";
 
-/** CDN Plugin Namespace */
-export const TARBALL_NAMESPACE = "tar-url";
+import {
+	detectArchiveFromResponse,
+	type ArchiveDetection,
+	type ArchiveDiagnostic
+} from "@bundle/utils/archive-detect";
+
+/** Tarball Plugin Namespace */
+export const TARBALL_NAMESPACE = "tarball-url";
+
+/** Root directory for extracted tarballs in VFS */
+const TARBALL_ROOT = "/__tarballs__";
 
 /**
- * Resolution algorithm for the esbuild CDN plugin 
- * 
- * @param cdn The default CDN to use
- * @param logger Console log
+ * Mounted tarball metadata stored in StateContext
  */
-export function TarResolution<T>(StateContext: Context<LocalState<T> & { origin: string }>) {
-  const LocalConfig = fromContext("config", StateContext)!;
-  const manifest: Partial<PackageJson | FullPackageVersion> = LocalConfig["package.json"] ?? {};
-  const esbuildOpts = LocalConfig.esbuild ?? {};
+export interface TarballMount {
+	/** When this mount was created (for cache eviction) */
+	createdAt: number;
+	/** VFS path to the extracted package root */
+	packageRoot: string;
+	/** The package.json manifest */
+	manifest: PackageJson;
+	/** Original tarball URL */
+	sourceUrl: string;
+}
 
-  const cdn = fromContext("origin", StateContext)! ?? DEFAULT_CDN_HOST;
-  const failedManifestUrls = fromContext("failedManifestUrls", StateContext) ?? new Set<string>();
-  const packageManifestsMap = fromContext("packageManifests", StateContext) ?? new Map<string, PackageJson | FullPackageVersion>();
+/**
+ * Extended LocalState with tarball-specific caches
+ */
+export interface TarballState {
+	/** Map of tarball URL -> mount info */
+	tarballMounts: Map<string, TarballMount>;
+	/** Inflight tarball fetches to prevent duplicate work */
+	tarballInflight: Map<string, Promise<TarballMount>>;
+}
 
+/**
+ * Check if a URL points to a tarball-style CDN (like pkg.pr.new)
+ */
+function isTarballUrl(url: URL): boolean {
+	return getCDNStyle(url.origin) === "tarball";
+}
+
+/**
+ * Generate a stable, content-addressed key for a tarball URL
+ */
+async function getTarballKey(url: string): Promise<string> {
+	// Normalize the URL for stable keys
+	const normalized = new URL(url);
+	normalized.hash = "";
+	
+	// Sort search params for consistency
+	const params = Array.from(normalized.searchParams.entries()).sort(([a], [b]) => a.localeCompare(b));
+	normalized.search = "";
+	for (const [k, v] of params) {
+		normalized.searchParams.append(k, v);
+	}
+	
+	const bytes = new TextEncoder().encode(normalized.toString());
+	const digest = await crypto.subtle.digest("SHA-256", bytes);
+	const hashArray = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0"));
+  return hashArray.join("").slice(0, 16);
+}
+
+/**
+ * Parse pkg.pr.new URL to extract package spec and subpath
+ * 
+ * @example
+ * ```
+ * https://pkg.pr.new/@tanstack/react-query@7988
+ * -> { pkgSpec: "@tanstack/react-query@7988", subpath: "" }
+ * 
+ * https://pkg.pr.new/@tanstack/react-query@7988/build/modern
+ * -> { pkgSpec: "@tanstack/react-query@7988", subpath: "/build/modern" }
+ * ```
+ */
+export function parseTarballUrl(url: URL): { pkgSpec: string; subpath: string; packageUrl: URL } {
+	const parts = url.pathname.split("/").filter(Boolean);
+	
+	let pkgSpec = "";
+	let rest: string[] = [];
+	
+	if (parts.length === 0) {
+		return { pkgSpec: "", subpath: "", packageUrl: url };
+	}
+	
+	// Handle scoped packages (@scope/name@version)
+	if (parts[0].startsWith("@")) {
+		pkgSpec = parts.slice(0, 2).join("/");
+		rest = parts.slice(2);
+	} else {
+		pkgSpec = parts[0];
+		rest = parts.slice(1);
+	}
+	
+	// Build the package root URL (without subpath)
+	const packageUrl = new URL(url.toString());
+	if (pkgSpec) {
+		const scopedParts = pkgSpec.split("/");
+		packageUrl.pathname = `/${scopedParts.join("/")}`;
+	}
+	
+	return {
+		pkgSpec,
+		subpath: rest.length > 0 ? `/${rest.join("/")}` : "",
+		packageUrl
+	};
+}
+
+/**
+ * Strip the "package/" prefix that npm tarballs typically have
+ */
+export function stripPackagePrefix(path: string): string {
+	if (path.startsWith("package/")) {
+		return path.slice("package/".length);
+	}
+	return path;
+}
+
+/**
+ * Fetch and extract a tarball into the virtual filesystem
+ */
+export async function fetchAndExtractTarball<T>(
+	url: string,
+	packageRoot: string,
+	StateContext: Context<LocalState<T>>
+): Promise<PackageJson> {
+	const FileSystem = fromContext("filesystem", StateContext)!;
+
+  dispatchEvent(LOGGER_INFO, `Fetching tarball candidate: ${url}`);
+	
+	const response = await getRequest(url);
+	if (!response.ok) {
+		throw new Error(`Failed to fetch tarball: ${response.status} ${response.statusText}`);
+	}
+
+  const {
+    detection,
+    diagnostic,
+    bodyForConsumption,
+  } = await detectArchiveFromResponse(url, response, {
+    peekWireBytes: 1024,
+    peekTarBytes: 512,
+  });
+
+  // If it isn't even tarball-like, bail early with a useful explanation.
+  if (!detection.isTarballLike) {
+    dispatchEvent(LOGGER_WARN, diagnostic.summary);
+    dispatchEvent(LOGGER_WARN, diagnostic.details);
+    throw new Error(
+      `TarballPlugin: URL did not resolve to a tarball-like payload.\n` +
+        `${diagnostic.summary}\n` +
+        `${diagnostic.details}`,
+    );
+  }
+
+  // If we cannot consume a body, we cannot extract.
+  if (!bodyForConsumption) {
+    dispatchEvent(LOGGER_WARN, diagnostic.summary);
+    dispatchEvent(LOGGER_WARN, diagnostic.details);
+    throw new Error(`TarballPlugin: response has no body; cannot extract.\n${diagnostic.summary}`);
+  }
+
+  // Hard requirement: we only mount tar containers here.
+  // (If you later add ZipPlugin, this becomes a router decision instead of an error.)
+  if (detection.container !== "tar") {
+    dispatchEvent(LOGGER_WARN, diagnostic.summary);
+    dispatchEvent(LOGGER_WARN, diagnostic.details);
+    throw new Error(
+      `TarballPlugin: payload is not a tar container (detected=${detection.container}).\n` +
+        `${diagnostic.summary}\n` +
+        `${diagnostic.details}`,
+    );
+  }
+	
+	const contentType = response.headers.get("content-type")?.trim().toLowerCase();
+	
+	// pkg.pr.new returns application/tar+gzip
+	if (contentType !== "application/tar+gzip" && !url.endsWith(".tgz") && !url.endsWith(".tar.gz")) {
+		throw new Error(`Unexpected content type for tarball: ${contentType}`);
+	}
+	
+  // Build the tar entry stream based on detected wrapper.
+  //
+  // - gzip: supported via DecompressionStream in most modern runtimes
+  // - none/unknown: attempt direct untar (some servers lie; bytes decide)
+  // - others: fail with explicit “unsupported compression”
+  let tarEntryStream: ReadableStream<TarStreamEntry>;
+
+  if (detection.compression === "gzip") {
+    tarEntryStream = bodyForConsumption
+      .pipeThrough(new DecompressionStream("gzip"))
+      .pipeThrough(new UntarStream());
+  } else if (detection.compression === "none" || detection.compression === "unknown") {
+    tarEntryStream = bodyForConsumption.pipeThrough(new UntarStream());
+  } else {
+    // zstd/xz/bzip2/etc: you detected it correctly, but runtime can't decode it here.
+    dispatchEvent(LOGGER_WARN, diagnostic.summary);
+    dispatchEvent(LOGGER_WARN, diagnostic.details);
+    throw new Error(
+      `TarballPlugin: unsupported tar wrapper "${detection.compression}".\n` +
+        `Add a decompressor (e.g. zstd) or route this to a dedicated plugin.\n` +
+        `${diagnostic.summary}\n` +
+        `${diagnostic.details}`,
+    );
+  }
+
+  // Extract into VFS.
+  const reader = tarEntryStream.getReader();
+  let manifest: PackageJson | null = null;
+
+  try {
+    while (true) {
+      const { done, value: entry } = await reader.read();
+      if (done) break;
+
+			// Normalize path and strip package/ prefix
+      const relativePath = normalize(stripPackagePrefix(entry.path));
+      if (!relativePath || relativePath === ".") continue;
+
+			// Skip directories (they're created implicitly by setFile)
+      if (entry.path.endsWith("/")) {
+				// Consume the readable stream even for directories
+        await entry.readable?.cancel();
+        continue;
+      }
+
+			// Read file contents
+      const blob = await new Response(entry.readable).blob();
+      const fileContent = new Uint8Array(await blob.arrayBuffer());
+
+			// Write to VFS
+      const vfsPath = join(packageRoot, relativePath);
+      await setFile(FileSystem, vfsPath, fileContent);
+
+			// Capture package.json
+      if (relativePath === "package.json") {
+        try {
+          const text = new TextDecoder().decode(fileContent);
+          manifest = JSON.parse(text) as PackageJson;
+        } catch (e) {
+          dispatchEvent(LOGGER_WARN, `Failed to parse tarball package.json: ${String(e)}`);
+        }
+      }
+    }
+  } catch (e) {
+    // This is where archive-detect earns its keep: if untar fails, we print the full reasoning trail.
+		dispatchEvent(LOGGER_ERROR, new AggregateError([diagnostic.details], diagnostic.summary, { cause: e}));
+    throw new Error(
+      `TarballPlugin: extraction failed.\n` +
+        `${diagnostic.summary}\n` +
+        `${diagnostic.details}\n` +
+        `Cause: ${String(e)}`,
+    );
+  } finally {
+    reader.releaseLock();
+  }
+
+	// Fallback: try to read package.json from VFS if we missed it
+  if (!manifest) {
+    try {
+      const pkgJsonPath = join(packageRoot, "package.json");
+      const text = await getFile(FileSystem, pkgJsonPath, "string");
+      if (text) manifest = JSON.parse(text) as PackageJson;
+    } catch (e) {
+      dispatchEvent(LOGGER_WARN, `Failed to read tarball package.json from VFS: ${String(e)}`);
+    }
+  }
+
+  if (!manifest) {
+    manifest = { name: "unknown", version: "0.0.0" };
+  }
+
+  dispatchEvent(
+    LOGGER_INFO,
+    `Extracted tarball: ${manifest.name}@${manifest.version} -> ${packageRoot} (compression=${detection.compression}, confidence=${detection.confidence})`,
+  );
+
+	return manifest;
+}
+
+/**
+ * Resolve the package entry point using exports or legacy fields
+ */
+export function resolvePackageEntry(
+	manifest: PackageJson,
+	subpath: string,
+	conditions: ReturnType<typeof getResolverConditions>
+): string {
+	// Normalize subpath for exports resolution
+	const exportSubpath = subpath ? `.${subpath}` : ".";
+	
+	// Try modern exports resolution first
+	try {
+		const resolved = resolve(manifest, exportSubpath, {
+			browser: conditions.browser,
+			conditions: conditions.conditions,
+			require: conditions.require
+		});
+		
+		if (resolved) {
+			const result = Array.isArray(resolved) ? resolved[0] : resolved;
+			if (typeof result === "string") {
+				return result.replace(/^\.\//, "/").replace(/^\./, "/");
+			}
+		}
+	} catch {
+		// Fall through to legacy resolution
+	}
+	
+	// Try with require fallback if we're in import context
+	if (!conditions.require) {
+		try {
+			const resolved = resolve(manifest, exportSubpath, {
+				browser: conditions.browser,
+				conditions: ["require", ...conditions.conditions],
+				require: true
+			});
+			
+			if (resolved) {
+				const result = Array.isArray(resolved) ? resolved[0] : resolved;
+				if (typeof result === "string") {
+					return result.replace(/^\.\//, "/").replace(/^\./, "/");
+				}
+			}
+		} catch {
+			// Fall through to legacy resolution
+		}
+	}
+	
+	// For root import without subpath, try legacy resolution
+	if (!subpath || subpath === "/") {
+		try {
+			const legacyResult = legacy(manifest, { browser: conditions.browser }) ||
+				legacy(manifest, { fields: ["module", "main"] }) ||
+				legacy(manifest, { fields: ["unpkg", "bin"] });
+			
+			if (legacyResult) {
+				if (typeof legacyResult === "string") {
+					return legacyResult.replace(/^\.\//, "/").replace(/^\./, "/");
+				}
+				if (Array.isArray(legacyResult) && legacyResult[0]) {
+					return String(legacyResult[0]).replace(/^\.\//, "/").replace(/^\./, "/");
+				}
+				if (typeof legacyResult === "object") {
+					const values = Object.values(legacyResult).filter(v => v && typeof v === "string");
+					if (values.length > 0) {
+						return String(values[0]).replace(/^\.\//, "/").replace(/^\./, "/");
+					}
+				}
+			}
+		} catch {
+			// Fall through to default
+		}
+	}
+	
+	// If we have a subpath, use it directly
+	if (subpath && subpath !== "/") return subpath;
+	
+	// Last resort: try common entry points
+	return "/index.js";
+}
+
+/**
+ * Get or create tarball mount, handling inflight deduplication
+ */
+export async function getOrCreateMount<T>(
+	tarballUrl: string,
+	StateContext: Context<LocalState<T> & TarballState>
+): Promise<TarballMount> {
+	const mounts = fromContext("tarballMounts", StateContext) ?? new Map<string, TarballMount>();
+	const inflight = fromContext("tarballInflight", StateContext) ?? new Map<string, Promise<TarballMount>>();
+	
+	// Ensure maps are in context
+	if (!fromContext("tarballMounts", StateContext)) {
+		toContext("tarballMounts", mounts, StateContext);
+	}
+	if (!fromContext("tarballInflight", StateContext)) {
+		toContext("tarballInflight", inflight, StateContext);
+	}
+	
+	const key = await getTarballKey(tarballUrl);
+	
+	// Check existing mount
+	const existing = mounts.get(key);
+	if (existing) return existing;
+	
+	// Check inflight
+	const inflightPromise = inflight.get(key);
+	if (inflightPromise) return inflightPromise;
+	
+	// Create new mount
+	const mountPromise = (async () => {
+		const packageRoot = join(TARBALL_ROOT, key);
+		const manifest = await fetchAndExtractTarball(tarballUrl, packageRoot, StateContext);
+		
+		const mount: TarballMount = {
+			createdAt: Date.now(),
+			packageRoot,
+			manifest,
+			sourceUrl: tarballUrl
+		};
+		
+		mounts.set(key, mount);
+		inflight.delete(key);
+		
+		return mount;
+	})();
+	
+	inflight.set(key, mountPromise);
+	
+	try {
+		return await mountPromise;
+	} catch (e) {
+		inflight.delete(key);
+		throw e;
+	}
+}
+
+/**
+ * Check if a path is inside a mounted tarball package
+ */
+export function findMountForPath<T>(
+	vfsPath: string,
+	StateContext: Context<LocalState<T> & TarballState>
+): TarballMount | null {
+	const mounts = fromContext("tarballMounts", StateContext);
+	if (!mounts) return null;
+	
+	for (const mount of mounts.values()) {
+		if (vfsPath.startsWith(mount.packageRoot + "/") || vfsPath === mount.packageRoot) {
+			return mount;
+		}
+	}
+	
+	return null;
+}
+
+/**
+ * Resolution algorithm for tarball URLs
+ * 
+ * Handles:
+ * - Direct tarball URL imports (https://pkg.pr.new/...)
+ * - Self-reference imports from within extracted packages
+ * - Subpath imports
+ */
+export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
+	const LocalConfig = fromContext("config", StateContext)!;
+	const esbuildOpts = LocalConfig.esbuild ?? {};
+	
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
-    const conditions = getResolverConditions(args, esbuildOpts);
-    let argPath = args.path;
-
-    // Conceptually package.json = manifest, but for naming reasons we'll just call it manifest
-    const { sideEffects: _sideEffects, ..._inheritedManifest } = args.pluginData?.manifest ?? {};
-
-    // Object.assign & deepMerge essentially do the same thing for flat objects, 
-    // except there are some instances where Object.assign is faster
-    const initialManifest: PackageJson | FullPackageVersion = deepMerge(
-      structuredClone(manifest),
-
-      // If we've manually set the version of the dependency in the config, 
-      // then force all occurances of that dependency to use the version specified in the config
-      Object.assign(
-        structuredClone(_inheritedManifest),
-        manifest.devDependencies ? { devDependencies: manifest.devDependencies } : null,
-        manifest.peerDependencies ? { peerDependencies: manifest.peerDependencies } : null,
-        manifest.dependencies ? { dependencies: manifest.dependencies } : null,
-      )
-    );
-
-    const initialDeps = Object.assign(
-      {},
-      initialManifest.devDependencies,
-      initialManifest.peerDependencies,
-      initialManifest.dependencies,
-    );
-
-    // Support a different default CDN + allow for custom CDN url schemes
-    const { path: _argPath, origin } = getCDNUrl(argPath, cdn);
-    const TARBALL_CDN = getCDNStyle(origin) === "tarball";
-
-    if (TARBALL_CDN) {
-      const { url } = getCDNUrl(argPath, origin);
-
-      // Strongly cache package.json files
-      const res = await getRequest(url, true);
-      if (!res.ok) throw new Error(await res.text());
-
-      const contentTypeHeader = res.headers.get("content-type");
-      const contentType = contentTypeHeader?.trim()?.toLowerCase();
-
-      if (contentType === "application/tar+gzip") {
+		// Handle direct tarball URL imports
+    if (/^https?:\/\//.test(args.path)) {
+      // Not a valid URL, let other plugins handle
+      const url = URL.parse(args.path);
+      if (!url) return;
+			
+      // Not a tarball CDN, let HTTP/CDN plugins handle
+			if (!isTarballUrl(url)) return; 
+			
+			const { subpath, packageUrl } = parseTarballUrl(url);
+			const conditions = getResolverConditions(args, esbuildOpts);
+			
+			try {
+				console.log({
+					packageUrl
+				})
+				const mount = await getOrCreateMount(packageUrl.toString(), StateContext);
+				const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
+        const resolvedPath = join(mount.packageRoot, entryPath);
         
-      }
-    }
-
-    if (isBareImport(argPath)) {
-
-      // npm standard CDNs, e.g. unpkg, skypack, esm.sh, etc...
-      const NPM_CDN = getCDNStyle(origin) === "npm";
-      const TARBALL_CDN = getCDNStyle(origin) === "tarball";
-
-      // Heavily based off of https://github.com/egoist/play-esbuild/blob/main/src/lib/esbuild.ts
-      const parsed = parsePackageName(_argPath, { defaultVersion: null });
-      const parsedSubpath = parsed.path;
-
-      // If the version of package isn't determinable from the path argument,
-      // check the inherited manifest for a potential version
-      let assumedVersion = parsed.version || "latest";
-      if (!parsed.version) {
-        if (parsed.name in initialDeps)
-          assumedVersion = initialDeps[parsed.name];
-      }
-
-      let manifest = structuredClone(initialManifest);
-      let resultSubpath = parsedSubpath;
-
-      // If the CDN supports package.json and some other npm stuff, it counts as an npm CDN
-      if (NPM_CDN) {
-        try {
-          const ext = extname(parsedSubpath);
-          const isDirectory = ext.length === 0;
-          const subpath = isDirectory ? parsedSubpath : "";
-          let isSubpathDirectoryPackage = false;
-
-          // If the subpath is a directory check to see if that subpath has a `package.json`,
-          // after which check if the parent directory has a `package.json`
-          const manifestVariants = [
-            { path: getRegistryURL(`${parsed.name}@${assumedVersion}`).packageVersionURL },
-            // { path: `${parsed.name}@${assumedVersion}/package.json` },
-            isDirectory ? {
-              path: `${parsed.name}@${assumedVersion}${parsedSubpath}/package.json`,
-              isDir: true
-            } : null
-          ].filter(x => x !== null);
-
-          const manifestVariantsLen = manifestVariants.length;
-          for (let i = 0; i < manifestVariantsLen; i++) {
-            const { path, isDir } = manifestVariants[i]!;
-            const { url } = getCDNUrl(path, origin);
-
-            // If the url was fetched before and failed, skip it and try the next one
-            if (failedManifestUrls?.has?.(url.href) && i < manifestVariantsLen - 1)
-              continue;
-
-            try {
-              // Strongly cache package.json files
-              const res = await getRequest(url, true);
-              if (!res.ok) throw new Error(await res.text());
-
-              manifest = await res.json();
-              isSubpathDirectoryPackage = isDir ?? false;
-
-              // If the package.json is not a sub-directory package, then we should cache it as such
-              if (!isDir) {
-                packageManifestsMap.set(`${parsed.name}${manifest?.version || assumedVersion}`, manifest);
-              }
-              break;
-            } catch (e) {
-              failedManifestUrls?.add?.(url.href);
-
-              // If after checking all the different file extensions none of them are valid
-              // Throw the last fetch error encountered, as that is generally the most accurate error
-              if (i >= manifestVariantsLen - 1)
-                throw e;
-            }
-          }
-
-          const relativePath = parsedSubpath.replace(/^\//, "./");
-
-          let modernResolve: ReturnType<typeof resolve> | null = null;
-          let legacyResolve: ReturnType<typeof legacy> | null = null;
-          let resolvedPath: string | null = parsedSubpath;
-
-          try {
-            // Resolving imports & exports from the package.json
-            // If an import starts with "#" then it's a subpath-import, and should be treated as so
-            modernResolve = resolve(manifest, relativePath, {
-              browser: conditions.browser,
-              conditions: conditions.conditions,
-              require: conditions.require
-            }) ||
-              // Same compat fallback as above (optional, but matches your current “try multiple ways” intent).
-              (!conditions.require
-                ? resolve(manifest, relativePath, {
-                    browser: conditions.browser,
-                    conditions: ["require", ...conditions.conditions],
-                    require: true
-                  }) 
-                : undefined
-              );
-
-            if (modernResolve) {
-              resolvedPath = Array.isArray(modernResolve) ? modernResolve[0] : modernResolve;
-            }
-            // deno-lint-ignore no-empty
-          } catch (_) { }
-
-          if (!modernResolve) {
-            // If the subpath has a package.json, and the modern resolve didn't work for it
-            // we can safely use legacy resolve, 
-            // else, if the subpath doesn't have a package.json, then the subpath is literal, 
-            // and we should just use the subpath as it is
-            // if there is no relative path, let's check the legacy resolve to fix it
-            const emptyRelativePath = relativePath.trim().length === 0
-            if (isSubpathDirectoryPackage || emptyRelativePath) {
-              try {
-                // Resolving using main, module, etc... from package.json
-                legacyResolve = legacy(manifest, { browser: conditions.browser }) ||
-                  legacy(manifest, { fields: ["module", "main"] }) ||
-                  legacy(manifest, { fields: ["unpkg", "bin"] });
-
-                if (legacyResolve) {
-                  // Some packages have `browser` fields in their package.json which have some values set to false
-                  // e.g. typescript - > https://unpkg.com/browse/typescript@4.9.5/package.json
-                  if (typeof legacyResolve === "object") {
-                    const values = Object.values(legacyResolve);
-                    const validValues = values.filter(x => x);
-                    if (validValues.length <= 0) {
-                      legacyResolve = legacy(manifest);
-                    }
-                  }
-
-                  if (Array.isArray(legacyResolve)) {
-                    resolvedPath = legacyResolve[0];
-                  } else if (typeof legacyResolve === "object") {
-                    const allKeys = Object.keys(legacyResolve);
-                    const nonCJSKeys = allKeys.filter(key => {
-                      return !/\.cjs$/.exec(key) && !/src\//.exec(key) && (legacyResolve as record<string | false>)[key]!;
-                    });
-                    const keysToUse = nonCJSKeys.length > 0 ? nonCJSKeys : allKeys;
-                    resolvedPath = legacyResolve[keysToUse[0]] as string;
-                  } else {
-                    resolvedPath = legacyResolve;
-                  }
-                }
-                // deno-lint-ignore no-empty
-              } catch (_) { }
-            } else resolvedPath = relativePath;
-          }
-
-          if (resolvedPath && typeof resolvedPath === "string") {
-            resultSubpath = resolvedPath.replace(/^(\.\/)/, "/");
-          }
-
-          if (subpath && isSubpathDirectoryPackage) {
-            resultSubpath = `${subpath}${resultSubpath}`;
-          }
-        } catch (e) {
-          dispatchEvent(LOGGER_WARN, `You may want to change CDNs. The current CDN ${!/unpkg\.com/.test(origin) ? `"${origin}" doesn't` : `path "${origin}${_argPath}" may not`} support package.json files.\nThere is a chance the CDN you're using doesn't support looking through the package.json of packages. bundlejs will switch to inaccurate guesses for package versions. For package.json support you may wish to use https://unpkg.com or other CDN's that support package.json.`);
-          dispatchEvent(LOGGER_WARN, e);
-        }
-      }
-
-      // If the CDN is npm based then it should add the parsed version to the URL
-      // e.g. https://unpkg.com/spring-easing@v1.0.0/
-      const knownVersion = manifest?.version || assumedVersion;
-      const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
-      const { url } = getCDNUrl(`${parsed.name}${cdnVersionFormat}${resultSubpath}`, origin);
-
-      // Store the package.json manifest of the dependencies fetched in the cache
-      if (!packageManifestsMap.get(`${parsed.name}${knownVersion}`)) {
-        try {
-          const _manifest = await getPackageOfVersion(`${parsed.name}${knownVersion}`);
-          if (_manifest)
-            packageManifestsMap.set(`${parsed.name}${knownVersion}`, _manifest);
-        } catch (e) {
-          console.warn(e);
-        }
-      }
-
-      const peerDeps = Object.assign(
-        initialManifest?.peerDependencies ?? {},
-        manifest?.peerDependencies ?? {},
-        {
-          // Some packages rely on cyclic dependencies, e.g. https://x.com/jsbundle/status/1792325771354149261
-          // so we create a new field in peerDependencies and place the current package and it's version,
-          // the algorithm should then be able to use the correct version if a dependency is cyclic
-          [parsed.name]: NPM_CDN ? knownVersion : (initialDeps[parsed.name] ?? "latest")
-        }
-      );
-      const inheritPeerDependencies = structuredClone(peerDeps);
-
-      // Force inherit peerDependencies, makes it easier to keep versions stable 
-      // and to avoid duplicates
-      for (const [name, version] of Object.entries(peerDeps)) {
-        inheritPeerDependencies[name] = initialDeps[name] ?? version;
-      }
-
-      return {
-        namespace: HTTP_NAMESPACE,
-        path: (await determineExtension(url.toString())).url,
-        sideEffects: typeof manifest?.sideEffects === "boolean"
-          ? manifest.sideEffects
-          : undefined,
-        pluginData: Object.assign({}, args.pluginData, {
-          manifest: deepMerge(
-            structuredClone(manifest),
-            { peerDependencies: inheritPeerDependencies }
-          )
+        console.log({
+          argPath: args.path,
+          entryPath,
+          resolvedPath,
+          name: mount?.manifest?.name,
+          deps: mount?.manifest?.dependencies,
         })
-      };
-    }
-  };
-};
+				
+				return {
+					path: resolvedPath,
+					namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+          pluginData: Object.assign({}, args.pluginData, {
+						manifest: mount.manifest,
+						packageRoot: mount.packageRoot,
+						tarballUrl: packageUrl.toString(),
+					})
+        };
+			} catch (e) {
+				dispatchEvent(LOGGER_ERROR, e as Error);
+				throw e;
+			}
+		}
+		
+		// Handle self-reference imports from within a tarball package
+		// e.g., import { something } from "@tanstack/react-query" from within that package
+		const importer = args.pluginData?.importer ?? args.importer;
+		if (importer && typeof importer === "string") {
+			const mount = findMountForPath(importer, StateContext);
+			
+			if (mount && mount.manifest.name) {
+				const importPath = args.path.replace(/^node:/, "");
+				
+				// Check if this is a self-reference (import matches package name)
+				if (importPath === mount.manifest.name || importPath.startsWith(mount.manifest.name + "/")) {
+					const subpath = importPath === mount.manifest.name 
+						? "" 
+						: importPath.slice(mount.manifest.name.length);
+					
+					const conditions = getResolverConditions(args, esbuildOpts);
+					const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
+					const resolvedPath = join(mount.packageRoot, entryPath);
+					
+					return {
+						path: resolvedPath,
+						namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+						pluginData: Object.assign({}, args.pluginData, {
+							manifest: mount.manifest,
+							packageRoot: mount.packageRoot,
+							tarballUrl: mount.sourceUrl,
+						})
+					};
+				}
+			}
+		}
+		
+		// Not a tarball-related import, let other plugins handle
+		return;
+	};
+}
 
 /**
- * Esbuild CDN plugin 
+ * Esbuild Tarball plugin
  * 
- * @param cdn The default CDN to use
- * @param logger Console log
+ * Handles tarball-based package sources like pkg.pr.new by:
+ * 1. Intercepting tarball URLs before HTTP plugin
+ * 2. Extracting packages to VFS
+ * 3. Resolving entry points and self-references
+ * 
+ * @example
+ * ```ts
+ * // Plugin order (tarball before HTTP):
+ * plugins: [
+ *   AliasPlugin(StateContext),
+ *   ExternalPlugin(StateContext),
+ *   TarballPlugin(StateContext),  // <-- Must be before HTTP
+ *   VirtualFileSystemPlugin(StateContext),
+ *   HttpPlugin(StateContext),
+ *   CdnPlugin(StateContext),
+ * ]
+ * ```
  */
-export function TarballPlugin<T>(StateContext: Context<LocalState<T> & { origin: string }>): ESBUILD.Plugin {
-  return {
-    name: TARBALL_NAMESPACE,
-    setup(build) {
-      // Resolve bare imports to the CDN required using different URL schemes
-      build.onResolve({ filter: /.*/ }, TarResolution(StateContext));
-      build.onResolve({ filter: /.*/, namespace: TARBALL_NAMESPACE }, TarResolution(StateContext));
-    },
-  };
-};
+export function TarballPlugin<T>(StateContext: Context<LocalState<T> & TarballState>): ESBUILD.Plugin {
+	// Initialize tarball state if not present
+	if (!fromContext("tarballMounts", StateContext))
+		toContext("tarballMounts", new Map<string, TarballMount>(), StateContext);
+
+	if (!fromContext("tarballInflight", StateContext))
+		toContext("tarballInflight", new Map<string, Promise<TarballMount>>(), StateContext);
+	
+	return {
+		name: TARBALL_NAMESPACE,
+		setup(build) {
+			// Intercept tarball URLs before HTTP plugin
+			// Filter matches any https:// URL, resolution function checks if it's actually a tarball CDN
+			build.onResolve({ filter: /^https?:\/\// }, TarResolution(StateContext));
+			
+			// Also handle resolution within the tarball namespace (for chained resolution)
+			build.onResolve({ filter: /.*/, namespace: TARBALL_NAMESPACE }, TarResolution(StateContext));
+			
+			// Handle self-references from VFS namespace (imports from within extracted packages)
+			build.onResolve({ filter: /.*/, namespace: VIRTUAL_FILESYSTEM_NAMESPACE }, TarResolution(StateContext));
+		},
+	};
+}

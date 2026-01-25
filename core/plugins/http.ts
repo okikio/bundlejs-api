@@ -1,8 +1,34 @@
-/** Based on https://github.com/hardfist/neo-tools/blob/main/packages/bundler/src/plugins/http.ts */
+/** Inspired by https://github.com/hardfist/neo-tools/blob/main/packages/bundler/src/plugins/http.ts */
+/**
+ * HTTP Plugin for esbuild
+ *
+ * Handles HTTP/HTTPS URL resolution and content loading:
+ * - Resolves relative imports within downloaded files
+ * - Resolves bare imports via CdnResolution
+ * - Fetches file content with extension probing
+ * - Extracts assets (WASM, Workers) from fetched files
+ *
+ * @module
+ *
+ * @example Direct HTTP import
+ * ```ts
+ * import { something } from "https://esm.sh/lodash@4.17.21";
+ * // -> HTTP_NAMESPACE, loads content from URL
+ * ```
+ *
+ * @example Relative import from HTTP source
+ * ```ts
+ * // Inside https://esm.sh/lodash@4.17.21/index.js
+ * import { debounce } from "./debounce.js";
+ * // -> Resolved to https://esm.sh/lodash@4.17.21/debounce.js
+ * ```
+ */
 import type { ESBUILD, LocalState } from "../types.ts";
 import type { Context } from "../context/context.ts";
+import type { CdnResolutionState } from "./cdn.ts";
 
 import { fromContext, toContext } from "../context/context.ts";
+import { CdnResolution } from "./cdn.ts";
 
 import { getRequest } from "@bundle/utils/fetch-and-cache";
 import { decode } from "@bundle/utils/encode-decode";
@@ -16,16 +42,20 @@ import { setFile } from "../utils/filesystem.ts";
 import { isBareImport, isAbsolute } from "@bundle/utils/path";
 import { toURLPath, urlJoin } from "@bundle/utils/url";
 
-import { CdnResolution } from "./cdn.ts";
-
 /** HTTP Plugin Namespace */
 export const HTTP_NAMESPACE = "http-url";
 
+export interface HttpResolutionState<T> extends LocalState<T> {
+  build: ESBUILD.PluginBuild
+}
+
 /**
- * Fetches packages
- * 
- * @param url package url to fetch
- * @param logger Console log
+ * Fetches packages from HTTP/HTTPS URLs
+ *
+ * @param url Package URL to fetch
+ * @param fetchOpts Optional fetch configuration (e.g., { method: "HEAD" })
+ * @returns Object with url, contentType, and content as Uint8Array
+ * @throws Error if fetch fails or returns HTML
  */
 export async function fetchPkg(url: string, fetchOpts?: RequestInit) {
   try {
@@ -54,19 +84,19 @@ export async function fetchPkg(url: string, fetchOpts?: RequestInit) {
 }
 
 /**
- * Fetches assets from a js file, e.g. assets like WASM, Workers, etc... 
- * External assets are referenced using this syntax, e.g. new URL("...", import.meta.url)
- * Any external assets found inside said original js file, are fetched and stored
- * 
- * @param path Path for original js files 
- * @param content Content of original js files
- * @param namespace esbuild plugin namespace
- * @param logger Console log
+ * Fetches assets referenced in JS files via `new URL("...", import.meta.url)`
+ *
+ * External assets like WASM files and Workers are discovered and fetched.
+ * These are stored in the virtual file system for later bundling.
+ *
+ * @param path URL path for the original JS file
+ * @param content Content of the original JS file
+ * @param StateContext Context with filesystem access
+ * @returns Promise of settled results for each discovered asset
  */
 export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuffer>, StateContext: Context<LocalState<T>>) {
-  // Regex for `new URL("./path.js", import.meta.url)`, 
-  // I added support for comments so you can add comments and the regex
-  // will ignore the comments
+  // Regex for `new URL("./path.js", import.meta.url)`,
+  // Supports comments so you can add comments and the regex will ignore them
   const rgx = /new(?:\s|\n?)+URL\((?:\s*(?:\/\*(?:.*\n)*\*\/)?(?:\/\/.*\n)?)*(?:(?!\`.*\$\{)['"`](.*)['"`]),(?:\s*(?:\/\*(?:.*\n)*\*\/)?(?:\/\/.*\n)?)*import\.meta\.url(?:\s*(?:\/\*(?:.*\n)*\*\/)?(?:\/\/.*\n)?)*\)/g;
   const parentURL = new URL("./", path).toString();
 
@@ -92,7 +122,8 @@ export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuff
       .join("");
 
     return {
-      path: assetURL, contents: asset,
+      path: assetURL,
+      contents: asset,
       get text() { return decode(asset); },
       hash: hashHex
     };
@@ -101,55 +132,72 @@ export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuff
   return await Promise.allSettled(promises);
 }
 
-// Imports have various extentions, fetch each extention to confirm what the user meant
-const fileEndings = ["", "/index"];
-const exts = ["", ".js", ".mjs", "/index.js", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts"];
+// Extension probing for files without explicit extensions
+export const FilePaths = ["", "/index"];
+export const FileEndings = ["", ".js", ".mjs", "/index.js", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts"];
 
 // It's possible to have `./lib/index.d.ts` or `./lib/index.mjs`, and have a user enter use `./lib` as the import
 // It's very annoying but you have to check all variants
-const allEndingVariants = Array.from(new Set(fileEndings.map(ending => {
-  return exts.map(extension => ending + extension)
-}).flat()));
+export const AllEndingVariants = Array.from(
+  new Set(
+    FilePaths
+      .map(ending => {
+        return FileEndings.map(extension => ending + extension)
+      })
+      .flat()
+  )
+);
 
-const endingVariantsLength = allEndingVariants.length;
+export const EndingVariantsLength = AllEndingVariants.length;
 
 /**
- * Test the waters, what extension are we talking about here
- * @param path 
- * @returns 
+ * Probes for the correct file extension when not explicitly provided
+ *
+ * TypeScript files often don't have file extensions in imports, but servers
+ * require the full path. This function tries multiple extensions until one works.
+ *
+ * @param path Base path to probe
+ * @param headersOnly If true, only fetch headers (HEAD request)
+ * @param StateContext Optional context for caching failed probes
+ * @returns Object with resolved url, contentType, and optionally content
  */
-export async function determineExtension<T>(path: string, headersOnly: boolean = true, StateContext: Context<LocalState<T>> | null = null) {
+export async function determineExtension<T>(
+  path: string,
+  headersOnly: boolean = true,
+  StateContext: Context<LocalState<T>> | null = null
+) {
   // Some typescript files don't have file extensions but you can't fetch a file without their file extension
   // so bundlejs tries to solve for that
   const argPath = (suffix = "") => path + suffix;
-  const failedExtChecks = (
-    StateContext ? fromContext("failedExtensionChecks", StateContext) : null
-  ) ?? new Set<string>();
+  const failedExtChecks = StateContext
+    ? fromContext("failedExtensionChecks", StateContext)
+    : null;
+  const failedSet = failedExtChecks ?? new Set<string>();
 
   let url = path;
   let content: Uint8Array | undefined;
   let contentType: string | null = null;
 
   let err: Error | undefined;
-  for (let i = 0; i < endingVariantsLength; i++) {
-    const endings = allEndingVariants[i];
+  for (let i = 0; i < EndingVariantsLength; i++) {
+    const endings = AllEndingVariants[i];
     const testingUrl = argPath(endings);
 
     try {
-      if (failedExtChecks?.has?.(testingUrl)) continue;
+      if (failedSet?.has?.(testingUrl)) continue;
 
-      ({ url, contentType, content } = await fetchPkg(testingUrl, headersOnly ? { method: "HEAD" } : undefined));
+      ({ url, contentType, content } = await fetchPkg(
+        testingUrl,
+        headersOnly ? { method: "HEAD" } : undefined
+      ));
       break;
     } catch (e) {
-      failedExtChecks?.add?.(testingUrl);
-
-      if (i === 0) {
-        err = e as Error;
-      }
+      failedSet?.add?.(testingUrl);
+      if (i === 0) err = e as Error;
 
       // If after checking all the different file extensions none of them are valid
       // Throw the first fetch error encountered, as that is generally the most accurate error
-      if (i >= endingVariantsLength - 1) {
+      if (i >= EndingVariantsLength - 1) {
         dispatchEvent(LOGGER_ERROR, err ?? e as Error);
         throw err ?? e;
       }
@@ -161,12 +209,18 @@ export async function determineExtension<T>(path: string, headersOnly: boolean =
 
 /**
  * Resolution algorithm for the esbuild HTTP plugin
- * 
- * @param host The default host origin to use if an import doesn't already have one
- * @param logger Console log
+ *
+ * Handles three cases:
+ * 1. HTTP/HTTPS URLs - direct load via HTTP_NAMESPACE
+ * 2. Bare imports - delegate to CdnResolution
+ * 3. Relative/absolute imports - resolve against parent URL
+ *
+ * @param StateContext Context with host and config
+ * @param build Optional esbuild PluginBuild for URL routing (passed to CdnResolution)
  */
-export function HttpResolution<T>(StateContext: Context<LocalState<T>>) {
+export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>) {
   const host = fromContext("host", StateContext)!;
+  const build = fromContext("build", StateContext)!;
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     // Some packages use "../../" with the assumption that "/" is equal to "/index.js", this is supposed to fix that bug
@@ -182,7 +236,7 @@ export function HttpResolution<T>(StateContext: Context<LocalState<T>>) {
           sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
             args.pluginData?.manifest?.sideEffects :
             undefined,
-          pluginData: { manifest: args.pluginData?.manifest },
+          pluginData: args.pluginData,
         };
       }
 
@@ -197,7 +251,7 @@ export function HttpResolution<T>(StateContext: Context<LocalState<T>>) {
 
       // If the import is a bare import, use the CDN plugins resolution algorithm
       if (isBareImport(argPath)) {
-        const ctx = StateContext.with({ origin }) as Context<LocalState<T> & { origin: string }>;
+        const ctx = StateContext.with({ build }) as Context<CdnResolutionState<T>>;
         return await CdnResolution(ctx)(args);
       } else {
         /** 
@@ -220,7 +274,7 @@ export function HttpResolution<T>(StateContext: Context<LocalState<T>>) {
           sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
             args.pluginData?.manifest?.sideEffects :
             undefined,
-          pluginData: { manifest: args.pluginData?.manifest },
+          pluginData: args.pluginData,
         };
       }
     }
@@ -239,7 +293,7 @@ export function HttpResolution<T>(StateContext: Context<LocalState<T>>) {
       sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
         args.pluginData?.manifest?.sideEffects :
         undefined,
-      pluginData: { manifest: args.pluginData?.manifest },
+      pluginData: args.pluginData,
     };
   };
 }
@@ -266,6 +320,8 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
   return {
     name: HTTP_NAMESPACE,
     setup(build) {
+      const ctx = StateContext.with({ build }) as Context<HttpResolutionState<T>>;
+
       // Intercept import paths starting with "http:" and "https:" so
       // esbuild doesn't attempt to map them to a file system location.
       // Tag them with the "http-url" namespace to associate them with
@@ -274,6 +330,10 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
         return {
           path: args.path,
           namespace: HTTP_NAMESPACE,
+          sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
+            args.pluginData?.manifest?.sideEffects :
+            undefined,
+          pluginData: args.pluginData,
         };
       });
 
@@ -282,7 +342,7 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
       // files will be in the "http-url" namespace. Make sure to keep
       // the newly resolved URL in the "http-url" namespace so imports
       // inside it will also be resolved as URLs recursively.
-      build.onResolve({ filter: /.*/, namespace: HTTP_NAMESPACE }, HttpResolution(StateContext));
+      build.onResolve({ filter: /.*/, namespace: HTTP_NAMESPACE }, HttpResolution(ctx));
 
       // When a URL is loaded, we want to actually download the content
       // from the internet. This has just enough logic to be able to
