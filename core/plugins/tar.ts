@@ -41,6 +41,8 @@ import {
 	type ArchiveDiagnostic
 } from "@bundle/utils/archive-detect";
 
+import { parsePackageName } from "@bundle/utils/parse-package-name";
+
 /** Tarball Plugin Namespace */
 export const TARBALL_NAMESPACE = "tarball-url";
 
@@ -99,50 +101,217 @@ async function getTarballKey(url: string): Promise<string> {
   return hashArray.join("").slice(0, 16);
 }
 
+export interface ParseTarballUrlResult {
+  /**
+   * The raw package spec as it appears in the URL path.
+   *
+   * Examples:
+   * - "@tanstack/react-query@7988"
+   * - "tinybench@a832a55"
+   */
+  pkgSpec: string;
+
+  /**
+   * The parsed npm package name (scope included if present).
+   *
+   * Examples:
+   * - "@tanstack/react-query"
+   * - "tinybench"
+   */
+  name: string;
+
+  /**
+   * The version selector from the spec.
+   *
+   * For pkg.pr.new this is commonly a commit SHA or PR number,
+   * but you should treat it as an opaque string.
+   */
+  version: string | null;
+
+  /**
+   * Any remaining URL path after the package spec.
+   *
+   * Examples:
+   * - ""
+   * - "/build/modern"
+   */
+  subpath: string;
+
+  /**
+   * The “package root” URL (same origin, no subpath, no query/hash).
+   */
+  packageUrl: URL;
+
+  /**
+   * Present when the URL is the non-compact form: /owner/repo/...
+   */
+  owner: string | null;
+
+  /**
+   * Present when the URL is the non-compact form: /owner/repo/...
+   */
+  repo: string | null;
+}
+
+export interface ParseTarballUrlOptions {
+  /**
+   * If true, return empty-ish outputs instead of throwing on invalid inputs.
+   */
+  ignoreError?: boolean;
+
+  /**
+   * Used when the spec does not include "@version".
+   * (You may want to set this to null if pkg.pr.new always requires it.)
+   */
+  defaultVersion?: string | null;
+}
+
 /**
- * Parse pkg.pr.new URL to extract package spec and subpath
- * 
+ * Parse a pkg.pr.new URL and extract the package spec + subpath.
+ *
+ * Supports both URL shapes:
+ * - Compact:     /<pkgSpec>/<subpath...>
+ * - Non-compact: /<owner>/<repo>/<pkgSpec>/<subpath...>
+ *
  * @example
+ * ```ts
+ * const r = parseTarballUrl(new URL("https://pkg.pr.new/@tanstack/react-query@7988/build/modern"));
+ * // r.pkgSpec  -> "@tanstack/react-query@7988"
+ * // r.name     -> "@tanstack/react-query"
+ * // r.version  -> "7988"
+ * // r.subpath  -> "/build/modern"
+ * // r.packageUrl.href -> "https://pkg.pr.new/@tanstack/react-query@7988"
  * ```
- * https://pkg.pr.new/@tanstack/react-query@7988
- * -> { pkgSpec: "@tanstack/react-query@7988", subpath: "" }
- * 
- * https://pkg.pr.new/@tanstack/react-query@7988/build/modern
- * -> { pkgSpec: "@tanstack/react-query@7988", subpath: "/build/modern" }
+ *
+ * @example
+ * ```ts
+ * const r = parseTarballUrl(new URL("https://pkg.pr.new/tinylibs/tinybench/tinybench@a832a55"));
+ * // r.owner    -> "tinylibs"
+ * // r.repo     -> "tinybench"
+ * // r.pkgSpec  -> "tinybench@a832a55"
+ * // r.packageUrl.href -> "https://pkg.pr.new/tinylibs/tinybench/tinybench@a832a55"
  * ```
  */
-export function parseTarballUrl(url: URL): { pkgSpec: string; subpath: string; packageUrl: URL } {
-	const parts = url.pathname.split("/").filter(Boolean);
-	
-	let pkgSpec = "";
-	let rest: string[] = [];
-	
-	if (parts.length === 0) {
-		return { pkgSpec: "", subpath: "", packageUrl: url };
-	}
-	
-	// Handle scoped packages (@scope/name@version)
-	if (parts[0].startsWith("@")) {
-		pkgSpec = parts.slice(0, 2).join("/");
-		rest = parts.slice(2);
-	} else {
-		pkgSpec = parts[0];
-		rest = parts.slice(1);
-	}
-	
-	// Build the package root URL (without subpath)
-	const packageUrl = new URL(url.toString());
-	if (pkgSpec) {
-		const scopedParts = pkgSpec.split("/");
-		packageUrl.pathname = `/${scopedParts.join("/")}`;
-	}
-	
-	return {
-		pkgSpec,
-		subpath: rest.length > 0 ? `/${rest.join("/")}` : "",
-		packageUrl
-	};
+export function parseTarballUrl(
+  url: URL,
+  options: ParseTarballUrlOptions = {},
+): ParseTarballUrlResult {
+  const ignoreError = options.ignoreError ?? false;
+  const defaultVersion = options.defaultVersion ?? "latest";
+
+  const parts = url.pathname.split("/").filter(Boolean);
+
+  if (parts.length === 0) {
+    return {
+      pkgSpec: "",
+      name: "",
+      version: defaultVersion,
+      subpath: "",
+      packageUrl: new URL(url.toString()),
+      owner: null,
+      repo: null,
+    };
+  }
+
+  // Guard against known non-package routes (fail fast rather than mis-parse).
+  // (Extend this list if you discover more.)
+  if (parts[0] === "template" || parts[0] === "badge" || parts[0] === "~") {
+    if (!ignoreError) {
+      throw new Error(`[parseTarballUrl] not a package URL: ${url.toString()}`);
+    }
+
+    return {
+      pkgSpec: "",
+      name: "",
+      version: defaultVersion,
+      subpath: "",
+      packageUrl: new URL(url.toString()),
+      owner: null,
+      repo: null,
+    };
+  }
+
+  // Detect non-compact form: /owner/repo/<pkgSpec>/...
+  // The README shows: /${owner}/${repo}/${package}@{commit} :contentReference[oaicite:3]{index=3}
+  let owner: string | null = null;
+  let repo: string | null = null;
+  let startIndex = 0;
+
+  if (parts.length >= 3) {
+    const third = parts[2];
+
+    // Heuristic: the third segment is where the package spec begins.
+    // It is either:
+    // - "@scope" (scoped package begins)
+    // - "name@version" (unscoped with version selector)
+    //
+    // This matches the documented non-compact examples. :contentReference[oaicite:4]{index=4}
+    if (third.startsWith("@") || third.includes("@")) {
+      owner = parts[0] ?? null;
+      repo = parts[1] ?? null;
+      startIndex = 2;
+    }
+  }
+
+  // Determine how many segments represent the package spec.
+  // Scoped: ["@scope", "name@ver"]  (2 segments)
+  // Non-scoped: ["name@ver"]       (1 segment)
+  const isScoped = (parts[startIndex] ?? "").startsWith("@");
+  const pkgSegCount = isScoped ? 2 : 1;
+
+  if (parts.length < startIndex + pkgSegCount) {
+    if (!ignoreError) {
+      throw new Error(`[parseTarballUrl] invalid pkg.pr.new package path: ${url.toString()}`);
+    }
+
+    return {
+      pkgSpec: "",
+      name: "",
+      version: defaultVersion,
+      subpath: "",
+      packageUrl: new URL(url.toString()),
+      owner,
+      repo,
+    };
+  }
+
+  const pkgSpecParts = parts.slice(startIndex, startIndex + pkgSegCount);
+  const rest = parts.slice(startIndex + pkgSegCount);
+
+  const pkgSpec = pkgSpecParts.join("/");
+
+  // Use your existing parser to canonicalize name/version.
+  const parsed = parsePackageName(pkgSpec, { ignoreError, defaultVersion });
+
+  // If someone embeds a path in pkgSpec (rare), respect it.
+  const subpathFromSpec = parsed.path || "";
+  const subpathFromUrl = rest.length > 0 ? `/${rest.join("/")}` : "";
+  const subpath = `${subpathFromSpec}${subpathFromUrl}`;
+
+  // Build the package root URL (no subpath, no query/hash).
+  const packageUrl = new URL(url.toString());
+  packageUrl.search = "";
+  packageUrl.hash = "";
+  const rootParts: string[] = [];
+
+  if (owner && repo) {
+    rootParts.push(owner, repo);
+  }
+
+  rootParts.push(...pkgSpecParts);
+  packageUrl.pathname = `/${rootParts.join("/")}`;
+
+  return {
+    pkgSpec,
+    name: parsed.name,
+    version: parsed.version,
+    subpath,
+    packageUrl,
+    owner,
+    repo,
+  };
 }
+
 
 /**
  * Strip the "package/" prefix that npm tarballs typically have
@@ -490,7 +659,7 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
     if (/^https?:\/\//.test(args.path)) {
       // Not a valid URL, let other plugins handle
       const url = URL.parse(args.path);
-      if (!url) return;
+			if (!url) return;
 			
       // Not a tarball CDN, let HTTP/CDN plugins handle
 			if (!isTarballUrl(url)) return; 
@@ -499,9 +668,6 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 			const conditions = getResolverConditions(args, esbuildOpts);
 			
 			try {
-				console.log({
-					packageUrl
-				})
 				const mount = await getOrCreateMount(packageUrl.toString(), StateContext);
 				const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
         const resolvedPath = join(mount.packageRoot, entryPath);
@@ -599,8 +765,7 @@ export function TarballPlugin<T>(StateContext: Context<LocalState<T> & TarballSt
 		name: TARBALL_NAMESPACE,
 		setup(build) {
 			// Intercept tarball URLs before HTTP plugin
-			// Filter matches any https:// URL, resolution function checks if it's actually a tarball CDN
-			build.onResolve({ filter: /^https?:\/\// }, TarResolution(StateContext));
+			build.onResolve({ filter: /.*/ }, TarResolution(StateContext));
 			
 			// Also handle resolution within the tarball namespace (for chained resolution)
 			build.onResolve({ filter: /.*/, namespace: TARBALL_NAMESPACE }, TarResolution(StateContext));

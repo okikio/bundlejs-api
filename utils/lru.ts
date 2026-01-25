@@ -202,3 +202,5 @@ export class LRU<T> {
 }
 
 export default LRU;
+
+export * from "@std/cache"

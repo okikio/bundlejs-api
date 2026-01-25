@@ -233,9 +233,9 @@ export default {
             formatQuery ? { format } : {},
           ),
           init: {
-            platform: "builtin",
+            platform: "deno-wasm",
             worker: false,
-            wasmModule
+            wasmModule: undefined
           },
         } as Config
       ), {
@@ -296,9 +296,9 @@ export default {
         textQuery
       })
 
-      const { init, ..._configObj } = earlyConfigObj;
-      const { wasmModule: _wasmModule, ..._init } = init || {};
-      const jsonKeyObj = Object.assign({ init: _init }, _configObj, {
+      const { init = {}, ..._configObj } = earlyConfigObj;
+      const jsonKeyObj = Object.assign({}, _configObj, {
+        init,
         versions,
         modules,
         initialValue: initialValue.trim(),
@@ -307,12 +307,6 @@ export default {
       console.log({
         jsonKey
       })
-
-      const inputFileHash = await hashString(jsonKey)
-      const configObj = Object.assign({}, jsonKeyObj, {
-        entryPoints: [`/index.${inputFileHash}${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
-      })
-
 
       const badgeResult = url.searchParams.get("badge");
       const badgeStyle = url.searchParams.get("badge-style");
@@ -424,6 +418,14 @@ export default {
       if (!wasmModule) {
         wasmModule = new WebAssembly.Module(WASM_MODULE as BufferSource);
       }
+
+      const inputFileHash = await hashString(jsonKey)
+      const configObj = Object.assign({}, jsonKeyObj, {
+        entryPoints: [`/index.${inputFileHash}${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
+        init: {
+          wasmModule
+        }
+      })
 
       const [response, resultText] = await bundle(url, initialValue, configObj, versions, modules, query);
 

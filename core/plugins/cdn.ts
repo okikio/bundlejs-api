@@ -339,7 +339,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
             try {
               // Strongly cache package.json files
-              const res = await getRequest(url, true);
+              const res = await getRequest(url, { permanent: true });
               if (!res.ok) throw new Error(await res.text());
 
               resolvedManifest = await res.json();

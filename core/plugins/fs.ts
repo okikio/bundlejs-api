@@ -103,8 +103,6 @@ export function VfsResolution<T>(StateContext: Context<VfsResolutionState<T>>) {
 	const prefixes = fromContext("prefixes", StateContext) ?? [];
 	
 	return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
-		
-
 		// 1) Never let VFS touch URLs. These belong to the HTTP/CDN pipeline.
 		if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(args.path)) return;
 

@@ -70,7 +70,7 @@ export async function getPackages(input: string): Promise<PackageSearchResult> {
   let result: SearchInfo;
 
   try {
-    const response = await getRequest(searchURL, false);
+    const response = await getRequest(searchURL);
     result = await response.json();
   } catch (e) {
     console.warn(e);
@@ -113,7 +113,7 @@ export async function getPackage(input: string): Promise<FullPackage> {
   const { packageURL } = getRegistryURL(input);
 
   try {
-    const response = await getRequest(packageURL, false);
+    const response = await getRequest(packageURL);
     return await response.json() as FullPackage;
   } catch (e) {
     console.warn(e);
@@ -221,7 +221,7 @@ export async function getPackageOfVersion(input: string): Promise<FullPackageVer
   const { packageVersionURL } = getRegistryURL(input);
 
   try {
-    const response = await getRequest(packageVersionURL, false);
+    const response = await getRequest(packageVersionURL);
     return await response.json() as FullPackageVersion;
   } catch (e) {
     console.warn(e);

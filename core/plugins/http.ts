@@ -59,7 +59,7 @@ export interface HttpResolutionState<T> extends LocalState<T> {
  */
 export async function fetchPkg(url: string, fetchOpts?: RequestInit) {
   try {
-    const response = await getRequest(url, undefined, fetchOpts);
+    const response = await getRequest(url, { fetchOpts, retry: 1 });
     if (!response.ok)
       throw new Error(`Couldn't load ${response.url || url} (${response.status} code)`);
 

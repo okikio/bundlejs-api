@@ -8,7 +8,7 @@ import { PLATFORM_AUTO } from "../configs/platform.ts";
 // export const { version: defaultVersion } = pkg;
 export const defaultVersion = "0.27.2";
 
-import * as ESBUILD_IMPORT from "esbuild"
+import * as ESBUILD_IMPORT from "esbuild-wasm"
 
 /**
  * Determines which esbuild skew to use depending on the platform option supplied, 
@@ -24,31 +24,32 @@ import * as ESBUILD_IMPORT from "esbuild"
  */
 export async function getEsbuild(platform: Platform = PLATFORM_AUTO, version?: string | null): Promise<typeof ESBUILD | typeof ESBUILD_WASM> {
   version ??= defaultVersion;
+  return ESBUILD_IMPORT;
 
-  try {
-    switch (platform) {
-      case "builtin":
-        return ESBUILD_IMPORT;
-    case "deno":
-      return await import(
-        /* @vite-ignore */
-        `https://deno.land/x/esbuild@v${version}/mod.js`
-      );
-      case "deno-wasm":
-        return await import(
-          /* @vite-ignore */
-          `https://deno.land/x/esbuild@v${version}/wasm.js`
-        );
-      case "node":
-        return await import("esbuild");
-      case "browser":
-      case "edge":
-      default:
-        return await import("esbuild-wasm");
-    }
-  } catch (e) {
-    throw e;
-  }
+  // try {
+  //   switch (platform) {
+  //     case "builtin":
+  //       return ESBUILD_IMPORT;
+  //   case "deno":
+  //     return await import(
+  //       /* @vite-ignore */
+  //       `https://deno.land/x/esbuild@v${version}/mod.js`
+  //     );
+  //     case "deno-wasm":
+  //       return await import(
+  //         /* @vite-ignore */
+  //         `https://deno.land/x/esbuild@v${version}/wasm.js`
+  //       );
+  //     case "node":
+  //       return await import("esbuild");
+  //     case "browser":
+  //     case "edge":
+  //     default:
+  //       return await import("esbuild-wasm");
+  //   }
+  // } catch (e) {
+  //   throw e;
+  // }
 }
 
 export async function getEsbuildVersion(_version = defaultVersion) {
