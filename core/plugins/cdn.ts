@@ -1,3 +1,56 @@
+/**
+ * CDN Plugin for esbuild
+ *
+ * Resolves bare imports to CDN URLs using various resolution strategies:
+ * - Modern exports/imports resolution from package.json
+ * - Legacy main/module/browser field resolution
+ * - npm alias unwrapping (npm:package@version)
+ * - URL-based version routing (https://pkg.pr.new/...)
+ *
+ * @module
+ *
+ * @example Standard bare import
+ * ```ts
+ * // In user code:
+ * import { useState } from "react";
+ *
+ * // Resolved to:
+ * // https://unpkg.com/react@18.2.0/index.js
+ * ```
+ *
+ * @example npm alias in package.json
+ * ```json
+ * {
+ *   "dependencies": {
+ *     "rq": "npm:@tanstack/react-query@^5"
+ *   }
+ * }
+ * ```
+ * ```ts
+ * // In user code:
+ * import { useQuery } from "rq";
+ *
+ * // Plugin unwraps alias, resolves to:
+ * // https://unpkg.com/@tanstack/react-query@5.0.0/build/modern/index.js
+ * ```
+ *
+ * @example URL version in package.json (PR preview builds)
+ * ```json
+ * {
+ *   "dependencies": {
+ *     "@tanstack/react-query": "https://pkg.pr.new/@tanstack/react-query@7988"
+ *   }
+ * }
+ * ```
+ * ```ts
+ * // In user code:
+ * import { useQuery } from "@tanstack/react-query";
+ *
+ * // Plugin routes to TarballPlugin via build.resolve()
+ * // TarballPlugin extracts tarball to VFS
+ * // Returns: vfs:/pkg.pr.new/@tanstack/react-query@7988/build/modern/index.js
+ * ```
+ */
 import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { LocalState, ESBUILD } from "@bundle/core/types";
 import type { Context, record } from "../context/context.ts";
@@ -6,7 +59,17 @@ import { fromContext } from "../context/context.ts";
 
 import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 import { parsePackageName } from "@bundle/utils/parse-package-name";
-import { getPackageOfVersion, getRegistryURL } from "@bundle/utils/npm-search";
+import { getPackageOfVersion, getRegistryURL, resolveVersion } from "@bundle/utils/npm-search";
+
+import {
+  parseNpmDependencySpec,
+  isUrlSpec,
+  isAliasSpec,
+  isUnsupportedSpec,
+  joinSubpath,
+  appendUrlSubpath,
+  getUnsupportedSpecError,
+} from "@bundle/utils/npm-deps-spec";
 
 import { extname, isBareImport, join } from "@bundle/utils/path";
 import { getRequest } from "@bundle/utils/fetch-and-cache";
@@ -21,24 +84,45 @@ import { getResolverConditions } from "../utils/resolve-conditions.ts";
 /** CDN Plugin Namespace */
 export const CDN_NAMESPACE = "cdn-url";
 
+export interface CdnResolutionState<T> extends LocalState<T> {
+  origin: string;
+  build: ESBUILD.PluginBuild
+}
+
 /**
- * Resolution algorithm for the esbuild CDN plugin 
- * 
- * @param cdn The default CDN to use
- * @param logger Console log
+ * Resolution algorithm for the esbuild CDN plugin
+ *
+ * Handles the full resolution flow:
+ * 1. Check for subpath imports (#internal/...)
+ * 2. Parse bare imports and look up version from manifest
+ * 3. Parse dependency spec to classify version format
+ * 4. Route based on spec type:
+ *    - URL specs → build.resolve() (TarballPlugin handles)
+ *    - Alias specs → unwrap and continue resolution
+ *    - Unsupported specs → return error
+ *    - Semver/tag specs → normal CDN resolution
+ *
+ * @param StateContext Context containing origin, config, caches
+ * @param build esbuild PluginBuild for calling build.resolve() on URL specs
  */
-export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin: string }>) {
+export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const LocalConfig = fromContext("config", StateContext)!;
   const manifest: Partial<PackageJson | FullPackageVersion> = LocalConfig["package.json"] ?? {};
   const esbuildOpts = LocalConfig.esbuild ?? {};
 
   const cdn = fromContext("origin", StateContext)! ?? DEFAULT_CDN_HOST;
+  const build = fromContext("build", StateContext)!;
+
   const failedManifestUrls = fromContext("failedManifestUrls", StateContext) ?? new Set<string>();
   const packageManifestsMap = fromContext("packageManifests", StateContext) ?? new Map<string, PackageJson | FullPackageVersion>();
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     const conditions = getResolverConditions(args, esbuildOpts);
     let argPath = args.path;
+
+    // ========================================================================
+    // Build initial manifest from config + inherited pluginData
+    // ========================================================================
 
     // Conceptually package.json = manifest, but for naming reasons we'll just call it manifest
     const { sideEffects: _sideEffects, ..._inheritedManifest } = args.pluginData?.manifest ?? {};
@@ -65,8 +149,11 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
       initialManifest.dependencies,
     );
 
-    // Resolving subpath imports from the package.json, subpath imports are import that starts with "#" 
+    // ========================================================================
+    // Handle subpath imports (#internal/...)
     // https://nodejs.org/api/packages.html#subpath-imports
+    // ========================================================================
+
     if (/^#/.test(argPath)) {
       try {
         // Resolving imports & exports from the package.json
@@ -94,13 +181,16 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
       } catch (_) { }
     }
 
+    // ========================================================================
+    // Handle bare imports (react, @scope/pkg, lodash/get)
+    // ========================================================================
+
     if (isBareImport(argPath)) {
       // Support a different default CDN + allow for custom CDN url schemes
       const { path: _argPath, origin } = getCDNUrl(argPath, cdn);
 
       // npm standard CDNs, e.g. unpkg, skypack, esm.sh, etc...
       const NPM_CDN = getCDNStyle(origin) === "npm";
-      const TARBALL_CDN = getCDNStyle(origin) === "tarball";
 
       // Heavily based off of https://github.com/egoist/play-esbuild/blob/main/src/lib/esbuild.ts
       const parsed = parsePackageName(_argPath, { defaultVersion: null });
@@ -114,11 +204,113 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
           assumedVersion = initialDeps[parsed.name];
       }
 
-      let manifest = structuredClone(initialManifest);
+      // ======================================================================
+      // Parse dependency spec to handle URLs, aliases, git, etc.
+      // ======================================================================
+
+      const spec = assumedVersion ? parseNpmDependencySpec(assumedVersion) : null;
+
+      // Apply npm alias rewrite: "npm:react@^18" -> name=react, version=^18
+      let effectiveName = parsed.name;
+      let effectiveAssumedVersion = assumedVersion;
+      let effectiveExtraSubpath = "";
+
+      if (spec && isAliasSpec(spec)) {
+        effectiveName = spec.target.name;
+        effectiveAssumedVersion = spec.target.version;
+        effectiveExtraSubpath = spec.target.path;
+      }
+
+      // ======================================================================
+      // URL-based dependencies - route through build.resolve()
+      // This allows TarballPlugin or HttpPlugin to handle them
+      // ======================================================================
+
+      if (spec && isUrlSpec(spec) && build) {
+        const fullSubpath = joinSubpath(effectiveExtraSubpath, parsedSubpath);
+        const targetUrl = appendUrlSubpath(spec.url, fullSubpath);
+
+        // Let esbuild's plugin chain handle the URL
+        // TarballPlugin will intercept tarball URLs, HttpPlugin handles others
+        const resolved = await build.resolve(targetUrl, {
+          importer: args.importer,
+          kind: args.kind,
+          resolveDir: args.resolveDir,
+          pluginData: args.pluginData,
+        });
+
+        if (resolved.errors?.length) return { errors: resolved.errors };
+        if (!resolved.path) {
+          return {
+            errors: [{
+              text: `Failed to resolve URL dependency: ${targetUrl}`,
+            }],
+          };
+        }
+
+        // Preserve pluginData and inject peerDependencies stabilization
+        const resolvedPluginData = Object.assign({}, resolved.pluginData);
+        const resolvedManifest: PackageJson | null = resolvedPluginData.manifest ?? null;
+
+        // Merge peerDependencies for version stabilization
+        if (resolvedManifest && typeof resolvedManifest === "object") {
+          const peerDeps = Object.assign({},
+            initialManifest?.peerDependencies,
+            resolvedManifest?.peerDependencies,
+            { [effectiveName]: effectiveAssumedVersion}
+          );
+
+          const inheritPeerDependencies = structuredClone(peerDeps);
+          for (const [name, version] of Object.entries(peerDeps)) {
+            inheritPeerDependencies[name] = initialDeps[name] ?? version;
+          }
+
+          Object.assign(resolvedPluginData, {
+            manifest: deepMerge(
+              structuredClone(resolvedManifest),
+              { peerDependencies: inheritPeerDependencies }
+            )
+          })
+        }
+
+        return Object.assign({}, resolved, {
+          pluginData: resolvedPluginData,
+        });
+      }
+
+      // ======================================================================
+      // Explicit unsupported spec types (git/file/workspace/link)
+      // ======================================================================
+
+      if (spec && isUnsupportedSpec(spec)) {
+        return {
+          errors: [{
+            text: getUnsupportedSpecError(spec, parsed.name),
+          }],
+        };
+      }
+
+      // ======================================================================
+      // Continue with normal CDN resolution for semver/tag specs
+      // ======================================================================
+
+      let resolvedManifest = structuredClone(initialManifest);
       let resultSubpath = parsedSubpath;
 
       // If the CDN supports package.json and some other npm stuff, it counts as an npm CDN
       if (NPM_CDN) {
+        // For npm aliases, we need to resolve the aliased package name
+        const nameToResolve = effectiveName;
+        const versionToResolve = effectiveAssumedVersion;
+
+        try {
+          const identifiedVersion = await resolveVersion(`${nameToResolve}@${versionToResolve}`)
+          if (identifiedVersion) effectiveAssumedVersion = identifiedVersion;
+        } catch (e) {
+          dispatchEvent(LOGGER_WARN, `Couldn't identify the correct npm version based on the semver (${versionToResolve}) for package (${nameToResolve}). Be cautious this is an unusual situation, the bundle may silently break in odd ways.`);
+          dispatchEvent(LOGGER_WARN, e);
+        }
+
         try {
           const ext = extname(parsedSubpath);
           const isDirectory = ext.length === 0;
@@ -128,17 +320,17 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
           // If the subpath is a directory check to see if that subpath has a `package.json`,
           // after which check if the parent directory has a `package.json`
           const manifestVariants = [
-            { path: getRegistryURL(`${parsed.name}@${assumedVersion}`).packageVersionURL },
-            // { path: `${parsed.name}@${assumedVersion}/package.json` },
+            { path: getRegistryURL(`${effectiveName}@${effectiveAssumedVersion}`).packageVersionURL },
+            // { path: `${effectiveName}@${effectiveAssumedVersion}/package.json` },
             isDirectory ? {
-              path: `${parsed.name}@${assumedVersion}${parsedSubpath}/package.json`,
-              isDir: true
+              path: `${effectiveName}@${effectiveAssumedVersion}${parsedSubpath}/package.json`,
+              isDirectory: true
             } : null
           ].filter(x => x !== null);
 
           const manifestVariantsLen = manifestVariants.length;
           for (let i = 0; i < manifestVariantsLen; i++) {
-            const { path, isDir } = manifestVariants[i]!;
+            const { path, isDirectory } = manifestVariants[i]!;
             const { url } = getCDNUrl(path, origin);
 
             // If the url was fetched before and failed, skip it and try the next one
@@ -150,12 +342,15 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
               const res = await getRequest(url, true);
               if (!res.ok) throw new Error(await res.text());
 
-              manifest = await res.json();
-              isSubpathDirectoryPackage = isDir ?? false;
+              resolvedManifest = await res.json();
+              isSubpathDirectoryPackage = isDirectory ?? false;
 
               // If the package.json is not a sub-directory package, then we should cache it as such
-              if (!isDir) {
-                packageManifestsMap.set(`${parsed.name}${manifest?.version || assumedVersion}`, manifest);
+              if (!isDirectory) {
+                packageManifestsMap.set(
+                  `${effectiveName}${resolvedManifest?.version || effectiveAssumedVersion}`,
+                  resolvedManifest
+                );
               }
               break;
             } catch (e) {
@@ -163,28 +358,32 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
 
               // If after checking all the different file extensions none of them are valid
               // Throw the last fetch error encountered, as that is generally the most accurate error
-              if (i >= manifestVariantsLen - 1)
-                throw e;
+              if (i >= manifestVariantsLen - 1) throw e;
             }
           }
 
-          const relativePath = parsedSubpath.replace(/^\//, "./");
+          // Combine any extra subpath from alias with the parsed subpath
+          const combinedSubpath = joinSubpath(
+            effectiveExtraSubpath,
+            parsedSubpath
+          );
+          const relativePath = combinedSubpath.replace(/^\//, "./");
 
           let modernResolve: ReturnType<typeof resolve> | null = null;
           let legacyResolve: ReturnType<typeof legacy> | null = null;
-          let resolvedPath: string | null = parsedSubpath;
+          let resolvedPath: string | null = combinedSubpath;
 
           try {
             // Resolving imports & exports from the package.json
             // If an import starts with "#" then it's a subpath-import, and should be treated as so
-            modernResolve = resolve(manifest, relativePath, {
+            modernResolve = resolve(resolvedManifest, relativePath || ".", {
               browser: conditions.browser,
               conditions: conditions.conditions,
               require: conditions.require
             }) ||
-              // Same compat fallback as above (optional, but matches your current “try multiple ways” intent).
+              // Same compat fallback as above
               (!conditions.require
-                ? resolve(manifest, relativePath, {
+                ? resolve(resolvedManifest, relativePath, {
                     browser: conditions.browser,
                     conditions: ["require", ...conditions.conditions],
                     require: true
@@ -200,27 +399,25 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
 
           if (!modernResolve) {
             // If the subpath has a package.json, and the modern resolve didn't work for it
-            // we can safely use legacy resolve, 
-            // else, if the subpath doesn't have a package.json, then the subpath is literal, 
+            // we can safely use legacy resolve,
+            // else, if the subpath doesn't have a package.json, then the subpath is literal,
             // and we should just use the subpath as it is
-            // if there is no relative path, let's check the legacy resolve to fix it
             const emptyRelativePath = relativePath.trim().length === 0
             if (isSubpathDirectoryPackage || emptyRelativePath) {
               try {
                 // Resolving using main, module, etc... from package.json
-                legacyResolve = legacy(manifest, { browser: conditions.browser }) ||
-                  legacy(manifest, { fields: ["module", "main"] }) ||
-                  legacy(manifest, { fields: ["unpkg", "bin"] });
+                legacyResolve = legacy(resolvedManifest, { browser: conditions.browser }) ||
+                  legacy(resolvedManifest, { fields: ["module", "main"] }) ||
+                  legacy(resolvedManifest, { fields: ["unpkg", "bin"] });
 
                 if (legacyResolve) {
                   // Some packages have `browser` fields in their package.json which have some values set to false
-                  // e.g. typescript - > https://unpkg.com/browse/typescript@4.9.5/package.json
+                  // e.g. typescript -> https://unpkg.com/browse/typescript@4.9.5/package.json
                   if (typeof legacyResolve === "object") {
                     const values = Object.values(legacyResolve);
                     const validValues = values.filter(x => x);
-                    if (validValues.length <= 0) {
-                      legacyResolve = legacy(manifest);
-                    }
+                    if (validValues.length <= 0)
+                      legacyResolve = legacy(resolvedManifest);
                   }
 
                   if (Array.isArray(legacyResolve)) {
@@ -228,8 +425,13 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
                   } else if (typeof legacyResolve === "object") {
                     const allKeys = Object.keys(legacyResolve);
                     const nonCJSKeys = allKeys.filter(key => {
-                      return !/\.cjs$/.exec(key) && !/src\//.exec(key) && (legacyResolve as record<string | false>)[key]!;
+                      return (
+                        !/\.cjs$/.exec(key) &&
+                        !/src\//.exec(key) &&
+                        (legacyResolve as record<string | false>)[key]!
+                      );
                     });
+
                     const keysToUse = nonCJSKeys.length > 0 ? nonCJSKeys : allKeys;
                     resolvedPath = legacyResolve[keysToUse[0]] as string;
                   } else {
@@ -249,23 +451,23 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
             resultSubpath = `${subpath}${resultSubpath}`;
           }
         } catch (e) {
-          dispatchEvent(LOGGER_WARN, `You may want to change CDNs. The current CDN ${!/unpkg\.com/.test(origin) ? `"${origin}" doesn't` : `path "${origin}${_argPath}" may not`} support package.json files.\nThere is a chance the CDN you're using doesn't support looking through the package.json of packages. bundlejs will switch to inaccurate guesses for package versions. For package.json support you may wish to use https://unpkg.com or other CDN's that support package.json.`);
+          dispatchEvent(LOGGER_WARN, `You may want to change CDNs. The current CDN ${!/unpkg\.com/.test(origin) ? `"${origin}" doesn't` : `path "${origin}${_argPath}" may not`} support package.json files.\nThere is a chance the CDN you're using doesn't support looking through the package.json of packages. Bundlejs will switch to inaccurate guesses for package versions. For package.json support you may wish to use https://unpkg.com or other CDN's that support package.json.`);
           dispatchEvent(LOGGER_WARN, e);
         }
       }
 
       // If the CDN is npm based then it should add the parsed version to the URL
       // e.g. https://unpkg.com/spring-easing@v1.0.0/
-      const knownVersion = manifest?.version || assumedVersion;
+      const knownVersion = resolvedManifest?.version || effectiveAssumedVersion;
       const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
-      const { url } = getCDNUrl(`${parsed.name}${cdnVersionFormat}${resultSubpath}`, origin);
+      const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
       // Store the package.json manifest of the dependencies fetched in the cache
-      if (!packageManifestsMap.get(`${parsed.name}${knownVersion}`)) {
+      if (!packageManifestsMap.get(`${effectiveName}${knownVersion}`)) {
         try {
-          const _manifest = await getPackageOfVersion(`${parsed.name}${knownVersion}`);
+          const _manifest = await getPackageOfVersion(`${effectiveName}${knownVersion}`);
           if (_manifest)
-            packageManifestsMap.set(`${parsed.name}${knownVersion}`, _manifest);
+            packageManifestsMap.set(`${effectiveName}${knownVersion}`, _manifest);
         } catch (e) {
           console.warn(e);
         }
@@ -273,12 +475,12 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
 
       const peerDeps = Object.assign(
         initialManifest?.peerDependencies ?? {},
-        manifest?.peerDependencies ?? {},
+        resolvedManifest?.peerDependencies ?? {},
         {
           // Some packages rely on cyclic dependencies, e.g. https://x.com/jsbundle/status/1792325771354149261
           // so we create a new field in peerDependencies and place the current package and it's version,
           // the algorithm should then be able to use the correct version if a dependency is cyclic
-          [parsed.name]: NPM_CDN ? knownVersion : (initialDeps[parsed.name] ?? "latest")
+          [effectiveName]: NPM_CDN ? knownVersion : (initialDeps[effectiveName] ?? "latest")
         }
       );
       const inheritPeerDependencies = structuredClone(peerDeps);
@@ -292,12 +494,12 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
       return {
         namespace: HTTP_NAMESPACE,
         path: (await determineExtension(url.toString())).url,
-        sideEffects: typeof manifest?.sideEffects === "boolean"
-          ? manifest.sideEffects
+        sideEffects: typeof resolvedManifest?.sideEffects === "boolean"
+          ? resolvedManifest.sideEffects
           : undefined,
         pluginData: Object.assign({}, args.pluginData, {
           manifest: deepMerge(
-            structuredClone(manifest),
+            structuredClone(resolvedManifest),
             { peerDependencies: inheritPeerDependencies }
           )
         })
@@ -307,18 +509,39 @@ export function CdnResolution<T>(StateContext: Context<LocalState<T> & { origin:
 };
 
 /**
- * Esbuild CDN plugin 
- * 
- * @param cdn The default CDN to use
- * @param logger Console log
+ * Esbuild CDN plugin
+ *
+ * Resolves bare imports to CDN URLs with support for:
+ * - Standard semver/tag versions (^1.2.3, latest)
+ * - npm aliases (npm:package@version)
+ * - URL-based versions (routed to TarballPlugin via build.resolve)
+ * - Modern exports/imports field resolution
+ * - Legacy main/module/browser field resolution
+ *
+ * @param StateContext Context with origin configuration
+ *
+ * @example Plugin registration
+ * ```ts
+ * const plugins = [
+ *   AliasPlugin(StateContext),
+ *   ExternalPlugin(StateContext),
+ *   TarballPlugin(StateContext),  // Must be before CDN for URL routing
+ *   VirtualFileSystemPlugin(StateContext),
+ *   HttpPlugin(StateContext),
+ *   CdnPlugin(StateContext),      // Handles bare imports
+ * ];
+ * ```
  */
 export function CdnPlugin<T>(StateContext: Context<LocalState<T> & { origin: string }>): ESBUILD.Plugin {
   return {
     name: CDN_NAMESPACE,
     setup(build) {
+      const ctx = StateContext.with({ build }) as Context<CdnResolutionState<T>>;
+
       // Resolve bare imports to the CDN required using different URL schemes
-      build.onResolve({ filter: /.*/ }, CdnResolution(StateContext));
-      build.onResolve({ filter: /.*/, namespace: CDN_NAMESPACE }, CdnResolution(StateContext));
+      // Pass `build` to enable URL-based version routing through TarballPlugin
+      build.onResolve({ filter: /.*/ }, CdnResolution(ctx));
+      build.onResolve({ filter: /.*/, namespace: CDN_NAMESPACE }, CdnResolution(ctx));
     },
   };
 };
