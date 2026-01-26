@@ -20,13 +20,13 @@ import { LruCache } from "./lru.ts";
 // ============================================================================
 
 /** LRU cache capacity for responses */
-const CACHE_CAPACITY = 300;
+export const CACHE_CAPACITY = 300;
 
 /** LRU cache capacity for redirect mappings */
-const REDIRECT_MAP_CAPACITY = 500;
+export const REDIRECT_MAP_CAPACITY = 500;
 
 /** Default retry attempts for failed requests */
-const DEFAULT_RETRIES = 2;
+export const DEFAULT_RETRIES = 2;
 
 // ============================================================================
 // Caches
@@ -90,7 +90,7 @@ let openCachePromise: Promise<Cache> | null = null;
 /**
  * Opens the Cache API storage (singleton pattern)
  */
-export async function openCache(): Promise<Cache> {
+export function openCache(): Promise<Cache> {
   if (!SUPPORTS_CACHE_API) {
     throw new Error("Cache API not supported in this environment");
   }
@@ -164,7 +164,7 @@ async function storeInCache(
 /**
  * Performs the actual network fetch with retry logic.
  */
-async function doFetch(
+function doFetch(
   url: string,
   init: RequestInit = {},
   retries: number
@@ -284,12 +284,6 @@ export async function fetchContent(
 }> {
   const { url: finalUrl, response, fromCache, redirected } = await fetchWithCache(url, options);
   const contentType = response.headers.get("content-type");
-  
-  // Reject HTML responses (common error: hitting a 404 page or package listing)
-  if (contentType && /text\/html/i.test(contentType)) {
-    throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
-  }
-  
   const content = new Uint8Array(await response.arrayBuffer());
   
   return { url: finalUrl, content, contentType, fromCache, redirected };
@@ -322,9 +316,6 @@ export async function fetchHeaders(
     try { await response.body?.cancel(); } catch { /* ignore */ }
     
     const contentType = response.headers.get("content-type");
-    if (contentType && /text\/html/i.test(contentType)) {
-      throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
-    }
     
     return { url: finalUrl, contentType, fromCache };
   } catch (_) {

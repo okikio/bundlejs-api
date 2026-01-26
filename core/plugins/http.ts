@@ -71,6 +71,11 @@ export async function fetchPkg(
       retries: retry,
     });
 
+    // Reject HTML responses (common error: hitting a 404 page or package listing)
+    if (result.contentType && /text\/html/i.test(result.contentType)) {
+      throw new Error(`Received HTML instead of expected content for ${result.url}`);
+    }
+
     // Build descriptive log message
     const flags = [
       result.fromCache && 'cached',
@@ -105,6 +110,9 @@ export async function fetchPkgHeaders(
 ): Promise<{ url: string; contentType: string | null }> {
   try {
     const result = await fetchHeaders(url, { retries: opts.retry });
+    if (result.contentType && /text\/html/i.test(result.contentType)) {
+      throw new Error(`Received HTML instead of expected content for ${result.url}`);
+    }
     return {
       url: result.url,
       contentType: result.contentType,
