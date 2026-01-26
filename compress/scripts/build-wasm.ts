@@ -9,7 +9,6 @@ import { compress as gzip, decompress as gunzip } from "../deno/gzip/mod.ts";
 import { compress as brotli, decompress as unbrotli } from "../deno/brotli/mod.ts";
 import { compress as zstd, decompress as unzstd } from "../deno/zstd/mod.ts";
 
-const esbuildwasm = new URL(import.meta.resolve("esbuild-wasm/esbuild.wasm"));
 const encoder = new TextEncoder();
 
 const compression = {
@@ -21,7 +20,7 @@ const compression = {
 
 export async function build(
   [mode = "zstd", encoding = "base64"]: Partial<[keyof typeof compression, "base64" | "ascii85"]> = [], 
-  src: string | URL | Uint8Array | Promise<string | Uint8Array> = esbuildwasm, 
+  src: string | URL | Uint8Array | Promise<string | Uint8Array>, 
   _target = "deno/zstd/zstd.encoded.wasm.ts", 
   importsPaths?: Partial<Record<keyof typeof compression, string>>
 ) {
@@ -123,8 +122,8 @@ export async function build(
   );
 }
 
-await build(["gzip"], "./deno/zstd/zstd.wasm", "deno/zstd/zstd.encoded.wasm.ts");
-await build(["gzip"], "./deno/lz4/deno_lz4_bg.wasm", "deno/lz4/wasm.ts");
+await build(["gzip", "ascii85"], "./deno/zstd/zstd.wasm", "deno/zstd/zstd.encoded.wasm.ts");
+await build(["gzip", "ascii85"], "./deno/lz4/deno_lz4_bg.wasm", "deno/lz4/wasm.ts");
 await build(["zstd", "ascii85"], "./deno/brotli/deno_brotli_bg.wasm", "deno/brotli/wasm.ts", {
-  "zstd": "../deno/zstd/mod.ts"
+  "zstd": "../zstd/mod.ts"
 });
