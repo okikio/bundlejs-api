@@ -409,7 +409,9 @@ export async function clearCache(): Promise<void> {
   redirectMap.clear();
   
   if (SUPPORTS_CACHE_API) {
-    await caches.delete(CACHE_NAME);
+    try {
+      await caches.delete(CACHE_NAME);
+    } catch (e) { console.error(e) }
     openCachePromise = null;
   }
 }
@@ -424,8 +426,10 @@ export async function invalidate(url: string): Promise<void> {
   redirectMap.delete(url);
   
   if (SUPPORTS_CACHE_API) {
-    const cache = await openCache();
-    await cache.delete(finalUrl);
+    try {
+      const cache = await openCache();
+      await cache.delete(finalUrl);
+    } catch (e) { console.error(e) }
   }
 }
 
@@ -450,5 +454,3 @@ export async function getRequest(
   
   return response;
 }
-
-await clearCache()
