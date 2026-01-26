@@ -8,6 +8,8 @@ import { PLATFORM_AUTO } from "../configs/platform.ts";
 // export const { version: defaultVersion } = pkg;
 export const defaultVersion = "0.27.2";
 
+import * as ESBUILD_DENO_WASM from "esbuild"
+
 /**
  * Determines which esbuild skew to use depending on the platform option supplied, 
  * by default it will choose the most performant esbuild skew, 
@@ -31,10 +33,11 @@ export async function getEsbuild(platform: Platform = PLATFORM_AUTO, version?: s
         `https://deno.land/x/esbuild@v${version}/mod.js`
       );
       case "deno-wasm":
-        return await import(
-          /* @vite-ignore */
-          `https://deno.land/x/esbuild@v${version}/wasm.js`
-        );
+        return ESBUILD_DENO_WASM;
+        // return await import(
+        //   /* @vite-ignore */
+        //   `https://deno.land/x/esbuild@v${version}/wasm.js`
+        // );
       case "node":
         return await import("esbuild");
       case "browser":
