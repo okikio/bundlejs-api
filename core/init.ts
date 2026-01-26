@@ -29,19 +29,20 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
         platform !== "node" &&
         platform !== "deno"
       ) {
-        if ("wasmModule" in opts) {
+        // if ("wasmModule" in opts) {
+        //   await esbuild.initialize(opts);
+        // } else if ("wasmURL" in opts) { 
+        //   await esbuild.initialize(opts);
+        // } else if (version === defaultVersion) {
+        //   const { default: ESBUILD_WASM } = await import("./wasm.ts");
+        //   await esbuild.initialize({
+        //     wasmModule: new WebAssembly.Module(await ESBUILD_WASM() as BufferSource),
+        //     ...opts
+        //   });
+        // } else {
+        //   await esbuild.initialize(opts);
+        // }
           await esbuild.initialize(opts);
-        } else if ("wasmURL" in opts) { 
-          await esbuild.initialize(opts);
-        } else if (version === defaultVersion) {
-          const { default: ESBUILD_WASM } = await import("./wasm.ts");
-          await esbuild.initialize({
-            wasmModule: new WebAssembly.Module(await ESBUILD_WASM() as BufferSource),
-            ...opts
-          });
-        } else {
-          await esbuild.initialize(opts);
-        }
       }
 
       dispatchEvent(INIT_COMPLETE);

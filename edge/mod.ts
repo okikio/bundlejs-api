@@ -431,7 +431,7 @@ export default {
       const configObj = Object.assign({}, jsonKeyObj, {
         entryPoints: [`/index.${inputFileHash}${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
         init: {
-          wasmModule
+          // wasmModule
         }
       })
 
