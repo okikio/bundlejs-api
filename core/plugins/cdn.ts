@@ -491,9 +491,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         inheritPeerDependencies[name] = initialDeps[name] ?? version;
       }
 
+      const pathWithExt = (await determineExtension(url.toString()));
       return {
         namespace: HTTP_NAMESPACE,
-        path: (await determineExtension(url.toString())).url,
+        path: pathWithExt.url,
         sideEffects: typeof resolvedManifest?.sideEffects === "boolean"
           ? resolvedManifest.sideEffects
           : undefined,

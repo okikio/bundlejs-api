@@ -671,14 +671,6 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 				const mount = await getOrCreateMount(packageUrl.toString(), StateContext);
 				const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
         const resolvedPath = join(mount.packageRoot, entryPath);
-        
-        console.log({
-          argPath: args.path,
-          entryPath,
-          resolvedPath,
-          name: mount?.manifest?.name,
-          deps: mount?.manifest?.dependencies,
-        })
 				
 				return {
 					path: resolvedPath,

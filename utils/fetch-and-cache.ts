@@ -2,198 +2,423 @@ import { retry } from "./async.ts";
 import { LruCache } from "./lru.ts";
 
 /**
- * An LRU cache to store network responses with a capacity of 300 entries.
+ * Fetch-and-cache module with proper redirect handling.
+ * 
+ * **Key design decision**: Always cache under the *final* URL (`response.url`), 
+ * not the original request URL. This ensures:
+ * 
+ * 1. Relative imports resolve correctly (bundlers need the final URL as base)
+ * 2. No stale redirect targets when CDN aliases like `@latest` change
+ * 3. Direct requests to final URLs hit cache
+ * 
+ * For efficiency, we also maintain a redirect map so requests to aliased URLs
+ * can find cached content without re-fetching.
  */
-export const CACHE = new LruCache<string, Response>(300);
 
-/**
- * The name of the cache used for storing external fetches.
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/** LRU cache capacity for responses */
+const CACHE_CAPACITY = 300;
+
+/** LRU cache capacity for redirect mappings */
+const REDIRECT_MAP_CAPACITY = 500;
+
+/** Default retry attempts for failed requests */
+const DEFAULT_RETRIES = 2;
+
+// ============================================================================
+// Caches
+// ============================================================================
+
+/** In-memory LRU cache for responses, keyed by final URL */
+export const responseCache = new LruCache<string, Response>(CACHE_CAPACITY);
+
+/** 
+ * Maps original URLs to their final redirect targets.
+ * Enables cache hits when requesting aliased URLs (e.g., `lodash@latest` → `lodash@4.17.21`)
  */
+export const redirectMap = new LruCache<string, string>(REDIRECT_MAP_CAPACITY);
+
+/** Cache API storage name */
 export const CACHE_NAME = "EXTERNAL_FETCHES";
 
-/**
- * Boolean flag indicating if the Cache API is supported in the current environment.
- */
+/** Feature detection */
 export const SUPPORTS_CACHE_API = "caches" in globalThis;
-
-/**
- * Boolean flag indicating if the Request API is supported in the current environment.
- */
 export const SUPPORTS_REQUEST_API = "Request" in globalThis;
 
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface FetchResult {
+  /** The final URL after any redirects */
+  url: string;
+  /** The response (cloned if requested) */
+  response: Response;
+  /** Whether this came from cache */
+  fromCache: boolean;
+  /** Whether a redirect occurred */
+  redirected: boolean;
+}
+
+export interface FetchOptions {
+  /** Additional fetch options (headers, method, etc.) */
+  init?: RequestInit;
+  /** Number of retry attempts on failure. Default: 2 */
+  retries?: number;
+  /** Whether to clone the response before returning. Default: true */
+  clone?: boolean;
+  /** 
+   * Cache behavior:
+   * - 'normal': Use cache, update in background (stale-while-revalidate)
+   * - 'force': Always use cache if available, never revalidate
+   * - 'reload': Bypass cache, fetch fresh, update cache
+   * - 'no-store': Bypass cache entirely, don't store response
+   * Default: 'normal'
+   */
+  cacheMode?: 'normal' | 'force' | 'reload' | 'no-store';
+}
+
+// ============================================================================
+// Cache API wrapper
+// ============================================================================
+
+let openCachePromise: Promise<Cache> | null = null;
+
 /**
- * Generates a unique key for a given request URL.
- * 
- * @param request - The request info (URL or Request object).
- * @returns A unique string key for the request.
+ * Opens the Cache API storage (singleton pattern)
  */
-export function requestKey(request: RequestInfo) {
-  return SUPPORTS_REQUEST_API && request instanceof Request ? request.url.toString() : request.toString()
+export async function openCache(): Promise<Cache> {
+  if (!SUPPORTS_CACHE_API) {
+    throw new Error("Cache API not supported in this environment");
+  }
+  if (!openCachePromise) {
+    openCachePromise = caches.open(CACHE_NAME);
+  }
+  return openCachePromise;
+}
+
+// ============================================================================
+// Core fetch implementation
+// ============================================================================
+
+/**
+ * Resolves a URL through the redirect map to find the final cached URL.
+ * Returns the original URL if no redirect mapping exists.
+ */
+function resolveRedirect(url: string): string {
+  return redirectMap.get(url) ?? url;
 }
 
 /**
- * Performs a network request and handles retries, caching, and response cloning.
+ * Looks up a URL in cache, checking both the direct URL and any redirect mappings.
+ */
+async function lookupCache(url: string, cacheApi?: Cache): Promise<Response | undefined> {
+  const finalUrl = resolveRedirect(url);
+  
+  if (SUPPORTS_CACHE_API && cacheApi) {
+    const cached = await cacheApi.match(finalUrl);
+    if (cached) return cached;
+  }
+  
+  return responseCache.get(finalUrl);
+}
+
+/**
+ * Stores a response in cache under the final URL.
+ * If a redirect occurred, also stores the mapping from original → final URL.
+ */
+async function storeInCache(
+  originalUrl: string,
+  finalUrl: string,
+  response: Response,
+  cacheApi?: Cache
+): Promise<void> {
+  // Only cache successful GET responses
+  // Note: response.ok is false for 3xx, but fetch with redirect:'follow' 
+  // resolves with the final 2xx response, so we're caching the final response
+  if (!response.ok) return;
+
+  try {
+    const cloned = response.clone();
+    
+    if (SUPPORTS_CACHE_API && cacheApi) {
+      // Cache API: store under final URL
+      await cacheApi.put(new Request(finalUrl), cloned);
+    } else {
+      // In-memory fallback: store under final URL
+      responseCache.set(finalUrl, cloned);
+    }
+    
+    // Track redirect mapping if URLs differ
+    if (originalUrl !== finalUrl) {
+      redirectMap.set(originalUrl, finalUrl);
+    }
+  } catch (err) {
+    console.error(`[cache] Failed to store response for ${finalUrl}:`, err);
+  }
+}
+
+/**
+ * Performs the actual network fetch with retry logic.
+ */
+async function doFetch(
+  url: string,
+  init: RequestInit = {},
+  retries: number
+): Promise<Response> {
+  const fetchWithRedirect = async () => {
+    const response = await fetch(url, {
+      redirect: "follow",
+      ...init,
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText} for ${url}`);
+    }
+    
+    return response;
+  };
+
+  if (retries > 0) {
+    return retry(fetchWithRedirect, { maxAttempts: retries + 1 });
+  }
+  
+  return fetchWithRedirect();
+}
+
+/**
+ * Main fetch function with caching and proper redirect handling.
  * 
- * @param request - The request info (URL or Request object).
- * @param options - Options for the request including cache, fetch options, cloning, and retry count.
- * @param options.retry - Number of retry attempts for the request (default is 2).
- * @param options.cache - The Cache object to store the response.
- * @param options.fetchOpts - Fetch options such as method, headers, etc.
- * @param options.clone - Whether to clone the response before returning (default is true).
- * @returns The network response, possibly cloned, or an error response if all retries fail.
+ * **Important**: The returned `url` is the *final* URL after redirects.
+ * Use this for resolving relative imports in fetched content.
  * 
- * Example usage:
+ * @example
  * ```ts
- * const response = await newRequest('https://example.com/api/data', { retry: 5 });
- * if (response.ok) {
- *   const data = await response.json();
- *   console.log(data);
- * } else {
- *   console.error('Failed to fetch data:', response.statusText);
- * }
+ * // Basic usage
+ * const { url, response } = await fetchWithCache('https://esm.sh/lodash@latest');
+ * // url is now 'https://esm.sh/lodash@4.17.21' (the final URL)
+ * 
+ * // The final URL is critical for relative imports:
+ * // If lodash/index.js imports './debounce', resolve against the final URL
+ * const debounceUrl = new URL('./debounce', url).toString();
  * ```
+ */
+export async function fetchWithCache(
+  url: string,
+  options: FetchOptions = {}
+): Promise<FetchResult> {
+  const {
+    init = {},
+    retries = DEFAULT_RETRIES,
+    clone = true,
+    cacheMode = 'normal',
+  } = options;
+
+  // Only cache GET requests
+  const method = init.method?.toUpperCase() ?? 'GET';
+  const canCache = method === 'GET' && cacheMode !== 'no-store';
+  
+  const cacheApi = SUPPORTS_CACHE_API ? await openCache() : undefined;
+
+  // Check cache first (unless reload mode)
+  if (canCache && cacheMode !== 'reload') {
+    const cached = await lookupCache(url, cacheApi);
+    
+    if (cached) {
+      const finalUrl = resolveRedirect(url);
+      
+      // Stale-while-revalidate: return cached, refresh in background
+      if (cacheMode === 'normal') {
+        doFetch(url, init, retries)
+          .then(response => storeInCache(url, response.url || url, response, cacheApi))
+          .catch(err => console.error(`[cache] Background refresh failed for ${url}:`, err));
+      }
+      
+      return {
+        url: finalUrl,
+        response: clone ? cached.clone() : cached,
+        fromCache: true,
+        redirected: url !== finalUrl,
+      };
+    }
+  }
+
+  // Fetch from network
+  const response = await doFetch(url, init, retries);
+  const finalUrl = response.url || url;
+  const redirected = response.redirected || url !== finalUrl;
+  
+  // Store in cache
+  if (canCache) {
+    await storeInCache(url, finalUrl, response, cacheApi);
+  }
+
+  return {
+    url: finalUrl,
+    response: clone ? response.clone() : response,
+    fromCache: false,
+    redirected,
+  };
+}
+
+// ============================================================================
+// Convenience functions
+// ============================================================================
+
+/**
+ * Fetches content and returns it as a Uint8Array along with metadata.
+ * This is the most common pattern for bundlers.
+ */
+export async function fetchContent(
+  url: string,
+  options: FetchOptions = {}
+): Promise<{
+  url: string;
+  content: Uint8Array;
+  contentType: string | null;
+  fromCache: boolean;
+  redirected: boolean;
+}> {
+  const { url: finalUrl, response, fromCache, redirected } = await fetchWithCache(url, options);
+  const contentType = response.headers.get("content-type");
+  
+  // Reject HTML responses (common error: hitting a 404 page or package listing)
+  if (contentType && /text\/html/i.test(contentType)) {
+    throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
+  }
+  
+  const content = new Uint8Array(await response.arrayBuffer());
+  
+  return { url: finalUrl, content, contentType, fromCache, redirected };
+}
+
+/**
+ * Fetches only headers (useful for probing URLs without downloading content).
+ * Uses HEAD request with GET fallback for servers that don't support HEAD.
+ */
+export async function fetchHeaders(
+  url: string,
+  options: Omit<FetchOptions, 'clone'> = {}
+): Promise<{
+  url: string;
+  contentType: string | null;
+  fromCache: boolean;
+}> {
+  const { init = {}, retries = 0, cacheMode = 'normal' } = options;
+  
+  // Try HEAD first
+  try {
+    const { url: finalUrl, response, fromCache } = await fetchWithCache(url, {
+      init: { ...init, method: 'HEAD' },
+      retries: 0,
+      clone: false,
+      cacheMode,
+    });
+    
+    // Cancel the body if any (shouldn't be one for HEAD, but defensive)
+    try { await response.body?.cancel(); } catch { /* ignore */ }
+    
+    const contentType = response.headers.get("content-type");
+    if (contentType && /text\/html/i.test(contentType)) {
+      throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
+    }
+    
+    return { url: finalUrl, contentType, fromCache };
+  } catch (_) {
+    // HEAD failed, try GET with immediate body cancellation
+    const { url: finalUrl, response, fromCache } = await fetchWithCache(url, {
+      init: { ...init, method: 'GET' },
+      retries,
+      clone: false,
+      cacheMode: 'no-store', // Don't cache partial responses
+    });
+    
+    // Cancel body immediately - we only wanted headers
+    try { await response.body?.cancel(); } catch { /* ignore */ }
+    
+    const contentType = response.headers.get("content-type");
+    if (contentType && /text\/html/i.test(contentType)) {
+      throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
+    }
+    
+    return { url: finalUrl, contentType, fromCache };
+  }
+}
+
+// ============================================================================
+// Cache management
+// ============================================================================
+
+/**
+ * Clears all cached data (both in-memory and Cache API)
+ */
+export async function clearCache(): Promise<void> {
+  responseCache.clear();
+  redirectMap.clear();
+  
+  if (SUPPORTS_CACHE_API) {
+    await caches.delete(CACHE_NAME);
+    openCachePromise = null;
+  }
+}
+
+/**
+ * Removes a specific URL from cache (both original and final URL mappings)
+ */
+export async function invalidate(url: string): Promise<void> {
+  const finalUrl = resolveRedirect(url);
+  
+  responseCache.delete(finalUrl);
+  redirectMap.delete(url);
+  
+  if (SUPPORTS_CACHE_API) {
+    const cache = await openCache();
+    await cache.delete(finalUrl);
+  }
+}
+
+// ============================================================================
+// Legacy API compatibility (deprecated, use new functions)
+// ============================================================================
+
+/**
+ * @deprecated Use `fetchWithCache` instead
+ */
+export async function getRequest(
+  url: RequestInfo | URL,
+  opts: { permanent?: boolean; retry?: number; fetchOpts?: RequestInit } = {}
+): Promise<Response> {
+  const urlString = url.toString();
+  const cacheMode = opts.permanent ? 'force' : 'normal';
+  
+  const { response } = await fetchWithCache(urlString, {
+    init: opts.fetchOpts,
+    retries: opts.retry,
+    cacheMode,
+  });
+  
+  return response;
+}
+
+/**
+ * @deprecated Use `fetchContent` instead
  */
 export async function newRequest(
   request: RequestInfo,
-  { cache, fetchOpts, clone = true, retry: maxAttempts = 2 }:
-    { retry?: number, cache?: Cache, fetchOpts?: RequestInit, clone?: boolean }
+  opts: { retry?: number; cache?: Cache; fetchOpts?: RequestInit; clone?: boolean } = {}
 ): Promise<Response | null> {
-  const url = requestKey(request);  // Generate a unique key for the request URL
-
-  let attempt = 0;
-  const networkResponse = await retry(async () => {
-    attempt++;
-    const networkResponse = await fetch(url, fetchOpts);
-
-    // Check if the response status indicates success (2xx status codes)
-    if (!networkResponse.ok) {
-      console.error(`Attempt ${attempt + 1} to fetch ${url} failed: Failed to fetch ${typeof request === "string" ? request : request.url}: ${networkResponse.statusText}`);
-    }
-
-    return networkResponse
-  }, { maxAttempts })
-
-  // let networkResponse: Response;
-  // for (let attempt = 0; attempt < maxAttempts + 1; attempt++) {
-  //   try {
-  //     // Attempt to fetch the resource from the network
-  //     networkResponse = await fetch(url, fetchOpts);
-
-  //     // Check if the response status indicates success (2xx status codes)
-  //     if (!networkResponse.ok) {
-  //       throw new Error(`Failed to fetch ${typeof request === "string" ? request : request.url}: ${networkResponse.statusText}`);
-  //     }
-
-  //     // If the request is successful, break out of the retry loop
-  //     break;
-  //   } catch (error) {
-  //     const err = error as Error;
-  //     console.error(`Attempt ${attempt + 1} to fetch ${url} failed: ${err?.message}`);
-
-  //     // If the last attempt also fails, return a Response object with an error state
-  //     if (attempt === retry - 1) 
-  //       return networkResponse!;
-  //   }
-  // }
-
-  // Only cache GET requests to avoid storing potentially sensitive data or modifying the cache unintentionally
-  if (!fetchOpts?.method || (fetchOpts?.method && fetchOpts.method.toUpperCase() === "GET")) {
-    try {
-      // Check if the environment supports the Cache API and a cache object is provided
-      if (SUPPORTS_CACHE_API && cache) {
-        // Store the response in the provided cache object
-        await cache.put(request, networkResponse!.clone());
-      } else {
-        // Fallback to a simple in-memory cache if Cache API is not supported
-        CACHE.set(url, networkResponse!.clone());
-      }
-    } catch (err) {
-      const cacheError = err as Error;
-      console.error(`Failed to cache response for ${url}: ${cacheError?.message}`);
-    }
-  }
-
-  // Clone the response if the clone option is set to true
-  if (clone) {
-    try {
-      return networkResponse!.clone();
-    } catch (err) {
-      const cloneError = err as Error;
-      console.error(`Failed to clone response for ${url}: ${cloneError?.message}`);
-    }
-  }
-
-  // Return the original network response if cloning is not required or cloning fails
-  return networkResponse!;
-};
-
-/**
- * A reference to an opened Cache object.
- */
-export let OPEN_CACHE: Cache;
-
-/**
- * Opens the named cache and returns the Cache object.
- * 
- * @returns The opened Cache object.
- */
-export async function openCache(): Promise<Cache> {
-  if (OPEN_CACHE) return OPEN_CACHE;
-  OPEN_CACHE = await caches.open(CACHE_NAME);
-  return (OPEN_CACHE);
-}
-
-/**
- * Retrieves a response from the cache or network, with optional permanent caching.
- * 
- * @param url - The URL or Request object for the resource.
- * @param opts - config options for request
- *  - permanent - Whether to use the cache permanently (default is false).
- *  - fetchOpts - Fetch options such as method, headers, etc.
- *  - retry - The number of times the request should be retried if an error occurs
- * @returns The network or cached response.
- * 
- * Example usage:
- * ```ts
- * const response = await getRequest('https://example.com/api/data', { permanent: true });
- * if (response.ok) {
- *   const data = await response.json();
- *   console.log(data);
- * } else {
- *   console.error('Failed to fetch data:', response.statusText);
- * }
- * ```
- */
-export async function getRequest(url: RequestInfo | URL, opts: { permanent?: boolean, retry?: number, fetchOpts?: RequestInit } = {}): Promise<Response> {
-  const request = SUPPORTS_REQUEST_API ? new Request(url.toString(), opts.fetchOpts) : url.toString();
-  let response: Response;
-
-  let cache: Cache | undefined;
-  let cacheResponse: Response | undefined;
-
-  // In specific situations the browser will sometimes disable access to cache storage, 
-  // so, we create our own in-memory cache as a fallback
-  if (SUPPORTS_CACHE_API) {
-    cache = await openCache();
-    cacheResponse = await cache.match(request);
-  } else {
-    const reqKey = requestKey(request);
-    cacheResponse = CACHE.get(reqKey);
-  }
-
-  // If a cached response is found, use it
-  if (cacheResponse) {
-    response = cacheResponse;
-  } else {
-    // If no cached response is found, perform a network request
-    response = (await newRequest(request, { cache, fetchOpts: opts.fetchOpts, retry: opts.retry }))!;
-  }
-
-  // If permanent is false, queue up a network request in the background to update the cache
-  const permanent = opts?.permanent ?? false;
-  if (!permanent && cacheResponse) {
-    newRequest(request, { cache, fetchOpts: opts.fetchOpts, clone: false, retry: opts.retry });
-  }
-
+  const url = SUPPORTS_REQUEST_API && request instanceof Request 
+    ? request.url 
+    : request.toString();
+  
+  const { response } = await fetchWithCache(url, {
+    init: opts.fetchOpts,
+    retries: opts.retry,
+    clone: opts.clone ?? true,
+  });
+  
   return response;
 }

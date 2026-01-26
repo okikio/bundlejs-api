@@ -2,7 +2,7 @@ import type { TarStreamEntry } from "@bundle/utils/tar";
 import { UntarStream } from "@bundle/utils/tar";
 import { normalize, join } from "@bundle/utils/path";
 
-import { getFile, setFile, PLATFORM_AUTO, TheFileSystem } from "./mod.ts";
+import { getFile, setFile, PLATFORM_AUTO, TheFileSystem, build } from "./mod.ts";
 import { context, cancel, dispose, rebuild, } from "./mod.ts";
 
 const fs = await TheFileSystem;
@@ -87,6 +87,7 @@ console.log("\n");
 // export * from "@okikio/animate";`);
 // await setFile(fs, "/new.tsx", "export * from \"@okikio/native\";");
 await setFile(fs, "/new.tsx", "export * from \"https://pkg.pr.new/@tanstack/react-query@7988\"")
+// await setFile(fs, "/new.tsx", "export * from 'iconv-lite';\nexport { default } from 'iconv-lite';")
 // await setFile(fs, "/other.tsx", `\
 // export * as Other from "/index.tsx";
 // export * from "@okikio/emitter";`);
@@ -96,7 +97,24 @@ await setFile(fs, "/new.tsx", "export * from \"https://pkg.pr.new/@tanstack/reac
 console.log(await getFile(fs, "/new.tsx", "string") )
 console.log(fs)
 
-const ctx = await context({
+// const ctx = await context({
+//   // "/index.tsx",
+//   entryPoints: ["/new.tsx"],
+//   esbuild: {
+//     treeShaking: true,
+//     splitting: true,
+//     format: "esm"
+//   },
+//   init: {
+//     // platform: "node",
+//     // version: "0.17",
+//     // wasm
+//   }
+// });
+// const result = await rebuild(ctx);
+
+
+const result = await build({
   // "/index.tsx",
   entryPoints: ["/new.tsx"],
   esbuild: {
@@ -110,7 +128,6 @@ const ctx = await context({
     // wasm
   }
 });
-const result = await rebuild(ctx);
 
 console.log({
   result,
@@ -137,8 +154,8 @@ console.log({
 //   //   // )
 // });
 
-await cancel(ctx);
-await dispose(ctx);
+// await cancel(ctx);
+// await dispose(ctx);
 if (PLATFORM_AUTO === "deno") {
   globalThis?.Deno?.exit?.();
 } else {

@@ -30,7 +30,7 @@ import type { CdnResolutionState } from "./cdn.ts";
 import { fromContext, toContext } from "../context/context.ts";
 import { CdnResolution } from "./cdn.ts";
 
-import { getRequest } from "@bundle/utils/fetch-and-cache";
+import { fetchContent, fetchHeaders } from "@bundle/utils/fetch-and-cache";
 import { decode } from "@bundle/utils/encode-decode";
 
 import { LOGGER_ERROR, LOGGER_INFO, LOGGER_WARN, dispatchEvent } from "../configs/events.ts";
@@ -49,39 +49,75 @@ export interface HttpResolutionState<T> extends LocalState<T> {
   build: ESBUILD.PluginBuild
 }
 
+// ============================================================================
+// Fetch Wrappers
+// ============================================================================
+
 /**
- * Fetches packages from HTTP/HTTPS URLs
- *
- * @param url Package URL to fetch
- * @param fetchOpts Optional fetch configuration (e.g., { method: "HEAD" })
- * @returns Object with url, contentType, and content as Uint8Array
- * @throws Error if fetch fails or returns HTML
+ * Fetches package content from a URL.
+ * 
+ * Returns the **final URL** after any redirects, which is critical for
+ * resolving relative imports within the fetched content.
  */
-export async function fetchPkg(url: string, fetchOpts?: RequestInit) {
+export async function fetchPkg(
+  url: string, 
+  opts: { fetchOpts?: RequestInit; retry?: number } = {}
+): Promise<{ url: string; content: Uint8Array; contentType: string | null }> {
+  const { fetchOpts, retry } = opts;
+  
   try {
-    const response = await getRequest(url, { fetchOpts, retry: 1 });
-    if (!response.ok)
-      throw new Error(`Couldn't load ${response.url || url} (${response.status} code)`);
+    const result = await fetchContent(url, {
+      init: fetchOpts,
+      retries: retry,
+    });
 
-    if (response?.headers && /text\/html/.test(response.headers.get("content-type") ?? ""))
-      throw new Error("Can't load HTML as a package");
-
-    if (fetchOpts?.method !== "HEAD")
-      dispatchEvent(LOGGER_INFO, `Fetch ${fetchOpts?.method === "HEAD" ? `(test)` : ""} ${response.url || url}`);
+    // Build descriptive log message
+    const flags = [
+      result.fromCache && 'cached',
+      result.redirected && 'redirected',
+    ].filter(Boolean).join(', ');
+    
+    const flagStr = flags ? ` (${flags})` : '';
+    const redirectStr = result.redirected ? ` → ${result.url}` : '';
+    
+    dispatchEvent(LOGGER_INFO, `Fetch${flagStr} ${url}${redirectStr}`);
 
     return {
-      // Deno doesn't have a `response.url` which is odd but whatever
-      url: response.url || url,
-      contentType: response?.headers?.get?.("content-type"),
-      content: new Uint8Array(await response.arrayBuffer()),
+      url: result.url,
+      content: result.content,
+      contentType: result.contentType,
     };
   } catch (e) {
-    const err = e as Error | unknown;
-    throw new Error(`[getRequest] Failed at request (${url})\n${err?.toString()}`, {
-      cause: err
-    });
+    const err = e as Error;
+    throw new Error(`[fetchPkg] Failed to fetch ${url}\n${err.message}`, { cause: err });
   }
 }
+
+/**
+ * Fetches only headers from a URL (for extension probing).
+ * Uses HEAD request with GET fallback for servers that don't support HEAD.
+ * 
+ * Returns the **final URL** after any redirects.
+ */
+export async function fetchPkgHeaders(
+  url: string, 
+  opts: { retry?: number } = {}
+): Promise<{ url: string; contentType: string | null }> {
+  try {
+    const result = await fetchHeaders(url, { retries: opts.retry });
+    return {
+      url: result.url,
+      contentType: result.contentType,
+    };
+  } catch (e) {
+    const err = e as Error;
+    throw new Error(`[fetchPkgHeaders] Failed to probe ${url}\n${err.message}`, { cause: err });
+  }
+}
+
+// ============================================================================
+// Asset Discovery
+// ============================================================================
 
 /**
  * Fetches assets referenced in JS files via `new URL("...", import.meta.url)`
@@ -89,12 +125,16 @@ export async function fetchPkg(url: string, fetchOpts?: RequestInit) {
  * External assets like WASM files and Workers are discovered and fetched.
  * These are stored in the virtual file system for later bundling.
  *
- * @param path URL path for the original JS file
+ * @param path URL path for the original JS file (must be final URL after redirects)
  * @param content Content of the original JS file
  * @param StateContext Context with filesystem access
  * @returns Promise of settled results for each discovered asset
  */
-export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuffer>, StateContext: Context<LocalState<T>>) {
+export async function fetchAssets<T>(
+  path: string, 
+  content: Uint8Array<ArrayBuffer>, 
+  StateContext: Context<LocalState<T>>
+) {
   // Regex for `new URL("./path.js", import.meta.url)`,
   // Supports comments so you can add comments and the regex will ignore them
   const rgx = /new(?:\s|\n?)+URL\((?:\s*(?:\/\*(?:.*\n)*\*\/)?(?:\/\/.*\n)?)*(?:(?!\`.*\$\{)['"`](.*)['"`]),(?:\s*(?:\/\*(?:.*\n)*\*\/)?(?:\/\/.*\n)?)*import\.meta\.url(?:\s*(?:\/\*(?:.*\n)*\*\/)?(?:\/\/.*\n)?)*\)/g;
@@ -108,15 +148,14 @@ export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuff
   const promises = matches.map(async ([, assetURL]) => {
     const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL));
 
-    // Create a virtual file system for storing assets
-    // This is for building a package bundle analyzer 
+    // Store asset in virtual file system for bundle analyzer
     if (FileSystem) {
-      const path = toURLPath(url);
-      await setFile(FileSystem, path, content);
+      const filePath = toURLPath(url);
+      await setFile(FileSystem, filePath, asset);
     }
 
-    const hashBuffer = await crypto.subtle.digest("SHA-256", asset); 
-    const hashArray = Array.from(new Uint8Array(hashBuffer)); 
+    const hashBuffer = await crypto.subtle.digest("SHA-256", asset as BufferSource);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
     const hashHex = hashArray
       .map(b => b.toString(16).padStart(2, "0"))
       .join("");
@@ -124,7 +163,7 @@ export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuff
     return {
       path: assetURL,
       contents: asset,
-      get text() { return decode(asset); },
+      get text() { return decode(asset as BufferSource); },
       hash: hashHex
     };
   });
@@ -132,80 +171,87 @@ export async function fetchAssets<T>(path: string, content: Uint8Array<ArrayBuff
   return await Promise.allSettled(promises);
 }
 
-// Extension probing for files without explicit extensions
-export const FilePaths = ["", "/index"];
-export const FileEndings = ["", ".js", ".mjs", "/index.js", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts"];
+// ============================================================================
+// Extension Probing
+// ============================================================================
 
-// It's possible to have `./lib/index.d.ts` or `./lib/index.mjs`, and have a user enter use `./lib` as the import
-// It's very annoying but you have to check all variants
+/** Path variants to try when extension is missing */
+export const FilePaths = ["", "/index"];
+
+/** File extensions to probe */
+export const FileEndings = ["", ".js", ".mjs", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts"];
+
+/** All combinations of path + extension to try */
 export const AllEndingVariants = Array.from(
   new Set(
-    FilePaths
-      .map(ending => {
-        return FileEndings.map(extension => ending + extension)
-      })
-      .flat()
+    FilePaths.flatMap(path => FileEndings.map(ext => path + ext))
   )
 );
 
 export const EndingVariantsLength = AllEndingVariants.length;
 
 /**
- * Probes for the correct file extension when not explicitly provided
+ * Probes for the correct file extension when not explicitly provided.
  *
  * TypeScript files often don't have file extensions in imports, but servers
  * require the full path. This function tries multiple extensions until one works.
  *
  * @param path Base path to probe
- * @param headersOnly If true, only fetch headers (HEAD request)
+ * @param headersOnly If true, only fetch headers (faster for probing)
  * @param StateContext Optional context for caching failed probes
  * @returns Object with resolved url, contentType, and optionally content
  */
 export async function determineExtension<T>(
   path: string,
-  headersOnly: boolean = true,
-  StateContext: Context<LocalState<T>> | null = null
-) {
-  // Some typescript files don't have file extensions but you can't fetch a file without their file extension
-  // so bundlejs tries to solve for that
-  const argPath = (suffix = "") => path + suffix;
+  { headersOnly = true, StateContext = null }: {
+    headersOnly?: boolean;
+    StateContext?: Context<LocalState<T>> | null;
+  } = {}
+): Promise<{ url: string; contentType: string | null; content?: Uint8Array }> {
   const failedExtChecks = StateContext
     ? fromContext("failedExtensionChecks", StateContext)
     : null;
   const failedSet = failedExtChecks ?? new Set<string>();
 
-  let url = path;
-  let content: Uint8Array | undefined;
-  let contentType: string | null = null;
+  let firstError: Error | undefined;
 
-  let err: Error | undefined;
   for (let i = 0; i < EndingVariantsLength; i++) {
-    const endings = AllEndingVariants[i];
-    const testingUrl = argPath(endings);
+    const suffix = AllEndingVariants[i];
+    const testUrl = path + suffix;
+
+    // Skip URLs we've already tried and failed
+    if (failedSet.has(testUrl)) continue;
 
     try {
-      if (failedSet?.has?.(testingUrl)) continue;
-
-      ({ url, contentType, content } = await fetchPkg(
-        testingUrl,
-        headersOnly ? { method: "HEAD" } : undefined
-      ));
-      break;
+      if (headersOnly) {
+        const { url, contentType } = await fetchPkgHeaders(testUrl);
+        return { url, contentType };
+      } else {
+        const { url, contentType, content } = await fetchPkg(testUrl);
+        return { url, contentType, content };
+      }
     } catch (e) {
-      failedSet?.add?.(testingUrl);
-      if (i === 0) err = e as Error;
+      failedSet.add(testUrl);
+      
+      // Keep the first error as it's usually most accurate
+      if (i === 0) firstError = e as Error;
 
-      // If after checking all the different file extensions none of them are valid
-      // Throw the first fetch error encountered, as that is generally the most accurate error
+      // If we've exhausted all variants, throw
       if (i >= EndingVariantsLength - 1) {
-        dispatchEvent(LOGGER_ERROR, err ?? e as Error);
-        throw err ?? e;
+        const error = firstError ?? e;
+        dispatchEvent(LOGGER_ERROR, error as Error);
+        throw error;
       }
     }
   }
 
-  return headersOnly ? { url, contentType } : { url, contentType, content };
+  // TypeScript: unreachable, but needed for type safety
+  throw new Error(`[determineExtension] Failed to resolve ${path}`);
 }
+
+// ============================================================================
+// esbuild Resolution
+// ============================================================================
 
 /**
  * Resolution algorithm for the esbuild HTTP plugin
@@ -215,102 +261,88 @@ export async function determineExtension<T>(
  * 2. Bare imports - delegate to CdnResolution
  * 3. Relative/absolute imports - resolve against parent URL
  *
- * @param StateContext Context with host and config
- * @param build Optional esbuild PluginBuild for URL routing (passed to CdnResolution)
+ * **Important**: Uses `pluginData.url` (the final URL after redirects) as the
+ * base for resolving relative imports. This ensures correct resolution when
+ * CDN aliases like `@latest` redirect to specific versions.
  */
 export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>) {
   const host = fromContext("host", StateContext)!;
   const build = fromContext("build", StateContext)!;
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
-    // Some packages use "../../" with the assumption that "/" is equal to "/index.js", this is supposed to fix that bug
-    const argPath = args.path; //.replace(/\/$/, "/index");
+    const argPath = args.path;
 
-    // If the import path isn't relative do this...
+    // Non-relative imports
     if (!argPath.startsWith(".") && !isAbsolute(argPath)) {
-      // If the import is an http import load the content via the http plugins loader
+      // Direct HTTP URL
       if (/^https?:\/\//.test(argPath)) {
         return {
           path: argPath,
           namespace: HTTP_NAMESPACE,
-          sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
-            args.pluginData?.manifest?.sideEffects :
-            undefined,
+          sideEffects: args.pluginData?.manifest?.sideEffects,
           pluginData: args.pluginData,
         };
       }
 
+      // Determine origin for resolution
       const pathOrigin = new URL(
-        // Use the parent files URL as a host
-        urlJoin(args.pluginData?.url ? args.pluginData?.url : host, "../", argPath)
+        urlJoin(args.pluginData?.url ?? host, "../", argPath)
       ).origin;
 
-      // npm standard CDNs, e.g. unpkg, skypack, esm.sh, etc...
       const NPM_CDN = getCDNStyle(pathOrigin) === "npm";
       const origin = NPM_CDN ? pathOrigin : host;
 
-      // If the import is a bare import, use the CDN plugins resolution algorithm
+      // Bare import (e.g., "lodash") → delegate to CDN resolution
       if (isBareImport(argPath)) {
         const ctx = StateContext.with({ build }) as Context<CdnResolutionState<T>>;
         return await CdnResolution(ctx)(args);
-      } else {
-        /** 
-         * If the import is neither an http import or a bare import (module import), then it is an absolute import.
-         * Therefore, load the content via the http plugins loader, but make sure that the absolute URL doesn't go past the root URL
-         * 
-         * e.g. 
-         * To load `jquery` from jsdelivr, the CDN root needs to `https://cdn.jsdelivr.net/npm`, 
-         * thus the final URL is https://cdn.jsdelivr.net/npm/jquery
-         * 
-         * The problem is that if a user using absolute URL's aims for the root domain, 
-         * the result should be `https://cdn.jsdelivr.net`, but what we really want is for our use case is
-         * a root of `https://cdn.jsdelivr.net/npm`
-         * 
-         * So, we treat the path as a CDN and force all URLs to use CDN origins as the root domain
-        */
-        return {
-          path: getCDNUrl(argPath, origin).url.toString(),
-          namespace: HTTP_NAMESPACE,
-          sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
-            args.pluginData?.manifest?.sideEffects :
-            undefined,
-          pluginData: args.pluginData,
-        };
       }
+
+      // Absolute import (e.g., "/lib/foo") → resolve against CDN origin
+      return {
+        path: getCDNUrl(argPath, origin).url.toString(),
+        namespace: HTTP_NAMESPACE,
+        sideEffects: args.pluginData?.manifest?.sideEffects,
+        pluginData: args.pluginData,
+      };
     }
 
-    // For relative imports
-    let path = urlJoin(args.pluginData?.url, "../", argPath);
+    // Relative imports - resolve against parent's final URL
+    let resolvedPath: string;
+    
     if (isAbsolute(argPath)) {
-      const _url = new URL(args.pluginData?.url);
-      _url.pathname = argPath;
-      path = _url.toString();
+      const parentUrl = new URL(args.pluginData?.url);
+      parentUrl.pathname = argPath;
+      resolvedPath = parentUrl.toString();
+    } else {
+      // Relative: "./foo" resolved against parent URL
+      resolvedPath = urlJoin(args.pluginData?.url, "../", argPath);
     }
 
     return {
-      path,
+      path: resolvedPath,
       namespace: HTTP_NAMESPACE,
-      sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
-        args.pluginData?.manifest?.sideEffects :
-        undefined,
+      sideEffects: args.pluginData?.manifest?.sideEffects,
       pluginData: args.pluginData,
     };
   };
 }
 
+// ============================================================================
+// esbuild Plugin
+// ============================================================================
+
 /**
- * Esbuild HTTP plugin 
- * 
- * @param assets Array to store fetched assets
- * @param host The default host origin to use if an import doesn't already have one
- * @param logger Console log
+ * esbuild HTTP plugin for loading modules from URLs
+ *
+ * @param StateContext Context with config, assets, and filesystem
  */
 export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plugin {
-  // Convert CDN values to URL origins
+  // Resolve CDN host
   const LocalConfig = fromContext("config", StateContext)!;
-  const { origin: host } = LocalConfig?.cdn && !/:/.test(LocalConfig?.cdn) ?
-    getCDNUrl(LocalConfig?.cdn + ":") :
-    getCDNUrl(LocalConfig?.cdn ?? DEFAULT_CDN_HOST);
+  const { origin: host } = LocalConfig?.cdn && !/:/.test(LocalConfig?.cdn)
+    ? getCDNUrl(LocalConfig?.cdn + ":")
+    : getCDNUrl(LocalConfig?.cdn ?? DEFAULT_CDN_HOST);
 
   toContext("host", host ?? DEFAULT_CDN_HOST, StateContext);
 
@@ -322,73 +354,55 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
     setup(build) {
       const ctx = StateContext.with({ build }) as Context<HttpResolutionState<T>>;
 
-      // Intercept import paths starting with "http:" and "https:" so
-      // esbuild doesn't attempt to map them to a file system location.
-      // Tag them with the "http-url" namespace to associate them with
-      // this plugin.
-      build.onResolve({ filter: /^https?:\/\// }, args => {
-        return {
-          path: args.path,
-          namespace: HTTP_NAMESPACE,
-          sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean" ?
-            args.pluginData?.manifest?.sideEffects :
-            undefined,
-          pluginData: args.pluginData,
-        };
-      });
+      // Route HTTP/HTTPS URLs to this plugin
+      build.onResolve({ filter: /^https?:\/\// }, args => ({
+        path: args.path,
+        namespace: HTTP_NAMESPACE,
+        sideEffects: args.pluginData?.manifest?.sideEffects,
+        pluginData: args.pluginData,
+      }));
 
-      // We also want to intercept all import paths inside downloaded
-      // files and resolve them against the original URL. All of these
-      // files will be in the "http-url" namespace. Make sure to keep
-      // the newly resolved URL in the "http-url" namespace so imports
-      // inside it will also be resolved as URLs recursively.
+      // Route all imports within HTTP namespace through HttpResolution
       build.onResolve({ filter: /.*/, namespace: HTTP_NAMESPACE }, HttpResolution(ctx));
 
-      // When a URL is loaded, we want to actually download the content
-      // from the internet. This has just enough logic to be able to
-      // handle the example import from https://cdn.esm.sh/ but in reality this
-      // would probably need to be more complex.
+      // Load content from HTTP URLs
       build.onLoad({ filter: /.*/, namespace: HTTP_NAMESPACE }, async (args) => {
-        // Some typescript files don't have file extensions but you can't fetch a file without their file extension
-        // so bundle tries to solve for that
-        let content: Uint8Array | undefined, url: string;
-        let contentType: string | null = null;
-        ({ content, contentType, url } = await determineExtension(args.path, false, StateContext));
+        // Probe for correct extension and fetch content
+        const { url, content, contentType } = await determineExtension(args.path, {
+          headersOnly: false,
+          StateContext,
+        });
 
-        // Create a virtual file system for storing node modules
-        // This is for building a package bundle analyzer 
-        // await FileSystem.set(args.namespace + ":" + args.path, content);
+        if (!content) return;
 
-        if (content) {
-          // Create a virtual file system for storing assets
-          // This is for building a package bundle analyzer 
-          if (FileSystem) {
-            const path = toURLPath(url);
-            await setFile(FileSystem, path, content);
-          }
-
-          const _assetResults =
-            (await fetchAssets(url, content as Uint8Array<ArrayBuffer>, StateContext))
-              .filter((result) => {
-                if (result.status === "rejected") {
-                  dispatchEvent(LOGGER_WARN, `Asset '${url}' fetch failed.\n` + result?.reason?.toString())
-                  return false;
-                } else return true;
-              })
-              .map((result) => {
-                if (result.status === "fulfilled")
-                  return result.value;
-                return null
-              })
-              .filter(value => value) as ESBUILD.OutputFile[];
-
-          toContext("assets", Assets.concat(_assetResults), StateContext);
-          return {
-            contents: content,
-            loader: inferLoader(url, contentType),
-            pluginData: { url, manifest: args.pluginData?.manifest },
-          };
+        // Store in virtual filesystem for bundle analyzer
+        if (FileSystem) {
+          const filePath = toURLPath(url);
+          await setFile(FileSystem, filePath, content);
         }
+
+        // Discover and fetch assets (WASM, Workers, etc.)
+        const assetResults = await fetchAssets(url, content as Uint8Array<ArrayBuffer>, StateContext);
+        
+        const resolvedAssets = assetResults
+          .filter((result): result is PromiseFulfilledResult<ESBUILD.OutputFile> => {
+            if (result.status === "rejected") {
+              dispatchEvent(LOGGER_WARN, `Asset fetch failed for '${url}':\n${result.reason}`);
+              return false;
+            }
+            return true;
+          })
+          .map(result => result.value);
+
+        toContext("assets", Assets.concat(resolvedAssets), StateContext);
+
+        return {
+          contents: content,
+          loader: inferLoader(url, contentType),
+          // CRITICAL: Pass the final URL (after redirects) in pluginData
+          // This is used as the base URL for resolving relative imports
+          pluginData: { ...args.pluginData, url },
+        };
       });
     },
   };
