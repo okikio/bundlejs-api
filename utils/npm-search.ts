@@ -1,6 +1,6 @@
 import type { FullPackage, FullPackageVersion, PackageInfo, PackageSearchResult, RegistryURLs, SearchInfo } from "./types.ts";
 
-import { getRequest } from "./fetch-and-cache.ts";
+import { fetchWithCache } from "./fetch-and-cache.ts";
 import { parsePackageName } from "./parse-package-name.ts";
 import { maxSatisfying, parse, parseRange, format } from "./semver.ts";
 
@@ -70,7 +70,7 @@ export async function getPackages(input: string): Promise<PackageSearchResult> {
   let result: SearchInfo;
 
   try {
-    const response = await getRequest(searchURL);
+    const { response } = await fetchWithCache(searchURL, { cacheMode: "reload" });
     result = await response.json();
   } catch (e) {
     console.warn(e);
@@ -113,7 +113,7 @@ export async function getPackage(input: string): Promise<FullPackage> {
   const { packageURL } = getRegistryURL(input);
 
   try {
-    const response = await getRequest(packageURL);
+    const { response } = await fetchWithCache(packageURL, { cacheMode: "reload" });
     return await response.json() as FullPackage;
   } catch (e) {
     console.warn(e);
@@ -221,7 +221,7 @@ export async function getPackageOfVersion(input: string): Promise<FullPackageVer
   const { packageVersionURL } = getRegistryURL(input);
 
   try {
-    const response = await getRequest(packageVersionURL);
+    const { response } = await fetchWithCache(packageVersionURL);
     return await response.json() as FullPackageVersion;
   } catch (e) {
     console.warn(e);

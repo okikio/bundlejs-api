@@ -26,7 +26,7 @@ import { UntarStream } from "@bundle/utils/tar";
 import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 
 import { normalize, join } from "@bundle/utils/path";
-import { getRequest } from "@bundle/utils/fetch-and-cache";
+import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 
 import { VIRTUAL_FILESYSTEM_NAMESPACE } from "./fs.ts";
 import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../configs/events.ts";
@@ -335,7 +335,7 @@ export async function fetchAndExtractTarball<T>(
 
   dispatchEvent(LOGGER_INFO, `Fetching tarball candidate: ${url}`);
 	
-	const response = await getRequest(url);
+	const { response } = await fetchWithCache(url);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch tarball: ${response.status} ${response.statusText}`);
 	}

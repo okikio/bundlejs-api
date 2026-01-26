@@ -207,6 +207,49 @@ function doFetch(
 }
 
 /**
+ * Background refresh with smart fallback for stale-while-revalidate.
+ * 
+ * Tries the original URL first to discover version updates (e.g., @latest → @4.17.22).
+ * Falls back to the final URL if original returns 404 (e.g., extensionless URLs).
+ * 
+ * This handles two cases:
+ * 1. Version aliases (@latest): original URL works, may resolve to newer version
+ * 2. Extension probing (dbcs-codec → dbcs-codec.js): original 404s, use final URL
+ */
+async function backgroundRefresh(
+  originalUrl: string,
+  finalUrl: string,
+  init: RequestInit,
+  retries: number,
+  cacheApi?: Cache
+): Promise<void> {
+  try {
+    // Try original URL first - this allows version discovery for @latest etc.
+    const response = await doFetch(originalUrl, init, retries);
+    const resolvedUrl = response.url || originalUrl;
+    await storeInCache(originalUrl, resolvedUrl, response, cacheApi);
+  } catch (err) {
+    // If original URL failed with 404 and we have a different final URL,
+    // try the final URL (handles extension probing case)
+    const is404 = err instanceof Error && err.message.includes('404');
+    
+    if (is404 && originalUrl !== finalUrl) {
+      try {
+        const response = await doFetch(finalUrl, init, retries);
+        const resolvedUrl = response.url || finalUrl;
+        await storeInCache(finalUrl, resolvedUrl, response, cacheApi);
+      } catch (fallbackErr) {
+        // Both failed - log but don't throw (background operation)
+        console.error(`[cache] Background refresh failed for ${finalUrl}:`, fallbackErr);
+      }
+    } else {
+      // Not a 404 or no fallback available - log the original error
+      console.error(`[cache] Background refresh failed for ${originalUrl}:`, err);
+    }
+  }
+}
+
+/**
  * Main fetch function with caching and proper redirect handling.
  * 
  * **Important**: The returned `url` is the *final* URL after redirects.
@@ -234,7 +277,7 @@ export async function fetchWithCache(
     cacheMode = 'normal',
   } = options;
 
-  // Only cache GET requests
+  // Only cache GET requests (not HEAD, POST, etc.)
   const method = init.method?.toUpperCase() ?? 'GET';
   const canCache = method === 'GET' && cacheMode !== 'no-store';
   
@@ -249,9 +292,7 @@ export async function fetchWithCache(
       
       // Stale-while-revalidate: return cached, refresh in background
       if (cacheMode === 'normal') {
-        doFetch(url, init, retries)
-          .then(response => storeInCache(url, response.url || url, response, cacheApi))
-          .catch(err => console.error(`[cache] Background refresh failed for ${url}:`, err));
+        backgroundRefresh(url, finalUrl, init, retries, cacheApi);
       }
       
       return {
@@ -397,35 +438,14 @@ export async function invalidate(url: string): Promise<void> {
  */
 export async function getRequest(
   url: RequestInfo | URL,
-  opts: { permanent?: boolean; retry?: number; fetchOpts?: RequestInit } = {}
+  opts: { cacheMode?: FetchOptions['cacheMode']; retry?: number; fetchOpts?: RequestInit } = {}
 ): Promise<Response> {
   const urlString = url.toString();
-  const cacheMode = opts.permanent ? 'force' : 'normal';
   
   const { response } = await fetchWithCache(urlString, {
     init: opts.fetchOpts,
     retries: opts.retry,
-    cacheMode,
-  });
-  
-  return response;
-}
-
-/**
- * @deprecated Use `fetchContent` instead
- */
-export async function newRequest(
-  request: RequestInfo,
-  opts: { retry?: number; cache?: Cache; fetchOpts?: RequestInit; clone?: boolean } = {}
-): Promise<Response | null> {
-  const url = SUPPORTS_REQUEST_API && request instanceof Request 
-    ? request.url 
-    : request.toString();
-  
-  const { response } = await fetchWithCache(url, {
-    init: opts.fetchOpts,
-    retries: opts.retry,
-    clone: opts.clone ?? true,
+    cacheMode: opts.cacheMode,
   });
   
   return response;

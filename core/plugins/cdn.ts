@@ -72,7 +72,7 @@ import {
 } from "@bundle/utils/npm-deps-spec";
 
 import { extname, isBareImport, join } from "@bundle/utils/path";
-import { getRequest } from "@bundle/utils/fetch-and-cache";
+import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 import { deepMerge } from "@bundle/utils/deep-object";
 
 import { determineExtension, HTTP_NAMESPACE } from "./http.ts";
@@ -339,7 +339,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
             try {
               // Strongly cache package.json files
-              const res = await getRequest(url, { permanent: true });
+              const { response: res } = await fetchWithCache(url.href, { cacheMode: "reload" });
               if (!res.ok) throw new Error(await res.text());
 
               resolvedManifest = await res.json();
@@ -463,11 +463,11 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
       // Store the package.json manifest of the dependencies fetched in the cache
-      if (!packageManifestsMap.get(`${effectiveName}${knownVersion}`)) {
+      if (!packageManifestsMap.get(`${effectiveName}@${knownVersion}`)) {
         try {
-          const _manifest = await getPackageOfVersion(`${effectiveName}${knownVersion}`);
+          const _manifest = await getPackageOfVersion(`${effectiveName}@${knownVersion}`);
           if (_manifest)
-            packageManifestsMap.set(`${effectiveName}${knownVersion}`, _manifest);
+            packageManifestsMap.set(`${effectiveName}@${knownVersion}`, _manifest);
         } catch (e) {
           console.warn(e);
         }

@@ -61,20 +61,16 @@ export interface HttpResolutionState<T> extends LocalState<T> {
  */
 export async function fetchPkg(
   url: string, 
-  opts: { fetchOpts?: RequestInit; retry?: number } = {}
+  opts: { fetchOpts?: RequestInit; retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store' } = {}
 ): Promise<{ url: string; content: Uint8Array; contentType: string | null }> {
-  const { fetchOpts, retry } = opts;
+  const { fetchOpts, retry, cacheMode = 'normal' } = opts;
   
   try {
     const result = await fetchContent(url, {
       init: fetchOpts,
       retries: retry,
+      cacheMode,
     });
-
-    // Reject HTML responses (common error: hitting a 404 page or package listing)
-    if (result.contentType && /text\/html/i.test(result.contentType)) {
-      throw new Error(`Received HTML instead of expected content for ${result.url}`);
-    }
 
     // Build descriptive log message
     const flags = [
@@ -106,13 +102,10 @@ export async function fetchPkg(
  */
 export async function fetchPkgHeaders(
   url: string, 
-  opts: { retry?: number } = {}
+  opts: { retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store' } = {}
 ): Promise<{ url: string; contentType: string | null }> {
   try {
-    const result = await fetchHeaders(url, { retries: opts.retry });
-    if (result.contentType && /text\/html/i.test(result.contentType)) {
-      throw new Error(`Received HTML instead of expected content for ${result.url}`);
-    }
+    const result = await fetchHeaders(url, { retries: opts.retry, cacheMode: opts.cacheMode });
     return {
       url: result.url,
       contentType: result.contentType,
@@ -231,11 +224,14 @@ export async function determineExtension<T>(
     if (failedSet.has(testUrl)) continue;
 
     try {
+      // Use 'force' cacheMode to prevent background refresh during extension probing.
+      // Background refresh with extensionless URLs can 404 if the CDN doesn't consistently
+      // redirect/resolve extensionless paths.
       if (headersOnly) {
-        const { url, contentType } = await fetchPkgHeaders(testUrl);
+        const { url, contentType } = await fetchPkgHeaders(testUrl, { cacheMode: 'reload' });
         return { url, contentType };
       } else {
-        const { url, contentType, content } = await fetchPkg(testUrl);
+        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal' });
         return { url, contentType, content };
       }
     } catch (e) {

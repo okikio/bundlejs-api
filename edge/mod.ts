@@ -34,6 +34,7 @@ export type Config = BuildConfig & {
 
 let WASM_MODULE: Uint8Array;
 let wasmModule: WebAssembly.Module;
+let redis: Redis | undefined | null;
 
 const encoder = new TextEncoder();
 
@@ -74,6 +75,9 @@ export default {
       if (url.pathname === "/favicon.ico")
         return Response.redirect("https://bundlejs.com/favicon/favicon-api.ico");
 
+      if (url.pathname === "/sw.js")
+        return Response.json({ "message": "no" });
+
       if (url.pathname.startsWith("/.well-known/")) {
         const ext = extname(url.pathname);
         const fileName = basename(url.pathname);
@@ -92,12 +96,13 @@ export default {
         return Response.redirect("https://blog.okikio.dev/documenting-an-online-bundler-bundlejs#heading-configuration");
       }
 
-      let redis: Redis | undefined | null;
       try {
-        redis = new Redis({
-          url: Deno.env.get('UPSTASH_URL') ?? "",
-          token: Deno.env.get('UPSTASH_TOKEN') ?? "",
-        })
+        if (!redis) {
+          redis = new Redis({
+            url: Deno.env.get('UPSTASH_URL') ?? "",
+            token: Deno.env.get('UPSTASH_TOKEN') ?? "",
+          })
+        }
       } catch (e) {
         console.warn(e)
       }
