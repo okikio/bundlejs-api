@@ -81,6 +81,7 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
 
     tarballInflight: new Map(),
     tarballMounts: new Map(),
+    sideEffectsMatchersCache: new Map(),
 
     packageManifests: new Map(),
   });

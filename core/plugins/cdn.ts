@@ -53,6 +53,7 @@
  */
 import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { LocalState, ESBUILD } from "@bundle/core/types";
+import type { SideEffectsMatchers } from "../utils/side-effects.ts";
 import type { Context, record } from "../context/context.ts";
 
 import { fromContext } from "../context/context.ts";
@@ -70,6 +71,7 @@ import {
   appendUrlSubpath,
   getUnsupportedSpecError,
 } from "@bundle/utils/npm-deps-spec";
+import { computeEsbuildSideEffects } from "../utils/side-effects.ts";
 
 import { extname, isBareImport, join } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
@@ -120,6 +122,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const failedManifestUrls = fromContext("failedManifestUrls", StateContext) ?? new Set<string>();
   const packageManifestsMap = fromContext("packageManifests", StateContext) ?? new Map<string, PackageJson | FullPackageVersion>();
 
+  const sideEffectsMatchersCache =
+    fromContext("sideEffectsMatchersCache", StateContext) ??
+    new Map<string, SideEffectsMatchers>();
+
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     const conditions = getResolverConditions(args, effectiveResolveOpts);
     let argPath = args.path;
@@ -129,7 +135,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
     // ========================================================================
 
     // Conceptually package.json = manifest, but for naming reasons we'll just call it manifest
-    const { sideEffects: _sideEffects, ..._inheritedManifest } = args.pluginData?.manifest ?? {};
+    const _inheritedManifest = args.pluginData?.manifest ?? {};
 
     // Object.assign & deepMerge essentially do the same thing for flat objects, 
     // except there are some instances where Object.assign is faster
@@ -470,12 +476,14 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
       const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
+      const packageId = `${effectiveName}@${knownVersion}`;
+
       // Store the package.json manifest of the dependencies fetched in the cache
-      if (!packageManifestsMap.get(`${effectiveName}@${knownVersion}`)) {
+      if (!packageManifestsMap.get(packageId)) {
         try {
-          const _manifest = await getPackageOfVersion(`${effectiveName}@${knownVersion}`);
+          const _manifest = await getPackageOfVersion(packageId);
           if (_manifest)
-            packageManifestsMap.set(`${effectiveName}@${knownVersion}`, _manifest);
+            packageManifestsMap.set(packageId, _manifest);
         } catch (e) {
           console.warn(e);
         }
@@ -499,13 +507,20 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         inheritPeerDependencies[name] = initialDeps[name] ?? version;
       }
 
-      const pathWithExt = (await determineExtension(url.toString()));
+      const computedSideEffects = computeEsbuildSideEffects(
+        resolvedManifest,
+        resultSubpath, // IMPORTANT: package-relative path (e.g. "/dist/index.js")
+        {
+          matcherCache: sideEffectsMatchersCache,
+          packageId,
+        }
+      );
+
+      const pathWithExt = await determineExtension(url.toString());
       return {
         namespace: HTTP_NAMESPACE,
         path: pathWithExt.url,
-        sideEffects: typeof resolvedManifest?.sideEffects === "boolean"
-          ? resolvedManifest.sideEffects
-          : undefined,
+        sideEffects: computedSideEffects,
         pluginData: Object.assign({}, args.pluginData, {
           manifest: deepMerge(
             structuredClone(resolvedManifest),

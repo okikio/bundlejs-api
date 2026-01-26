@@ -283,7 +283,9 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
         return {
           path: argPath,
           namespace: HTTP_NAMESPACE,
-          sideEffects: args.pluginData?.manifest?.sideEffects,
+          sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
+            ? args.pluginData?.manifest.sideEffects
+            : undefined,
           pluginData: args.pluginData,
         };
       }
@@ -306,7 +308,9 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
       return {
         path: getCDNUrl(argPath, origin).url.toString(),
         namespace: HTTP_NAMESPACE,
-        sideEffects: args.pluginData?.manifest?.sideEffects,
+        sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
+          ? args.pluginData?.manifest.sideEffects
+          : undefined,
         pluginData: args.pluginData,
       };
     }
@@ -326,7 +330,9 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
     return {
       path: resolvedPath,
       namespace: HTTP_NAMESPACE,
-      sideEffects: args.pluginData?.manifest?.sideEffects,
+      sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
+        ? args.pluginData?.manifest.sideEffects
+        : undefined,
       pluginData: args.pluginData,
     };
   };
@@ -362,7 +368,9 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
       build.onResolve({ filter: /^https?:\/\// }, args => ({
         path: args.path,
         namespace: HTTP_NAMESPACE,
-        sideEffects: args.pluginData?.manifest?.sideEffects,
+        sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
+          ? args.pluginData?.manifest.sideEffects
+          : undefined,
         pluginData: args.pluginData,
       }));
 

@@ -37,6 +37,7 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
     
     tarballInflight: new Map(),
     tarballMounts: new Map(),
+    sideEffectsMatchersCache: new Map(),
 
     packageManifests: new Map(),
   });

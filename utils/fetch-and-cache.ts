@@ -43,7 +43,7 @@ export const CACHE_CAPACITY = 300;
 export const REDIRECT_MAP_CAPACITY = 500;
 
 /** Default retry attempts for failed requests */
-export const DEFAULT_RETRIES = 2;
+export const DEFAULT_RETRIES = 1;
 
 // ============================================================================
 // Caches
@@ -199,9 +199,9 @@ function doFetch(
     return response;
   };
 
-  if (retries > 0) {
-    return retry(fetchWithRedirect, { maxAttempts: retries + 1 });
-  }
+  // if (retries > 0) {
+  //   return retry(fetchWithRedirect, { maxAttempts: retries + 1 });
+  // }
   
   return fetchWithRedirect();
 }
@@ -450,3 +450,5 @@ export async function getRequest(
   
   return response;
 }
+
+await clearCache()

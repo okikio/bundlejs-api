@@ -6,7 +6,8 @@ import type { InitOptions } from "./init.ts";
 import type { record } from "./context/context.ts";
 import type { IFileSystem } from "./utils/filesystem.ts";
 import type { TarballState } from "./plugins/tar.ts";
-import { ResolverConditionInputs } from "@bundle/core/utils/resolve-conditions";
+import type { ResolverConditionInputs } from "./utils/resolve-conditions.ts";
+import type { SideEffectsMatchers } from "./utils/side-effects.ts";
 
 export type { ESBUILD, ESBUILD_WASM };
 
@@ -37,6 +38,7 @@ export interface LocalState<T = unknown> extends TarballState, record {
   failedExtensionChecks: Set<string>,
   failedManifestUrls: Set<string>,
   packageManifests: Map<string, PackageJson | FullPackageVersion>,
+  sideEffectsMatchersCache: Map<string, SideEffectsMatchers>,
 
   host: string,
   config: BuildConfig,
