@@ -8,7 +8,7 @@ import { AliasPlugin } from "./plugins/alias.ts";
 import { HttpPlugin } from "./plugins/http.ts";
 import { CdnPlugin } from "./plugins/cdn.ts";
 
-import { Context, fromContext, toContext } from "./context/context.ts";
+import { Context, fromContext, toContext, withContext } from "./context/context.ts";
 
 import { BUILD_ERROR, INIT_LOADING, LOGGER_ERROR, LOGGER_LOG, LOGGER_WARN, dispatchEvent } from "./configs/events.ts";
 import { createConfig } from "./configs/config.ts";
@@ -71,9 +71,10 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
     dispatchEvent(INIT_LOADING);
 
   const StateContext = new Context<LocalState>({
-    filesystem: await filesystem,
+    filesystem: Context.opaque(await filesystem),
     assets: [],
-    config: createConfig("build", opts),
+    config: Context.opaque(createConfig("build", opts)),
+
     failedExtensionChecks: new Set(),
     failedManifestUrls: new Set(),
     host: DEFAULT_CDN_HOST,
@@ -94,18 +95,18 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
   toContext("host", host ?? DEFAULT_CDN_HOST, StateContext);
 
   const { platform, version, ...initOpts } = LocalConfig.init ?? {};
-  const { build: bundle } = await init(initOpts, [platform, version]) ?? {};
-  const { define = {}, ...esbuild_opts } = LocalConfig.esbuild ?? {};
+  const esbuildOpts = LocalConfig.esbuild ?? {};
+  const esbuild = await init(initOpts, [platform, version]);
 
   // Stores content from all external outputed files, this is for checking the gzip size when dealing with CSS and other external files
   let build_result: ESBUILD.BuildResult;
 
   try {
-    if (!bundle)
+    if (!esbuild?.build)
       throw new Error("Initialization failed, couldn't access esbuild.build(...) function");
 
     try {
-      build_result = await bundle({
+      build_result = await esbuild.build({
         entryPoints: LocalConfig?.entryPoints ?? [],
         loader: {
           ".png": "file",
@@ -115,11 +116,10 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
           ".html": "text",
           ".scss": "css"
         },
-        define: {
+        define: Object.assign({
           "__NODE__": "false",
           "process.env.NODE_ENV": "\"production\"",
-          ...define
-        },
+        }, esbuildOpts.define),
         write: false,
         outdir: "/",
         plugins: [
@@ -128,9 +128,9 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
           VirtualFileSystemPlugin(StateContext),
           TarballPlugin(StateContext),
           HttpPlugin(StateContext),
-          CdnPlugin(StateContext.with({ origin: host }) as Context<LocalState & { origin: string }>),
+          CdnPlugin(withContext({ origin: host }, StateContext)),
         ],
-        ...esbuild_opts,
+        ...esbuildOpts,
       });
     } catch (e) {
       const fail = e as ESBUILD.BuildFailure;
@@ -165,6 +165,7 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
   // const { state: StateContext, ...build_result } = _ctx;
   const LocalConfig = fromContext("config", _ctx.state)!;
   const fs = fromContext("filesystem", _ctx.state)!;
+
   const assets = fromContext("assets", _ctx.state)! ?? [];
   const packageManifests = 
     fromContext('packageManifests', _ctx.state)

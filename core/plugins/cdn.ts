@@ -54,9 +54,9 @@
 import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { LocalState, ESBUILD } from "@bundle/core/types";
 import type { SideEffectsMatchers } from "../utils/side-effects.ts";
-import type { Context, record } from "../context/context.ts";
+import type { record } from "../context/context.ts";
 
-import { fromContext } from "../context/context.ts";
+import { Context, fromContext, withContext } from "../context/context.ts";
 
 import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 import { parsePackageName } from "@bundle/utils/parse-package-name";
@@ -560,7 +560,7 @@ export function CdnPlugin<T>(StateContext: Context<LocalState<T> & { origin: str
   return {
     name: CDN_NAMESPACE,
     setup(build) {
-      const ctx = StateContext.with({ build }) as Context<CdnResolutionState<T>>;
+      const ctx = withContext({ build: Context.opaque(build) }, StateContext);
 
       // Resolve bare imports to the CDN required using different URL schemes
       // Pass `build` to enable URL-based version routing through TarballPlugin

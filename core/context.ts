@@ -9,7 +9,7 @@ import { HttpPlugin } from "./plugins/http.ts";
 import { CdnPlugin } from "./plugins/cdn.ts";
 
 import { createConfig } from "./configs/config.ts";
-import { Context, fromContext, toContext } from "./context/context.ts";
+import { Context, fromContext, toContext, withContext } from "./context/context.ts";
 
 import { createNotice } from "./utils/create-notice.ts";
 import { TheFileSystem, formatBuildResult } from "./build.ts";
@@ -27,14 +27,15 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
     dispatchEvent(INIT_LOADING);
 
   const StateContext = new Context<LocalState>({
-    filesystem: await filesystem,
+    filesystem: Context.opaque(await filesystem),
     assets: [],
-    config: createConfig("build", opts),
+    config: Context.opaque(createConfig("build", opts)),
+
     failedExtensionChecks: new Set(),
     failedManifestUrls: new Set(),
     host: DEFAULT_CDN_HOST,
     versions: new Map(),
-    
+
     tarballInflight: new Map(),
     tarballMounts: new Map(),
     sideEffectsMatchersCache: new Map(),
@@ -50,18 +51,18 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
   toContext("host", host ?? DEFAULT_CDN_HOST, StateContext);
 
   const { platform, version, ...initOpts } = LocalConfig.init ?? {};
-  const { context } = await init(initOpts, [platform, version]) ?? {};
-  const { define = {}, ...esbuild_opts } = LocalConfig.esbuild ?? {};
+  const esbuildOpts = LocalConfig.esbuild ?? {};
+  const esbuild = await init(initOpts, [platform, version]);
 
   // Stores content from all external outputed files, this is for checking the gzip size when dealing with CSS and other external files
   let context_result: ESBUILD.BuildContext;
 
   try {
-    if (!context)
+    if (!esbuild?.context)
       throw new Error("Initialization failed, couldn't access esbuild.context(...) function");
 
     try {
-      context_result = await context({
+      context_result = await esbuild.context({
         entryPoints: LocalConfig?.entryPoints ?? [],
         loader: {
           ".png": "file",
@@ -71,11 +72,10 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
           ".html": "text",
           ".scss": "css"
         },
-        define: {
+        define: Object.assign({
           "__NODE__": "false",
           "process.env.NODE_ENV": "\"production\"",
-          ...define
-        },
+        }, esbuildOpts.define),
         write: false,
         outdir: "/",
         plugins: [
@@ -84,9 +84,9 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
           VirtualFileSystemPlugin(StateContext),
           TarballPlugin(StateContext),
           HttpPlugin(StateContext),
-          CdnPlugin(StateContext.with({ origin: host }) as Context<LocalState & { origin: string }>),
+          CdnPlugin(withContext({ origin: host }, StateContext)),
         ],
-        ...esbuild_opts,
+        ...esbuildOpts,
       });
     } catch (e) {
       const fail = e as ESBUILD.BuildFailure;

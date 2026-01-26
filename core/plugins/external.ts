@@ -1,8 +1,7 @@
 import type { LocalState, ESBUILD } from "../types.ts";
-import type { Context } from "../context/context.ts";
 import type { CdnResolutionState } from "./cdn.ts";
 
-import { fromContext } from "../context/context.ts";
+import { Context, fromContext, withContext } from "../context/context.ts";
 import { CdnResolution } from "./cdn.ts";
 
 import { parsePackageName } from "@bundle/utils/parse-package-name";
@@ -119,7 +118,7 @@ export function ExternalPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD
             const pkgDetails = parsePackageName(argPath);
             const aliasPath = PolyfillMap[pkgDetails.name as keyof typeof PolyfillMap];
 
-            const ctx = StateContext.with({ build, origin: host }) as Context<CdnResolutionState<T>>;
+            const ctx = withContext({ origin: host, build: Context.opaque(build) }, StateContext);
             return CdnResolution(ctx)(Object.assign({}, args, { path: aliasPath }));
           }
 

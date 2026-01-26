@@ -327,6 +327,26 @@ export class Context<T extends record = record> extends EventTarget {
    */
   readonly target: T
 
+  /**
+   * Proxified cache.
+   * Used to avoid creating multiple proxies for the same object.
+   */
+  readonly #cache = new WeakMap()
+  
+  /**
+   * Opaque plain objects
+   */
+  static #opaque = new WeakSet<object>()
+  static opaque<T extends object>(value: T) { 
+    if (typeof value === "object") Context.#opaque.add(value)
+    return value
+  }
+
+  /**
+   * Keep track of the number of listeners
+   */
+  #listeners = 0
+
   /** Instantiate a new inherited {@link Context} with superseded value. */
   with<U extends record>(target: U): Context<DeepMerge<T, U>> {
     const context = new Context(target, { parent: this })
@@ -338,12 +358,6 @@ export class Context<T extends record = record> extends EventTarget {
   #access(path = [] as PropertyKey[]) {
     return path.reduce((value, property) => (value as target)?.[property], this.#target)
   }
-
-  /**
-   * Proxified cache.
-   * Used to avoid creating multiple proxies for the same object.
-   */
-  readonly #cache = new WeakMap()
 
   /**
    * Proxify an object.
@@ -416,10 +430,12 @@ export class Context<T extends record = record> extends EventTarget {
     try {
       return Reflect.apply(callable, that, args)
     } finally {
-      const target = this.#access(path.slice(0, -1))
-      const property = path.at(-1)!
-      if (target && Reflect.has(target, property)) {
-        this.#dispatch("call", { path, target, property, args })
+      if (this.#listeners > 0) {
+        const target = this.#access(path.slice(0, -1))
+        const property = path.at(-1)!
+        if (target && Reflect.has(target, property)) {
+          this.#dispatch("call", { path, target, property, args })
+        }
       }
     }
   }
@@ -465,7 +481,7 @@ export class Context<T extends record = record> extends EventTarget {
           proxify = true
         } else if (typeof value === "object") {
           // Skip some built-in objects
-          if (Context.#isNotProxyable(value)) {
+          if (Context.#isNotProxyable(value) || Context.#opaque.has(value)) {
             return value
           }
           proxify = true
@@ -479,7 +495,9 @@ export class Context<T extends record = record> extends EventTarget {
       }
       return value
     } finally {
-      this.#dispatch("get", { path, target, property, value })
+      if (this.#listeners > 0) {
+        this.#dispatch("get", { path, target, property, value })
+      }
     }
   }
 
@@ -493,7 +511,9 @@ export class Context<T extends record = record> extends EventTarget {
     try {
       return Reflect.set(target, property, value)
     } finally {
-      this.#dispatch("set", { path, target, property, value: { old, new: value } })
+      if (this.#listeners > 0) {
+        this.#dispatch("set", { path, target, property, value: { old, new: value } })
+      }
     }
   }
 
@@ -507,7 +527,9 @@ export class Context<T extends record = record> extends EventTarget {
     try {
       return Reflect.deleteProperty(target, property)
     } finally {
-      this.#dispatch("delete", { path, target, property, value: deleted })
+      if (this.#listeners > 0) {
+        this.#dispatch("delete", { path, target, property, value: deleted })
+      }
     }
   }
 
@@ -545,6 +567,8 @@ export class Context<T extends record = record> extends EventTarget {
 
   /** Dispatch event. */
   #dispatch(type: string, detail: Omit<detail, "type">) {
+    if (this.#listeners <= 0) return;
+
     Object.assign(detail, { type })
     this.dispatchEvent(new Context.Event(type, { detail }))
     if ((type === "set") || (type === "delete") || (type === "call")) {
@@ -558,6 +582,18 @@ export class Context<T extends record = record> extends EventTarget {
         child.#dispatch(type, detail)
       }
     }
+  }
+
+  override addEventListener(...args: Parameters<EventTarget['addEventListener']>): void {
+    super.addEventListener(...args)
+    this.#listeners++;
+    if (this.#parent) this.#parent.#listeners++;
+  }
+
+  override removeEventListener(...args: Parameters<EventTarget['removeEventListener']>): void {
+    super.removeEventListener(...args)
+    if (this.#listeners > 0) this.#listeners--;
+    if (this.#parent && this.#parent.#listeners > 0) this.#parent.#listeners--;
   }
 
   /**
@@ -592,6 +628,10 @@ export class Context<T extends record = record> extends EventTarget {
       ("WeakMap" in globalThis && obj instanceof globalThis.WeakMap) ||
       ("WeakSet" in globalThis && obj instanceof globalThis.WeakSet) ||
       ("WeakRef" in globalThis && obj instanceof globalThis.WeakRef) ||
+      ("Request" in globalThis && obj instanceof globalThis.Request) ||
+      ("Response" in globalThis && obj instanceof globalThis.Response) ||
+      ("Headers" in globalThis && obj instanceof globalThis.Headers) ||
+      ("URL" in globalThis && obj instanceof globalThis.URL) ||
       ("Promise" in globalThis && obj instanceof globalThis.Promise) ||
       ("Error" in globalThis && obj instanceof globalThis.Error) ||
       ("RegExp" in globalThis && obj instanceof globalThis.RegExp) ||
@@ -701,6 +741,7 @@ export interface GlobalState extends record {
  * @see {@link Context}
  * @see {@link fromContext}
  * @see {@link toContext}
+ * @see {@link withContext}
  */
 export const GlobalContext = new Context<GlobalState>({
   initialized: false,
@@ -725,13 +766,21 @@ export const GlobalContext = new Context<GlobalState>({
  * 
  * @see {@link GlobalContext}
  * @see {@link toContext}
+ * @see {@link withContext}
  */
-// deno-lint-ignore ban-types
-export function fromContext<T extends keyof State | (string & {}), State extends record = GlobalState>(
-  name?: T,
-  ctx: Context<State> = GlobalContext as unknown as Context<State>
+export function fromContext<T extends keyof GlobalState>(
+  name: T
+): GlobalState[T];
+export function fromContext<State extends record, T extends keyof State>(
+  name: T,
+  ctx: Context<State>,
+): State[T];
+export function fromContext<State extends record, T extends keyof State>(
+  name: T,
+  ctx?: Context<State>
 ): State[T] | null {
-  return name && name in ctx.target ? ctx.target[name] : null;
+  const _ctx = (ctx ?? GlobalContext)
+  return name && name in _ctx.target ? _ctx.target[name] as State[T] : null;
 }
 
 /**
@@ -753,13 +802,24 @@ export function fromContext<T extends keyof State | (string & {}), State extends
  * 
  * @see {@link GlobalContext}
  * @see {@link fromContext}
+ * @see {@link withContext}
  */
-export function toContext<T extends keyof State, State extends Record<PropertyKey, unknown> = GlobalState>(
+export function toContext<T extends keyof GlobalState>(
+  name: T,
+  value: GlobalState[T],
+): GlobalState[T];
+export function toContext<State extends record, T extends keyof State>(
   name: T,
   value: State[T],
-  ctx: Context<State> = GlobalContext as unknown as Context<State>
+  ctx: Context<State>,
+): State[T];
+export function toContext<State extends record, T extends keyof State>(
+  name: T,
+  value: State[T],
+  ctx?: Context<State>
 ): State[T] {
-  ctx.target[name] = value;
+  const _ctx = (ctx ?? GlobalContext)
+  _ctx.target[name] = value;
   return value;
 }
 
@@ -790,10 +850,17 @@ export function toContext<T extends keyof State, State extends Record<PropertyKe
  * @see {@link Context}
  * @see {@link GlobalContext}
  */
-export function withContext<NewState extends Record<PropertyKey, unknown>, State extends Record<PropertyKey, unknown> = GlobalState>(
+export function withContext<NewState extends record>(
   value: NewState,
-  ctx: Context<State> = GlobalContext as unknown as Context<State>,
-): Context<State> {
-  const newContext = ctx.with(value) as Context<State & NewState>;
-  return newContext;
+): Context<GlobalState & NewState>;
+export function withContext<State extends record, NewState extends record>(
+  value: NewState,
+  ctx: Context<State>,
+): Context<State & NewState>;
+export function withContext<State extends record, NewState extends record>(
+  value: NewState,
+  ctx?: Context<State>,
+): Context<State & NewState> {
+  const base = (ctx ?? GlobalContext);
+  return base.with(value) as Context<State & NewState>;
 }

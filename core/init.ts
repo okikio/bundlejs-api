@@ -2,7 +2,7 @@ import type * as ESBUILD from "esbuild-wasm";
 import type { Platform } from "./configs/platform.ts";
 
 import { PLATFORM_AUTO } from "./configs/platform.ts";
-import { fromContext, toContext } from "./context/context.ts";
+import { Context, fromContext, toContext } from "./context/context.ts";
 
 import { defaultVersion, getEsbuild, getEsbuildVersion } from "./utils/get-esbuild.ts";
 import { INIT_COMPLETE, INIT_ERROR, INIT_START, dispatchEvent } from "./configs/events.ts";
@@ -23,26 +23,25 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
 
       const version = await getEsbuildVersion(_version);
       const esbuild = await getEsbuild(platform, version);
-      toContext("esbuild", esbuild);
+      toContext("esbuild", Context.opaque(esbuild));
       
       if (
         platform !== "node" &&
         platform !== "deno"
       ) {
-        // if ("wasmModule" in opts) {
-        //   await esbuild.initialize(opts);
-        // } else if ("wasmURL" in opts) { 
-        //   await esbuild.initialize(opts);
-        // } else if (version === defaultVersion) {
-        //   const { default: ESBUILD_WASM } = await import("./wasm.ts");
-        //   await esbuild.initialize({
-        //     wasmModule: new WebAssembly.Module(await ESBUILD_WASM() as BufferSource),
-        //     ...opts
-        //   });
-        // } else {
-        //   await esbuild.initialize(opts);
-        // }
+        if ("wasmModule" in opts) {
           await esbuild.initialize(opts);
+        } else if ("wasmURL" in opts) { 
+          await esbuild.initialize(opts);
+        } else if (version === defaultVersion) {
+          const { default: ESBUILD_WASM } = await import("./wasm.ts");
+          await esbuild.initialize({
+            wasmModule: new WebAssembly.Module(await ESBUILD_WASM() as BufferSource),
+            ...opts
+          });
+        } else {
+          await esbuild.initialize(opts);
+        }
       }
 
       dispatchEvent(INIT_COMPLETE);

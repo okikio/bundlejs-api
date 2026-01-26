@@ -4,7 +4,7 @@ import type { IFileSystem } from "../utils/filesystem.ts";
 import type { Context } from "../context/context.ts";
 
 import { fileExists, getFile } from "../utils/filesystem.ts";
-import { fromContext } from "../context/context.ts";
+import { fromContext, withContext } from "../context/context.ts";
 import { inferLoader, RESOLVE_EXTENSIONS } from "../utils/loader.ts";
 import { dirname, extname, resolve } from "@bundle/utils/path";
 
@@ -192,11 +192,11 @@ export function VirtualFileSystemPlugin<T = Uint8Array>(
 				?? RESOLVE_EXTENSIONS.slice()
 			);
 
-			const ctx = StateContext.with({
+			const ctx = withContext({ 
 				resolveExtensions,
 				enableIndexFallback,
 				prefixes
-			}) as Context<VfsResolutionState<T>>;
+			}, StateContext) as Context<VfsResolutionState<T>>;
 
 			/**
 			 * Handler 1: VFS-prefixed paths (any namespace)

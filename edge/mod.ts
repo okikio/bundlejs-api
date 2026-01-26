@@ -241,7 +241,7 @@ export default {
             formatQuery ? { format } : {},
           ),
           init: {
-            platform: "deno-wasm",
+            platform: "browser",
             worker: false,
             wasmModule: undefined
           },

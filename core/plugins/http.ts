@@ -24,10 +24,8 @@
  * ```
  */
 import type { ESBUILD, LocalState } from "../types.ts";
-import type { Context } from "../context/context.ts";
-import type { CdnResolutionState } from "./cdn.ts";
 
-import { fromContext, toContext } from "../context/context.ts";
+import { Context, fromContext, toContext, withContext } from "../context/context.ts";
 import { CdnResolution } from "./cdn.ts";
 
 import { fetchContent, fetchHeaders } from "@bundle/utils/fetch-and-cache";
@@ -300,7 +298,7 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
 
       // Bare import (e.g., "lodash") → delegate to CDN resolution
       if (isBareImport(argPath)) {
-        const ctx = StateContext.with({ build }) as Context<CdnResolutionState<T>>;
+        const ctx = withContext({ origin, build: Context.opaque(build) }, StateContext);
         return await CdnResolution(ctx)(args);
       }
 
@@ -362,7 +360,7 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
   return {
     name: HTTP_NAMESPACE,
     setup(build) {
-      const ctx = StateContext.with({ build }) as Context<HttpResolutionState<T>>;
+      const ctx = withContext({ build: Context.opaque(build) }, StateContext);
 
       // Route HTTP/HTTPS URLs to this plugin
       build.onResolve({ filter: /^https?:\/\// }, args => ({
