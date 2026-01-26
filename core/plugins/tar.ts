@@ -232,7 +232,7 @@ export function parseTarballUrl(
   }
 
   // Detect non-compact form: /owner/repo/<pkgSpec>/...
-  // The README shows: /${owner}/${repo}/${package}@{commit} :contentReference[oaicite:3]{index=3}
+  // The README shows: /${owner}/${repo}/${package}@{commit} 
   let owner: string | null = null;
   let repo: string | null = null;
   let startIndex = 0;
@@ -245,7 +245,7 @@ export function parseTarballUrl(
     // - "@scope" (scoped package begins)
     // - "name@version" (unscoped with version selector)
     //
-    // This matches the documented non-compact examples. :contentReference[oaicite:4]{index=4}
+    // This matches the documented non-compact examples. 
     if (third.startsWith("@") || third.includes("@")) {
       owner = parts[0] ?? null;
       repo = parts[1] ?? null;

@@ -79,7 +79,7 @@ import { determineExtension, HTTP_NAMESPACE } from "./http.ts";
 import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 
 import { getCDNUrl, getCDNStyle, DEFAULT_CDN_HOST } from "../utils/cdn-format.ts";
-import { getResolverConditions } from "../utils/resolve-conditions.ts";
+import { getLegacyMainFields, getResolverConditions } from "../utils/resolve-conditions.ts";
 
 /** CDN Plugin Namespace */
 export const CDN_NAMESPACE = "cdn-url";
@@ -379,15 +379,16 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             modernResolve = resolve(resolvedManifest, relativePath || ".", {
               browser: conditions.browser,
               conditions: conditions.conditions,
-              require: conditions.require
+              require: conditions.require,
+              unsafe: true
             }) ||
               // Same compat fallback as above
               (!conditions.require
                 ? resolve(resolvedManifest, relativePath, {
-                    browser: conditions.browser,
-                    conditions: ["require", ...conditions.conditions],
-                    require: true
-                  }) 
+                  browser: conditions.browser,
+                  conditions: ["require", ...conditions.conditions],
+                  require: true
+                })
                 : undefined
               );
 
@@ -397,6 +398,22 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             // deno-lint-ignore no-empty
           } catch (_) { }
 
+          console.log({
+
+            request: args.path,
+            importer: args.importer,
+            kind: args.kind,
+            esbuildPlatform: esbuildOpts.platform,
+            esbuildFormat: esbuildOpts.format,
+            esbuildConditionsOpt: esbuildOpts.conditions,
+            computedConditions: conditions.conditions,
+            computedBrowserFlag: conditions.browser,
+            computedRequireFlag: conditions.require,
+            resolvedManifest,
+            modernResolve,
+            resolvedPath
+          })
+
           if (!modernResolve) {
             // If the subpath has a package.json, and the modern resolve didn't work for it
             // we can safely use legacy resolve,
@@ -405,10 +422,13 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             const emptyRelativePath = relativePath.trim().length === 0
             if (isSubpathDirectoryPackage || emptyRelativePath) {
               try {
+                const legacyFields = getLegacyMainFields(resolvedManifest, args, esbuildOpts);
+                
                 // Resolving using main, module, etc... from package.json
-                legacyResolve = legacy(resolvedManifest, { browser: conditions.browser }) ||
-                  legacy(resolvedManifest, { fields: ["module", "main"] }) ||
-                  legacy(resolvedManifest, { fields: ["unpkg", "bin"] });
+                legacyResolve = legacy(resolvedManifest, {
+                  browser: conditions.browser,
+                  fields: legacyFields
+                });
 
                 if (legacyResolve) {
                   // Some packages have `browser` fields in their package.json which have some values set to false

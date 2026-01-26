@@ -1,2 +1,2 @@
-# bundle
+# bundlejs-api
 A small tool for checking the size of npm packages.
