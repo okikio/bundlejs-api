@@ -13,6 +13,23 @@ import { LruCache } from "./lru.ts";
  * 
  * For efficiency, we also maintain a redirect map so requests to aliased URLs
  * can find cached content without re-fetching.
+ * 
+ * @example How Redirects Now Work
+ * ```
+ * Request: https://esm.sh/lodash@latest
+ *          ↓
+ * fetch-and-cache: fetch with redirect:'follow'
+ *          ↓
+ * Response.url: https://esm.sh/lodash@4.17.21
+ *          ↓
+ * Cache: stores under final URL + records redirect mapping
+ *          ↓
+ * http.ts: receives { url: "https://esm.sh/lodash@4.17.21", content, ... }
+ *          ↓
+ * pluginData.url = final URL
+ *          ↓
+ * Relative import "./debounce" resolves against final URL ✓
+ * ```
  */
 
 // ============================================================================
