@@ -108,7 +108,11 @@ export interface CdnResolutionState<T> extends LocalState<T> {
 export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const LocalConfig = fromContext("config", StateContext)!;
   const manifest: Partial<PackageJson | FullPackageVersion> = LocalConfig["package.json"] ?? {};
+
   const esbuildOpts = LocalConfig.esbuild ?? {};
+  const resolveOpts = LocalConfig.resolve ?? {};
+
+  const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
 
   const cdn = fromContext("origin", StateContext)! ?? DEFAULT_CDN_HOST;
   const build = fromContext("build", StateContext)!;
@@ -117,7 +121,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const packageManifestsMap = fromContext("packageManifests", StateContext) ?? new Map<string, PackageJson | FullPackageVersion>();
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
-    const conditions = getResolverConditions(args, esbuildOpts);
+    const conditions = getResolverConditions(args, effectiveResolveOpts);
     let argPath = args.path;
 
     // ========================================================================
@@ -398,22 +402,6 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             // deno-lint-ignore no-empty
           } catch (_) { }
 
-          console.log({
-
-            request: args.path,
-            importer: args.importer,
-            kind: args.kind,
-            esbuildPlatform: esbuildOpts.platform,
-            esbuildFormat: esbuildOpts.format,
-            esbuildConditionsOpt: esbuildOpts.conditions,
-            computedConditions: conditions.conditions,
-            computedBrowserFlag: conditions.browser,
-            computedRequireFlag: conditions.require,
-            resolvedManifest,
-            modernResolve,
-            resolvedPath
-          })
-
           if (!modernResolve) {
             // If the subpath has a package.json, and the modern resolve didn't work for it
             // we can safely use legacy resolve,
@@ -422,7 +410,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             const emptyRelativePath = relativePath.trim().length === 0
             if (isSubpathDirectoryPackage || emptyRelativePath) {
               try {
-                const legacyFields = getLegacyMainFields(resolvedManifest, args, esbuildOpts);
+                const legacyFields = getLegacyMainFields(resolvedManifest, args, effectiveResolveOpts);
                 
                 // Resolving using main, module, etc... from package.json
                 legacyResolve = legacy(resolvedManifest, {

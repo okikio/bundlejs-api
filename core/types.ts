@@ -6,6 +6,7 @@ import type { InitOptions } from "./init.ts";
 import type { record } from "./context/context.ts";
 import type { IFileSystem } from "./utils/filesystem.ts";
 import type { TarballState } from "./plugins/tar.ts";
+import { ResolverConditionInputs } from "@bundle/core/utils/resolve-conditions";
 
 export type { ESBUILD, ESBUILD_WASM };
 
@@ -44,16 +45,17 @@ export interface LocalState<T = unknown> extends TarballState, record {
 export interface BuildConfig extends CommonConfigOptions {
   /** esbuild config options https://esbuild.github.io/api/#build-api */
   esbuild?: ESBUILD.BuildOptions | ESBUILD_WASM.BuildOptions,
+  resolve?: ResolverConditionInputs,
 
   /**
    * The package.json to use when trying to bundle files
    */
-  "package.json"?: PackageJson | FullPackageVersion;
+  "package.json"?: PackageJson | FullPackageVersion,
 
   /**
    * Enables or disables polyfill
    */
-  polyfill?: boolean;
+  polyfill?: boolean,
 
   /** The default CDN to import packages from */
   cdn?: "https://unpkg.com" | "https://esm.run" | "https://esm.sh" | "https://esm.sh/jsr" | "https://cdn.skypack.dev" | "https://cdn.jsdelivr.net/npm" | "https://cdn.jsdelivr.net/gh" | "https://deno.land/x" | "https://raw.githubusercontent.com" | "unpkg" | "esm.run" | "esm.sh" | "esm" | "jsr" | "skypack" | "jsdelivr" | "jsdelivr.gh" | "github" | "deno" | (string & {}),

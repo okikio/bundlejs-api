@@ -3,7 +3,44 @@ import type { PackageJson } from "@bundle/utils/types";
 import type { ESBUILD } from "../types.ts";
 
 /**
- * A minimal view of esbuild options that matter for package.json conditional resolution.
+ * A high-level “runtime profile” that influences resolution.
+ *
+ * Why this exists:
+ * - Many runtimes are *not* captured by esbuild’s `platform` alone.
+ * - Many packages use conditional exports like `"react-native"`, `"electron"`,
+ *   `"workerd"`, `"edge-light"`, `"deno"`, etc.
+ *
+ * This type intentionally does NOT map 1:1 to esbuild `platform`:
+ * - `"edge-light"` might be “web-like” but still not the same as `"browser"`.
+ * - `"workerd"` is “worker-like” but often wants different fallbacks than `"browser"`.
+ *
+ * This overlay lets you express “what runtime am I building for?” without
+ * mutating `esbuildOpts.conditions` (which would change esbuild’s default `"module"` behavior).
+ */
+export type ResolveRuntime =
+	| "react-native"
+	| "electron-main"
+	| "electron-renderer"
+	| "deno"
+	| "workerd"
+	| "edge-light";
+
+/**
+ * Inputs used to compute resolver conditions and legacy mainFields ordering.
+ *
+ * Design intent:
+ * - Keep the current esbuild-faithful behavior by default.
+ * - Add a separate “runtime overlay” that can inject additional conditions
+ *   without changing how `esbuildOpts.conditions` behaves.
+ *
+ * Important nuance:
+ * - In the current resolver, *setting* `esbuildOpts.conditions` disables
+ *   the “auto-add `"module"`” behavior.
+ * - This is desirable because it preserves esbuild semantics:
+ *   “If the user sets conditions explicitly, we won’t add implicit ones.”
+ *
+ * The runtime overlay exists specifically so you can add runtime conditions
+ * (like `"react-native"` or `"workerd"`) without turning off auto `"module"`.
  */
 export interface ResolverConditionInputs {
 	platform?: ESBUILD.BuildOptions["platform"];
@@ -15,10 +52,45 @@ export interface ResolverConditionInputs {
 	 * If omitted, we emulate esbuild's defaults per-platform.
 	 */
 	mainFields?: ESBUILD.BuildOptions["mainFields"];
+
+  /**
+   * Runtime overlay:
+   * Adds common conditions and mainFields behavior for a known target runtime.
+   *
+   * This does NOT behave like `esbuildOpts.conditions`.
+   * In particular:
+   * - It does not disable auto `"module"`.
+   * - It is intended to be an additive “profile” layer.
+   *
+   * Example:
+   * - runtime: "react-native" will add the `"react-native"` condition and may
+   *   choose to disable `browser` field mapping (because RN is not “the browser”).
+   */
+	runtime?: ResolveRuntime;
+
+  /**
+   * Additional overlay conditions to apply in addition to the runtime profile.
+   *
+   * Use this when:
+   * - A runtime is “close” but you want to add one more condition.
+   * - You want to A/B test a condition without adding a new runtime enum.
+   *
+   * Examples:
+   * - runtime: "workerd", runtimeConditions: ["edge-light"]
+   * - runtime: "deno", runtimeConditions: ["worker"]
+   *
+   * These are additive and do NOT disable auto `"module"`.
+   */
+	runtimeConditions?: readonly string[];
 }
 
 /**
- * The computed condition set we pass into resolve-exports-imports.
+ * The computed condition result used by your resolver.
+ *
+ * - `browser`: Whether the resolver should treat `package.json#browser` mappings as active.
+ * - `require`: Whether we’re in a “require-like” context (CJS), which influences
+ *   both exports conditions and legacy main field ordering.
+ * - `conditions`: The final condition set used for conditional exports / imports resolution.
  */
 export interface ResolverConditions {
 	/**
@@ -48,17 +120,92 @@ export interface ResolverConditions {
 }
 
 /**
- * True when an esbuild resolve kind behaves like CommonJS `require(...)`.
+ * Runtime default policy output.
+ *
+ * - `conditions`: Conditions to add to exports/imports resolution.
+ * - `browserField`: Whether to enable `package.json#browser` field mapping.
+ *   - `null` means “don’t override; let platform decide”.
+ */
+export interface RuntimeDefaults {
+  conditions: string[];
+  browserField: boolean | null;
+}
+
+
+/**
+ * Get runtime-specific default overlays.
+ *
+ * This is intentionally a policy function:
+ * - You can tweak these defaults without touching core resolution logic.
+ *
+ * Notes about ecosystem reality:
+ * - Some condition names are “de facto” community standards, not official specs.
+ * - Many packages use them anyway, so having a predictable policy helps.
+ *
+ * If you disagree with any default:
+ * - Use `runtimeConditions` to add extra conditions.
+ * - Or create a new runtime profile in `ResolveRuntime`.
+ */
+export function getRuntimeDefaults(runtime: ResolveRuntime | undefined): RuntimeDefaults {
+  if (!runtime) {
+    return { conditions: [], browserField: null };
+  }
+
+  switch (runtime) {
+    case "react-native":
+      // React Native / Metro commonly uses `"react-native"` in conditional exports.
+      // It is NOT “browser”, so we default to disabling browser field mapping.
+      return { conditions: ["react-native"], browserField: false };
+
+    case "electron-main":
+      // Electron main process behaves like Node, but packages may branch for electron.
+      return { conditions: ["electron"], browserField: false };
+
+    case "electron-renderer":
+      // Renderer is web-like in many apps, so `browser` mappings are often correct.
+      return { conditions: ["electron"], browserField: true };
+
+    case "deno":
+      // Deno can satisfy `"deno"` and often supports `"node"` via compat mode.
+      // If you want to force “no node compat”, remove `"node"` here or override.
+      return { conditions: ["deno", "node"], browserField: false };
+
+    case "workerd":
+      // Cloudflare / workerd deployments may use `"workerd"` and/or `"worker"`.
+      // We default to disabling browser mappings because workers are not DOM runtimes.
+      return { conditions: ["workerd", "worker"], browserField: false };
+
+    case "edge-light":
+      // Edge runtimes are typically “web-ish”; `browser` mappings often help.
+      return { conditions: ["edge-light"], browserField: true };
+  }
+}
+
+/**
+ * Returns true when the import kind represents a Node-style `require()` usage.
+ *
+ * This is used to decide whether we should include `"require"` or `"import"` in the
+ * conditions list, and influences which legacy fields we prefer.
  */
 export function isRequireKind(kind: ESBUILD.ImportKind): boolean {
 	return kind === "require-call" || kind === "require-resolve";
 }
 
 /**
- * Determine whether this resolve is conceptually a CommonJS "require" edge.
+ * Returns true if the current resolution context should be treated as CommonJS.
  *
- * Entry points are special: args.kind === "entry-point" doesn't tell you whether the
- * entry module originated as ESM or CJS, so format is the best available signal.
+ * Plain English:
+ * - If the import was triggered by `require()` or `require.resolve()`, it’s require-context.
+ * - If it’s an entry point and the output format is `"cjs"`, also treat as require-context.
+ *
+ * Why entry-point is special:
+ * - esbuild’s `args.kind` for entry points is `"entry-point"`, which doesn’t encode
+ *   CJS vs ESM. Your chosen output format does.
+ *
+ * Example:
+ * - args.kind === "entry-point"
+ * - esbuildOpts.format === "cjs"
+ * => we treat it as require-context so `"require"` is used.
  */
 export function isRequireContext(
 	args: Pick<ESBUILD.OnResolveArgs, "kind">,
@@ -70,129 +217,236 @@ export function isRequireContext(
 }
 
 /**
- * Custom conditions can be any strings, but esbuild has special behavior for:
- * default/import/require/browser/node (cannot be disabled, and some are platform-gated). 
+ * Compute the set of conditions used to resolve package `"exports"` and `"imports"`.
  *
- * We treat these as *not* true "custom conditions" to avoid accidentally deviating from esbuild.
- * We deliberately allow "module" to be user-specified because esbuild allows you to add it back
- * by configuring conditions (even an empty list disables the auto-inclusion). 
- */
-export function normalizeCustomConditions(
-	conditions: readonly string[] | undefined,
-): string[] {
-	if (!conditions || conditions.length <= 0) return [];
-
-	const out: string[] = [];
-	for (const raw of conditions) {
-		const c = raw.trim();
-		if (!c) continue;
-
-		// Do not let user "force" platform-gated built-ins.
-		if (
-			c === "default" ||
-			c === "import" ||
-			c === "require" ||
-			c === "browser" ||
-			c === "node"
-		) continue;
-
-		out.push(c);
-	}
-
-	return dedupePreserveOrder(out);
-}
-
-/**
- * A minimal view of esbuild options that matter for package.json conditional resolution.
- */
-export interface ResolverConditionInputs {
-	platform?: ESBUILD.BuildOptions["platform"];
-	conditions?: ESBUILD.BuildOptions["conditions"];
-	format?: ESBUILD.BuildOptions["format"];
-}
-
-/**
- * Compute the effective condition set to match esbuild’s documented behavior. 
+ * This function is a small “policy engine” that combines:
+ * 1) Require vs Import (`"require"` or `"import"`)
+ * 2) Platform (`"browser"` and/or `"node"`)
+ * 3) esbuild’s implicit `"module"` condition (only when user did NOT specify conditions)
+ * 4) Runtime overlay (`runtime` and `runtimeConditions`)
+ * 5) User conditions (`esbuildOpts.conditions`)
+ * 6) Always includes `"default"`
+ *
+ * The most important rule:
+ * - If the user explicitly sets `esbuildOpts.conditions`, we do not auto-add `"module"`.
+ *   This preserves esbuild behavior and avoids surprising condition sets.
+ *
+ * Examples
+ * --------
+ *
+ * Example 1: Default browser build (no explicit conditions)
+ * ```ts
+ * const c = getResolverConditions(
+ *   { kind: "import-statement" },
+ *   { platform: "browser", format: "esm" },
+ * );
+ * // c.conditions includes: ["import", "browser", "module", "default"]
+ * // c.browser === true
+ * ```
+ *
+ * Example 2: React Native overlay without disabling auto `"module"`
+ * ```ts
+ * const c = getResolverConditions(
+ *   { kind: "import-statement" },
+ *   { platform: "browser", format: "esm", runtime: "react-native" },
+ * );
+ * // c.conditions includes: ["import", "browser", "module", "react-native", "default"]
+ * // c.browser === false  (browser field mapping disabled by RN policy)
+ * ```
+ *
+ * Example 3: User sets explicit esbuild conditions (auto `"module"` stops)
+ * ```ts
+ * const c = getResolverConditions(
+ *   { kind: "import-statement" },
+ *   { platform: "browser", format: "esm", conditions: ["react-server"] },
+ * );
+ * // c.conditions includes: ["import", "browser", "react-server", "default"]
+ * // Notice: "module" is NOT auto-added because user provided `conditions`.
+ * ```
  */
 export function getResolverConditions(
-	args: Pick<ESBUILD.OnResolveArgs, "kind">,
-	esbuildOpts: ResolverConditionInputs,
+  args: Pick<ESBUILD.OnResolveArgs, "kind">,
+  esbuildOpts: ResolverConditionInputs,
 ): ResolverConditions {
-	const platform = esbuildOpts.platform ?? "browser";
+  const platform = esbuildOpts.platform ?? "browser";
 
-	// Entry points can be CommonJS even though `args.kind` is "entry-point".
-	const require =
-		isRequireKind(args.kind) ||
-		(args.kind === "entry-point" && esbuildOpts.format === "cjs");
+  // `require` impacts both exports conditions and legacy mainFields ordering.
+  const require = isRequireContext(args, esbuildOpts);
 
-	// Legacy `browser` field mapping: only automatic on platform="browser". 
-	const browserField = platform === "browser";
+  // Your existing behavior: Cache/Browser field mapping is enabled by default
+  // when platform is "browser". This is a boolean policy switch you pass onward.
+  let browserField = platform === "browser";
 
-	// Esbuild only auto-adds "module" when:
-	// - platform is "browser" or "node"
-	// - AND the user did not configure `conditions` at all (undefined)
-	const userProvidedConditions = typeof esbuildOpts.conditions !== "undefined";
-	const mayAutoAddModule = !userProvidedConditions &&
-		(platform === "browser" || platform === "node");
+  // This line preserves your esbuild-faithful behavior:
+  // if the user supplied conditions, we treat that as authoritative and stop
+  // auto-adding "module".
+  const userProvidedConditions = typeof esbuildOpts.conditions !== "undefined";
 
-	const computed: string[] = [];
+  // Your existing rule: only auto-add "module" for browser/node platforms,
+  // and only if user did not supply conditions.
+  const mayAutoAddModule =
+    !userProvidedConditions && (platform === "browser" || platform === "node");
 
-	// Built-in import-vs-require dimension. 
-	computed.push(require ? "require" : "import");
+  const computed: string[] = [];
 
-	// Platform dimension: neutral adds neither. 
-	if (platform === "browser") computed.push("browser");
-	if (platform === "node") computed.push("node");
+  // 1) import-vs-require dimension
+  computed.push(require ? "require" : "import");
 
-	// Bundler-only "module" (only in browser/node by default). 
-	if (mayAutoAddModule) computed.push("module");
+  // 2) platform dimension
+  if (platform === "browser") computed.push("browser");
+  if (platform === "node") computed.push("node");
 
-	// Then append any explicit custom conditions the caller provided.
-	if (esbuildOpts.conditions?.length) {
-		for (const c of esbuildOpts.conditions) computed.push(c);
-	}
+  // 3) esbuild-style implicit bundler condition
+  if (mayAutoAddModule) computed.push("module");
 
-	// "default" is always active in esbuild. 
-	computed.push("default");
+  // 4) runtime overlay (additive, does NOT affect mayAutoAddModule)
+  const runtimeDefaults = getRuntimeDefaults(esbuildOpts.runtime);
+  if (runtimeDefaults.browserField !== null) {
+    browserField = runtimeDefaults.browserField;
+  }
+  for (const c of runtimeDefaults.conditions) computed.push(c);
 
-	return {
-		browser: browserField,
-		require,
-		conditions: dedupePreserveOrder(computed),
-	};
-}
+  // 5) extra runtime overlay conditions (also additive)
+  if (esbuildOpts.runtimeConditions?.length) {
+    for (const c of esbuildOpts.runtimeConditions) computed.push(c);
+  }
 
+  // 6) explicit user conditions (these DO imply “no implicit module”)
+  if (esbuildOpts.conditions?.length) {
+    for (const c of esbuildOpts.conditions) computed.push(c);
+  }
 
-export function getLegacyMainFields(
-	manifest: Pick<PackageJson, "browser" | "main" | "module">,
-	args: Pick<ESBUILD.OnResolveArgs, "kind">,
-	esbuildOpts: Pick<ResolverConditionInputs, "platform" | "format" | "mainFields">,
-): string[] {
-	// If the user set mainFields, that replaces defaults (and disables special behavior). 
-	if (esbuildOpts.mainFields) return Array.from(esbuildOpts.mainFields);
+  // 7) default always active
+  computed.push("default");
 
-	const platform = esbuildOpts.platform ?? "browser";
-	const require = isRequireContext(args, esbuildOpts);
-
-	if (platform === "node") {
-		// esbuild default: main,module 
-		return ["main", "module"];
-	}
-
-	if (platform === "browser") {
-		// esbuild default: browser,module,main with an extra require() compatibility tweak: 
-		// If there's no browser *entry point* and it's a require() edge, prefer main over module.
-		const hasBrowserEntrypoint = typeof (manifest as { browser?: unknown }).browser === "string";
-		if (require && !hasBrowserEntrypoint) return ["browser", "main", "module"];
-		return ["browser", "module", "main"];
-	}
-
-	// platform === "neutral": esbuild default is empty. 
-	return [];
+  return {
+    browser: browserField,
+    require,
+    conditions: dedupePreserveOrder(computed),
+  };
 }
 
 /**
- * De-dupe while preserving first-seen order.
+ * Compute the “legacy” main fields ordering (for packages that do not resolve via `"exports"`).
+ *
+ * Plain English:
+ * - If `"exports"` resolution fails (or is absent), you fall back to legacy fields:
+ *   `"browser"`, `"module"`, `"main"`, etc.
+ * - Different runtimes tend to want different priorities.
+ * - This function centralizes that policy in one place.
+ *
+ * Rules:
+ * - If user provides `esbuildOpts.mainFields`, we return that as authoritative.
+ * - Otherwise, we compute defaults based on platform + require-context + runtime overlay.
+ *
+ * Examples
+ * --------
+ *
+ * Example 1: Browser ESM default
+ * ```ts
+ * const fields = getLegacyMainFields(
+ *   { main: "./cjs.js", module: "./esm.js", browser: "./browser.js" },
+ *   { kind: "import-statement" },
+ *   { platform: "browser", format: "esm" },
+ * );
+ * // ["browser", "module", "main"]
+ * ```
+ *
+ * Example 2: React Native overlay prefers "react-native" field first
+ * ```ts
+ * const fields = getLegacyMainFields(
+ *   { main: "./cjs.js", module: "./esm.js", "react-native": "./rn.js" },
+ *   { kind: "import-statement" },
+ *   { platform: "browser", format: "esm", runtime: "react-native" },
+ * );
+ * // ["react-native", "browser", "module", "main"]
+ * ```
+ */
+export function getLegacyMainFields(
+  manifest: Pick<PackageJson, "browser" | "main" | "module"> & Record<string, unknown>,
+  args: Pick<ESBUILD.OnResolveArgs, "kind">,
+  esbuildOpts: Pick<ResolverConditionInputs, "platform" | "format" | "mainFields" | "runtime">,
+): string[] {
+  // User override takes precedence, consistent with esbuild.
+  if (esbuildOpts.mainFields) return Array.from(esbuildOpts.mainFields);
+
+  const platform = esbuildOpts.platform ?? "browser";
+  const require = isRequireContext(args, esbuildOpts);
+
+  // Runtime overlays for legacy fields:
+  // This is the place you capture “ecosystem reality” for packages that haven't
+  // fully migrated to conditional exports.
+
+  if (esbuildOpts.runtime === "react-native") {
+    // Many packages still expose a top-level "react-native" legacy field.
+    // Prefer it first to match Metro/RN expectations.
+    const hasReactNativeEntrypoint = typeof manifest["react-native"] === "string";
+
+    // If we're in require-context and there's no RN entrypoint, we prefer
+    // main before module to avoid accidentally selecting ESM in a CJS-only path.
+    if (require && !hasReactNativeEntrypoint) {
+      return ["react-native", "browser", "main", "module"];
+    }
+
+    // Otherwise ESM-first fallback (module before main).
+    return ["react-native", "browser", "module", "main"];
+  }
+
+  if (esbuildOpts.runtime === "electron-renderer") {
+    // Renderer: browser mappings tend to be desirable; ESM-first for imports.
+    if (require) return ["browser", "main", "module"];
+    return ["browser", "module", "main"];
+  }
+
+  if (esbuildOpts.runtime === "electron-main") {
+    // Main: Node-like. Keep ordering conservative.
+    return ["main", "module"];
+  }
+
+  if (esbuildOpts.runtime === "edge-light") {
+    // Edge runtimes are commonly ESM-first and "web-ish".
+    return ["browser", "module", "main"];
+  }
+
+  if (esbuildOpts.runtime === "workerd") {
+    // Workerd / workers: typically ESM-first, and "browser" mappings can be risky
+    // because they may assume DOM APIs or bundle in browser-only shims.
+    return ["module", "main"];
+  }
+
+  if (esbuildOpts.runtime === "deno") {
+    // Deno: ESM-first fallback.
+    return ["module", "main"];
+  }
+
+  // Default behavior (no runtime overlay):
+  if (platform === "node") {
+    return ["main", "module"];
+  }
+
+  if (platform === "browser") {
+    const hasBrowserEntrypoint = typeof (manifest as { browser?: unknown }).browser === "string";
+
+    // This is your existing nuance:
+    // If we're in require-context AND browser is NOT a string entrypoint,
+    // prefer main over module to avoid forcing ESM onto a CJS path.
+    if (require && !hasBrowserEntrypoint) {
+      return ["browser", "main", "module"];
+    }
+
+    return ["browser", "module", "main"];
+  }
+
+  return [];
+}
+
+/**
+ * Dedupe an array of strings while preserving order.
+ *
+ * Why:
+ * - Condition lists are effectively sets, but order matters for debugging and for
+ *   deterministic tests.
+ * - We want stable output and no accidental duplicates.
  */
 export function dedupePreserveOrder(values: readonly string[]): string[] {
 	const seen = new Set<string>();
