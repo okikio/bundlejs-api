@@ -37,6 +37,6 @@ jobs:
       - name: Upload to Deno Deploy
         uses: denoland/deployctl@v1
         with:
-          project: "okikiojo-bundlejs-85"
+          project: "okikiojo-bundlejs-ap-42"
           entrypoint: "edge/mod.ts"
           root: "."
