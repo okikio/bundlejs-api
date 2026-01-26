@@ -87,7 +87,7 @@ console.log("\n");
 // export * from "@okikio/animate";`);
 // await setFile(fs, "/new.tsx", "export * from \"@okikio/native\";");
 await setFile(fs, "/new.tsx", "export * from \"https://pkg.pr.new/@tanstack/react-query@7988\"")
-// await setFile(fs, "/new.tsx", "export * from 'iconv-lite';\nexport { default } from 'iconv-lite';")
+await setFile(fs, "/new.tsx", "export * from 'iconv-lite';\nexport { default } from 'iconv-lite';")
 // await setFile(fs, "/other.tsx", `\
 // export * as Other from "/index.tsx";
 // export * from "@okikio/emitter";`);
@@ -130,7 +130,30 @@ const result = await build({
 });
 
 console.log({
-  result,
+  result: result.totalInstallSize,
+  // packageManifests: result.state.packageManifests,
+  //   // await compress(
+  //   //   result.contents.map((x: any) => x?.contents),
+  //   //   { type: "gzip" }
+  //   // )
+});
+const result2 = await build({
+  // "/index.tsx",
+  entryPoints: ["/new.tsx"],
+  esbuild: {
+    treeShaking: true,
+    splitting: true,
+    format: "esm"
+  },
+  init: {
+    // platform: "node",
+    // version: "0.17",
+    // wasm
+  }
+});
+
+console.log({
+  result2: result2.totalInstallSize,
   // packageManifests: result.state.packageManifests,
   //   // await compress(
   //   //   result.contents.map((x: any) => x?.contents),
