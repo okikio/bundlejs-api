@@ -124,10 +124,12 @@ export async function rebuild(ctx: BuildContext): Promise<BuildResult> {
   try {
     try {
       // Clear the assets, failedExtensionChecks, and failedManifestUrls
-      StateContext.target.assets.length = 0;
-      StateContext.target.failedExtensionChecks.clear();
-      StateContext.target.failedManifestUrls.clear();
-      // StateContext.target.packageManifests.clear();
+      ctx.state.target.assets.length = 0;
+      ctx.state.target.failedExtensionChecks.clear();
+      ctx.state.target.failedManifestUrls.clear();
+      ctx.state.target.sideEffectsMatchersCache.clear();
+      ctx.state.target.filesystem?.clear?.();
+      // ctx.state.target.packageManifests.clear();
 
       build_result = await ctx.rebuild();
     } catch (e) {

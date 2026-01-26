@@ -162,17 +162,22 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
 }
 
 export async function formatBuildResult(_ctx: BuildResultContext) {
-  const { state: StateContext, ...build_result } = _ctx;
-  const LocalConfig = StateContext.target.config!;
+  // const { state: StateContext, ...build_result } = _ctx;
+  const LocalConfig = fromContext("config", _ctx.state)!;
+  const fs = fromContext("filesystem", _ctx.state)!;
+  const assets = fromContext("assets", _ctx.state)! ?? [];
+  const packageManifests = 
+    fromContext('packageManifests', _ctx.state)
+    ?? new Map<string, PackageJson | FullPackageVersion>();
 
   try {
-    const { define = {}, ...esbuild_opts } = LocalConfig.esbuild ?? {};
+    const esbuild_opts = LocalConfig.esbuild ?? {};
     let outputs: ESBUILD.OutputFile[] = [];
     let contents: ESBUILD.OutputFile[] = [];
 
-    if (build_result.warnings?.length > 0) {
+    if (_ctx.warnings?.length > 0) {
       // Log errors with added color info. to the virtual console
-      const ansiMsgs = await createNotice(build_result.warnings, "warning", false) ?? [];
+      const ansiMsgs = await createNotice(_ctx.warnings, "warning", false) ?? [];
       dispatchEvent(LOGGER_WARN, ansiMsgs.join("\n"));
 
       const message = `${ansiMsgs.length} warning(s) `;
@@ -181,8 +186,8 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
 
     // Create an array of assets and actual output files, this will later be used to calculate total file size
     outputs = await Promise.all(
-      Array.from(StateContext.target.assets ?? [])
-        .concat(build_result?.outputFiles as ESBUILD.OutputFile[])
+      Array.from(assets ?? [])
+        .concat(_ctx?.outputFiles as ESBUILD.OutputFile[])
     );
 
     contents = await Promise.all(
@@ -214,12 +219,8 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
     );
 
     // Ensure a fresh filesystem on every run
-    // FileSystem.clear();
+    await fs?.clear?.();
     // console.log({ contentsLen: contents.length })
-
-    const packageManifests = 
-      fromContext('packageManifests', StateContext)
-      ?? new Map<string, PackageJson | FullPackageVersion>();
     
     const packageSizeArr: [string, string][] = [];
     let totalInstallSize = 0;
@@ -233,7 +234,7 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
     }
 
     return {
-      state: StateContext.target,
+      // state: StateContext.target,
       config: LocalConfig,
 
       /** 
@@ -246,12 +247,14 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
        */
       outputs,
 
-      files: (await StateContext.target.filesystem?.files()) || null,
-
       packageSizeArr,
       totalInstallSize: bytes.format(totalInstallSize),
 
-      ...build_result,
+      errors: _ctx.errors,
+      mangleCache: _ctx.mangleCache,
+      metafile: _ctx.metafile,
+      outputFiles: _ctx.outputFiles,
+      warnings: _ctx.warnings,
     };
   } catch (e) {
     const err = e as Error;

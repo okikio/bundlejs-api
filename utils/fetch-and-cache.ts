@@ -292,7 +292,7 @@ export async function fetchWithCache(
       
       // Stale-while-revalidate: return cached, refresh in background
       if (cacheMode === 'normal') {
-        backgroundRefresh(url, finalUrl, init, retries, cacheApi);
+        await backgroundRefresh(url, finalUrl, init, retries, cacheApi);
       }
       
       return {

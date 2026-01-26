@@ -19,7 +19,6 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
   opts ??= {};
   try {
     if (!fromContext("initialized")) {
-      toContext("initialized", true);
       dispatchEvent(INIT_START);
 
       const version = await getEsbuildVersion(_version);
@@ -46,6 +45,7 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
       }
 
       dispatchEvent(INIT_COMPLETE);
+      toContext("initialized", true);
     }
 
     return fromContext("esbuild");
@@ -53,5 +53,8 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
     const error = e as Error | unknown;
     dispatchEvent(INIT_ERROR, error as Error);
     console.error(error);
+
+    toContext("initialized", false);
+    toContext("esbuild", null);
   }
 }

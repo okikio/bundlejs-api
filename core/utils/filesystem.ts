@@ -45,6 +45,14 @@ export interface IFileSystem<T, Content = Uint8Array> {
    * @returns promise indicating delete was successful
    */
   delete: (path: string) => Promise<boolean | void>,
+
+
+  /**
+   * Clears all files and directories at specific paths in the virtual file system storage 
+   * 
+   * @returns promise indicating clear was successful
+   */
+  clear?: () => Promise<void>,
 }
 
 export function isValid(file: unknown) {
@@ -179,32 +187,36 @@ export async function deleteFile<T, F extends IFileSystem<T>>(fs: F, path: strin
 /** Virtual Filesystem Storage */
 export function createDefaultFileSystem<T = Uint8Array, Content = Uint8Array>(FileSystem = new Map<string, Content | undefined | null>()) {
   const fs: IFileSystem<T, Content> = {
-    files: async () => await FileSystem as unknown as Map<string, T>,
-    get: async (path: string) => await FileSystem.get(resolve(path)),
-    async set(path: string, content?: Content | null) {
+    files: () => Promise.resolve(FileSystem as unknown as Map<string, T>),
+    get: (path: string) => Promise.resolve(FileSystem.get(resolve(path))),
+    set(path: string, content?: Content | null) {
       const resolvedPath = resolve(path);
       const dir = dirname(resolvedPath);
 
       const parentDirs = dir.split(posix.SEPARATOR).filter(x => x.length > 0);
       const len = parentDirs.length;
-      await FileSystem.set("/", null);
+      FileSystem.set("/", null);
 
       // Generate all the subdirectories in b/w
       let accPath = parentDirs[0] !== posix.SEPARATOR ? "/" : "";
       for (let i = 0; i < len; i++) {
         accPath += parentDirs[i];
-        if (!await FileSystem.has(accPath))
-          await FileSystem.set(accPath, null);
+        if (!FileSystem.has(accPath))
+          FileSystem.set(accPath, null);
         accPath += "/";
       }
 
       FileSystem.set(resolvedPath, content);
+      return Promise.resolve();
     },
-    async has(path: string) {
-      return await FileSystem.has(path);
+    has(path: string) {
+      return Promise.resolve(FileSystem.has(path));
     },
-    async delete(path: string) {
-      return await FileSystem.delete(resolve(path))
+    delete(path: string) {
+      return Promise.resolve(FileSystem.delete(resolve(path)))
+    },
+    clear() { 
+      return Promise.resolve(FileSystem.clear());
     }
   };
 
