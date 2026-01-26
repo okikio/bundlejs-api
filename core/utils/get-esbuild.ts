@@ -27,17 +27,17 @@ export async function getEsbuild(platform: Platform = PLATFORM_AUTO, version?: s
 
   try {
     switch (platform) {
-    case "deno":
-      return await import(
-        /* @vite-ignore */
-        `https://deno.land/x/esbuild@v${version}/mod.js`
-      );
       case "deno-wasm":
         return ESBUILD_DENO_WASM;
         // return await import(
         //   /* @vite-ignore */
         //   `https://deno.land/x/esbuild@v${version}/wasm.js`
         // );
+    // case "deno":
+    //   return await import(
+    //     /* @vite-ignore */
+    //     `https://deno.land/x/esbuild@v${version}/mod.js`
+    //   );
       case "node":
         return await import("esbuild");
       case "browser":
