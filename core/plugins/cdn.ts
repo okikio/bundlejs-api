@@ -348,7 +348,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
               // If the package.json is not a sub-directory package, then we should cache it as such
               if (!isDirectory) {
                 packageManifestsMap.set(
-                  `${effectiveName}${resolvedManifest?.version || effectiveAssumedVersion}`,
+                  `${effectiveName}@${resolvedManifest?.version || effectiveAssumedVersion}`,
                   resolvedManifest
                 );
               }
