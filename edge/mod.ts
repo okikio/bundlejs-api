@@ -241,9 +241,8 @@ export default {
             formatQuery ? { format } : {},
           ),
           init: {
-            platform: "browser",
+            platform: "deno-wasm",
             worker: false,
-            wasmModule: undefined
           },
         } as Config
       ), {
@@ -431,7 +430,8 @@ export default {
       const configObj = Object.assign({}, jsonKeyObj, {
         entryPoints: [`/index.${inputFileHash}${tsxQuery || initialConfig.tsx ? ".tsx" : ".ts"}`],
         init: {
-          // wasmModule
+          ...jsonKeyObj.init,
+          wasmModule
         }
       })
 

@@ -24,6 +24,9 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
       const version = await getEsbuildVersion(_version);
       const esbuild = await getEsbuild(platform, version);
       toContext("esbuild", Context.opaque(esbuild));
+        console.log({
+          opts
+        })
       
       if (
         platform !== "node" &&
