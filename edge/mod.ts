@@ -75,7 +75,10 @@ export default {
       if (url.pathname === "/favicon.ico")
         return Response.redirect("https://bundlejs.com/favicon/favicon-api.ico");
 
-      if (url.pathname === "/sw.js")
+      if (url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png")
+        return Response.redirect("https://bundlejs.com/favicon/apple-touch-icon.png");
+
+      if (url.pathname === "/sw.js" || url.pathname === "/robots.txt" || url.pathname === "/llms.txt")
         return Response.json({ "message": "no" });
 
       if (url.pathname.startsWith("/.well-known/")) {
