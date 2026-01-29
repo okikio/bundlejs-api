@@ -68,7 +68,7 @@ export async function bundle(url: URL, initialValue: string, configObj: Config, 
   const result = await build(configObj, FileSystem);
   const end = performance.now();
 
-  debounce(async () => await fs?.clear?.(), 1000 * 60);
+  await fs?.clear?.();
 
   let resultValue: string = result.contents[0].text;
   const entryPointInputFile = Array.isArray(entryPoints) ? entryPoints[0]

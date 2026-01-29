@@ -31,7 +31,7 @@ import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 import { VIRTUAL_FILESYSTEM_NAMESPACE } from "./fs.ts";
 import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../configs/events.ts";
 
-import { getResolverConditions } from "../utils/resolve-conditions.ts";
+import { getResolverConditions } from "../../utils/resolve-conditions.ts";
 import { setFile, getFile } from "../utils/filesystem.ts";
 import { getCDNStyle } from "../utils/cdn-format.ts";
 

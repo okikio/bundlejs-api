@@ -162,9 +162,7 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
 }
 
 export async function formatBuildResult(_ctx: BuildResultContext) {
-  // const { state: StateContext, ...build_result } = _ctx;
   const LocalConfig = fromContext("config", _ctx.state)!;
-  const fs = fromContext("filesystem", _ctx.state)!;
 
   const assets = fromContext("assets", _ctx.state)! ?? [];
   const packageManifests = 
@@ -220,7 +218,7 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
     );
 
     // Ensure a fresh filesystem on every run
-    await fs?.clear?.();
+    // await fs?.clear?.();
     // console.log({ contentsLen: contents.length })
     
     const packageSizeArr: [string, string][] = [];

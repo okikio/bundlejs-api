@@ -1,338 +1,395 @@
-import type { FullPackage, FullPackageVersion, PackageInfo, PackageSearchResult, RegistryURLs, SearchInfo } from "./types.ts";
+/**
+ * npm Registry API utilities.
+ *
+ * Provides functions for searching, fetching metadata, and resolving versions
+ * from the npm registry. Handles scoped packages correctly by URL-encoding
+ * the `/` character as required by the registry.
+ *
+ * @module
+ *
+ * @example Basic usage
+ * ```ts
+ * // Get URLs for a scoped package (note the escaped /)
+ * const urls = getRegistryURL("@tanstack/react-query@5.0.0");
+ * // urls.packageURL = "https://registry.npmjs.com/@tanstack%2freact-query"
+ *
+ * // Resolve a version range
+ * const version = await resolveVersion("@types/node@^20");
+ *
+ * // Get full package metadata
+ * const pkg = await getResolvedPackage("react@^18");
+ * ```
+ */
+
+import type {
+  FullPackage,
+  FullPackageVersion,
+  PackageInfo,
+  PackageSearchResult,
+  RegistryURLs,
+  SearchInfo,
+} from "./types.ts";
 
 import { fetchWithCache } from "./fetch-and-cache.ts";
 import { parsePackageName } from "./parse-package-name.ts";
 import { maxSatisfying, parse, parseRange, format } from "./semver.ts";
 
+// =============================================================================
+// Constants
+// =============================================================================
+
+/** Default npm registry URL. */
+export const DEFAULT_REGISTRY = "https://registry.npmjs.com";
+
+// =============================================================================
+// URL Utilities
+// =============================================================================
+
 /**
- * Generates registry URLs for npm packages based on the input string.
- * 
- * @param input - Package name, optionally including version (e.g., "@okikio/animate@1.0").
- * @returns An object containing URLs for searching, package details, and specific version.
- * 
+ * Escape a package name for use in registry URLs.
+ *
+ * The npm registry requires scoped package names to have `/` encoded as `%2f`.
+ *
+ * This follows npm-package-arg's escapedName:
+ * ```js
+ * this.escapedName = name.replace('/', '%2f')
+ * ```
+ *
+ * See: https://github.com/npm/npm-package-arg/blob/main/lib/npa.js#L224
+ *
+ * @param name Package name (potentially scoped)
+ * @returns URL-safe package name
+ *
+ * @example
+ * escapePackageName("react") // "react"
+ * escapePackageName("@types/node") // "@types%2fnode"
+ * escapePackageName("@tanstack/react-query") // "@tanstack%2freact-query"
+ */
+export function escapePackageName(name: string): string {
+  return name.replace("/", "%2f");
+}
+
+/**
+ * Check if a package name is scoped.
+ *
+ * @param name Package name
+ * @returns True if name starts with @
+ */
+export function isScopedPackage(name: string): boolean {
+  return name.startsWith("@");
+}
+
+/**
+ * Extract scope from a scoped package name.
+ *
+ * @param name Package name
+ * @returns Scope including @ or undefined
+ *
+ * @example
+ * getPackageScope("@types/node") // "@types"
+ * getPackageScope("react") // undefined
+ */
+export function getPackageScope(name: string): string | undefined {
+  if (!isScopedPackage(name)) return undefined;
+  const slashIdx = name.indexOf("/");
+  return slashIdx > 0 ? name.slice(0, slashIdx) : undefined;
+}
+
+/**
+ * Generate registry URLs for an npm package.
+ *
+ * **Important**: Scoped package names have `/` encoded as `%2f` in URL paths.
+ * This is required by the npm registry.
+ *
+ * @param input Package name with optional version (e.g., "@okikio/animate@1.0")
+ * @param registry Custom registry URL (defaults to npm)
+ * @returns URLs and parsed package info
+ *
  * @example
  * const urls = getRegistryURL("@okikio/animate@1.0");
- * console.log(urls);
- * // Output:
  * // {
- * //   searchURL: "https://registry.npmjs.com/-/v1/search?text=@okikio/animate&popularity=0.5&size=30",
- * //   packageURL: "https://registry.npmjs.com/@okikio/animate",
- * //   packageVersionURL: "https://registry.npmjs.com/@okikio/animate/1.0",
+ * //   searchURL: "https://registry.npmjs.com/-/v1/search?text=@okikio/animate&...",
+ * //   packageURL: "https://registry.npmjs.com/@okikio%2fanimate",
+ * //   packageVersionURL: "https://registry.npmjs.com/@okikio%2fanimate/1.0",
  * //   version: "1.0",
  * //   name: "@okikio/animate",
  * //   path: ""
  * // }
  */
-export function getRegistryURL(input: string): RegistryURLs {
-  const host = "https://registry.npmjs.com";
-
+export function getRegistryURL(
+  input: string,
+  registry: string = DEFAULT_REGISTRY
+): RegistryURLs {
+  const host = registry.replace(/\/+$/, "");
   const { name, version, path } = parsePackageName(input);
-  const searchURL = `${host}/-/v1/search?text=${encodeURIComponent(name)}&popularity=0.5&size=30`;
-  const packageVersionURL = `${host}/${name}/${version}`;
-  const packageURL = `${host}/${name}`;
 
-  return { searchURL, packageURL, packageVersionURL, version, name, path };
-};
+  // CRITICAL: Scoped packages must have / encoded as %2f
+  // See: https://github.com/npm/npm-package-arg/blob/main/lib/npa.js#L224
+  const escapedName = escapePackageName(name);
+
+  // Search uses unescaped name in query param (encodeURIComponent handles it)
+  const searchURL = `${host}/-/v1/search?text=${encodeURIComponent(name)}&popularity=0.5&size=30`;
+
+  // Package URLs use escaped name in path
+  const packageURL = `${host}/${escapedName}`;
+  const packageVersionURL = version
+    ? `${host}/${escapedName}/${version}`
+    : packageURL;
+
+  return {
+    searchURL,
+    packageURL,
+    packageVersionURL,
+    version,
+    name,
+    path,
+  };
+}
+
+// =============================================================================
+// Search API
+// =============================================================================
 
 /**
- * Searches the npm registry for packages with matching names.
- * 
- * @param input - Package name, optionally including version (ignored) (e.g., "@okikio/animate@1.0").
- * @returns An object containing the search results.
- * 
+ * Search the npm registry for packages.
+ *
+ * @param input Package name to search for
+ * @param registry Custom registry URL
+ * @returns Search results with package metadata
+ *
  * @example
  * const result = await getPackages("@okikio/animate");
- * console.log(result.packages);
- * // Output:
- * // [
- * //   {
- * //     name: "@okikio/animate",
- * //     scope: "okikio",
- * //     version: "2.3.1",
- * //     description: "An animation library for the modern web...",
- * //     keywords: ["animation", "web", "API"],
- * //     date: "2021-06-30T07:01:08.871Z",
- * //     links: {
- * //       npm: "https://www.npmjs.com/package/@okikio/animate",
- * //       homepage: "https://animate.okikio.dev",
- * //       repository: "https://github.com/okikio/animate",
- * //       bugs: "https://github.com/okikio/animate/issues"
- * //     },
- * //     author: { name: "Okiki Imoesi" },
- * //     publisher: { username: "okikio", email: "okiki@example.com" },
- * //     maintainers: [{ username: "okikio", email: "okiki@example.com" }]
- * //   },
- * //   // ...more packages
- * // ]
+ * console.log(result.packages.map(p => p.package.name));
  */
-export async function getPackages(input: string): Promise<PackageSearchResult> {
-  const { searchURL } = getRegistryURL(input);
+export async function getPackages(
+  input: string,
+  registry?: string
+): Promise<PackageSearchResult> {
+  const { searchURL } = getRegistryURL(input, registry);
   let result: SearchInfo;
 
   try {
     const { response } = await fetchWithCache(searchURL, { cacheMode: "reload" });
+
+    if (!response.ok) {
+      throw new Error(`Search failed: ${response.status} ${response.statusText}`);
+    }
+
     result = await response.json();
   } catch (e) {
-    console.warn(e);
+    console.warn(`[npm-search] Search failed for "${input}":`, e);
     throw e;
   }
 
-  const packages = result?.objects;
+  const packages = result?.objects ?? [];
   return { packages, info: result };
-};
+}
+
+// =============================================================================
+// Package Metadata API
+// =============================================================================
 
 /**
- * Fetches the metadata of a specific package from the npm registry.
- * 
- * @param input - Package name, optionally including version (ignored) (e.g., "@okikio/animate@1.0").
- * @returns The package metadata.
- * 
+ * Fetch full package metadata (packument) from registry.
+ *
+ * Returns the complete package document including all versions.
+ * For large packages, consider using getPackageOfVersion() instead.
+ *
+ * @param input Package name (version ignored)
+ * @param registry Custom registry URL
+ * @returns Full package metadata
+ *
  * @example
- * const packageInfo = await getPackage("@okikio/animate");
- * console.log(packageInfo);
- * // Output:
- * // {
- * //   name: "@okikio/animate",
- * //   scope: "okikio",
- * //   version: "2.3.1",
- * //   description: "An animation library for the modern web...",
- * //   keywords: ["animation", "web", "API"],
- * //   date: "2021-06-30T07:01:08.871Z",
- * //   links: {
- * //     npm: "https://www.npmjs.com/package/@okikio/animate",
- * //     homepage: "https://animate.okikio.dev",
- * //     repository: "https://github.com/okikio/animate",
- * //     bugs: "https://github.com/okikio/animate/issues"
- * //   },
- * //   author: { name: "Okiki Imoesi" },
- * //   publisher: { username: "okikio", email: "okiki@example.com" },
- * //   maintainers: [{ username: "okikio", email: "okiki@example.com" }]
- * // }
+ * const pkg = await getPackage("@okikio/animate");
+ * console.log(Object.keys(pkg.versions));
+ * console.log(pkg["dist-tags"]);
  */
-export async function getPackage(input: string): Promise<FullPackage> {
-  const { packageURL } = getRegistryURL(input);
+export async function getPackage(
+  input: string,
+  registry?: string
+): Promise<FullPackage> {
+  const { packageURL, name } = getRegistryURL(input, registry);
 
   try {
     const { response } = await fetchWithCache(packageURL, { cacheMode: "reload" });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Package not found: ${name}`);
+      }
+      throw new Error(`Registry error: ${response.status} ${response.statusText}`);
+    }
+
     return await response.json() as FullPackage;
   } catch (e) {
-    console.warn(e);
+    console.warn(`[npm-search] Failed to fetch "${name}":`, e);
     throw e;
   }
-};
+}
 
 /**
- * Fetches the metadata of a specific package version from the npm registry.
- * 
- * @param input - Package name, including version (e.g., "@okikio/animate@1.0").
- * @returns The package version metadata.
- * 
+ * Fetch metadata for a specific package version.
+ *
+ * More efficient than getPackage() when you only need one version.
+ *
+ * @param input Package name with version (e.g., "@okikio/animate@1.0.0")
+ * @param registry Custom registry URL
+ * @returns Version-specific metadata
+ *
  * @example
- * const packageVersionInfo = await getPackageOfVersion("@okikio/animate@1.0");
- * console.log(packageVersionInfo);
- * // Output:
- * // {
- * //   name: "@okikio/animate",
- * //   version: "1.0.0",
- * //   type: "module",
- * //   sideEffects: false,
- * //   description: "An animation library for the modern web...",
- * //   publishConfig: {
- * //     access: "public",
- * //     main: "lib/api.cjs.js",
- * //     types: "@types/api.d.ts",
- * //     browser: "lib/api.es.js",
- * //     module: "lib/api.es.js",
- * //     exports: {
- * //       ".": {
- * //         require: "./lib/api.cjs.js",
- * //         import: "./lib/api.es.js",
- * //         default: "./lib/api.es.js"
- * //       },
- * //       "./lib/*": "./lib/*.js"
- * //     }
- * //   },
- * //   main: "lib/api.cjs.js",
- * //   directories: { lib: "./lib" },
- * //   repository: { type: "git", url: "git+https://github.com/okikio/native.git" },
- * //   keywords: ["ts", "modern", "animation", "library", "web", "css", "smooth"],
- * //   author: { name: "Okiki Ojo", email: "hey@okikio.dev", url: "https://okikio.dev" },
- * //   license: "MIT",
- * //   bugs: { url: "https://github.com/okikio/native/issues" },
- * //   homepage: "https://github.com/okikio/native/tree/master/packages/animate#readme",
- * //   dependencies: { "@okikio/emitter": "2.1.7", "@okikio/manager": "2.1.7" },
- * //   devDependencies: {
- * //     "del-cli": "^4.0.0",
- * //     esbuild: "^0.12.12",
- * //     "gzip-size": "^6.0.0",
- * //     pnpm: "^6.9.1",
- * //     "pretty-bytes": "^5.6.0",
- * //     typescript: "~4.3.4"
- * //   },
- * //   gitHead: "ad422076...90f",
- * //   scripts: {
- * //     build: "del-cli lib/ && node ./build",
- * //     watch: "del-cli lib/ && node ./build --watch",
- * //     dts: "del-cli @types/ && tsc --project dts.tsconfig.json",
- * //     "pre-release": "pnpm build && pnpm dts"
- * //   },
- * //   types: "@types/api.d.ts",
- * //   browser: "lib/api.es.js",
- * //   module: "lib/api.es.js",
- * //   exports: {
- * //     ".": {
- * //       require: "./lib/api.cjs.js",
- * //       import: "./lib/api.es.js",
- * //       default: "./lib/api.es.js"
- * //     },
- * //     "./lib/*": "./lib/*.js"
- * //   },
- * //   _id: "@okikio/animate@1.0.0",
- * //   _nodeVersion: "14.16.1",
- * //   _npmVersion: "6.14.12",
- * //   dist: {
- * //     integrity: "sha512-+asddaRga...IsiNRA==",
- * //     shasum: "b2c08e0...c8",
- * //     tarball: "https://registry.npmjs.org/@okikio/animate/-/animate-1.0.0.tgz",
- * //     fileCount: 29,
- * //     unpackedSize: 414434,
- * //     "npm-signature": "-----BEGIN PGP SIGNATURE-----\r\n" +
- * //       "Version: OpenPGP.js v3.0.13\r\n" +
- * //       "Comment: https://openpgpjs.org\r\n" +
- * //       "\r\n" +
- * //       "wsFcBA"... 768 more characters,
- * //     signatures: [
- * //       {
- * //         keyid: "SHA256:jl3bwswu...kzA",
- * //         sig: "MEUCI...VFfo="
- * //       }
- * //     ]
- * //   },
- * //   _npmUser: { name: "okikio", email: "hey@okikio.dev" },
- * //   maintainers: [{ name: "okikio", email: "hey@okikio.dev" }],
- * //   _npmOperationalInternal: {
- * //     host: "s3://npm-registry-packages",
- * //     tmp: "tmp/animate_1.0.0_1625036468730_0.7262493743034963"
- * //   },
- * //   _hasShrinkwrap: false
- * // }
+ * const pkg = await getPackageOfVersion("@okikio/animate@1.0.0");
+ * console.log(pkg.dist.tarball);
  */
-export async function getPackageOfVersion(input: string): Promise<FullPackageVersion> {
-  const { packageVersionURL } = getRegistryURL(input);
+export async function getPackageOfVersion(
+  input: string,
+  registry?: string
+): Promise<FullPackageVersion> {
+  const { packageVersionURL, name, version } = getRegistryURL(input, registry);
 
   try {
     const { response } = await fetchWithCache(packageVersionURL);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Version not found: ${name}@${version}`);
+      }
+      throw new Error(`Registry error: ${response.status} ${response.statusText}`);
+    }
+
     return await response.json() as FullPackageVersion;
   } catch (e) {
-    console.warn(e);
+    console.warn(`[npm-search] Failed to fetch "${name}@${version}":`, e);
     throw e;
   }
-};
+}
 
 /**
- * Fetches all versions and tags of a specific package from the npm registry.
- * 
- * @param input - Package name, optionally including version (ignored) (e.g., "@okikio/animate@1.0").
- * @returns An object containing arrays of versions and tags.
- * 
+ * Fetch all versions and dist-tags for a package.
+ *
+ * @param input Package name (version ignored)
+ * @param registry Custom registry URL
+ * @returns Versions array and dist-tags object
+ *
  * @example
- * const versionsAndTags = await getPackageVersions("@okikio/animate");
- * console.log(versionsAndTags);
- * // Output:
- * // {
- * //   versions: ["0.0.3", "0.0.4", "0.0.5", "1.0.0", "1.1.0", "2.0.0", "2.3.1"],
- * //   tags: { latest: "2.3.1", beta: "2.4.0" }
- * // }
+ * const info = await getPackageVersions("@okikio/animate");
+ * console.log(info.versions); // ["0.0.3", "0.0.4", ...]
+ * console.log(info.tags); // { latest: "2.3.1", beta: "2.4.0" }
  */
-export async function getPackageVersions(input: string): Promise<PackageInfo> {
+export async function getPackageVersions(
+  input: string,
+  registry?: string
+): Promise<PackageInfo> {
   try {
-    const pkg = await getPackage(input);
+    const pkg = await getPackage(input, registry);
     const versions = Object.keys(pkg.versions);
     const tags = pkg["dist-tags"];
     return { versions, tags };
   } catch (e) {
-    console.warn(e);
+    console.warn(`[npm-search] Failed to get versions for "${input}":`, e);
     throw e;
   }
-};
+}
+
+// =============================================================================
+// Version Resolution
+// =============================================================================
 
 /**
- * Resolves the appropriate version of a package based on a version range.
- * 
- * @param input - Package name, including version range (e.g., "@okikio/animate@^1.0.0").
- * @returns The resolved version string.
- * 
+ * Resolve the best version matching a range.
+ *
+ * Resolution order:
+ * 1. If range matches a dist-tag, return that tag's version
+ * 2. If range is an exact version that exists, return it
+ * 3. Find the maximum version satisfying the range
+ *
+ * @param input Package with version range (e.g., "@okikio/animate@^1.0.0")
+ * @param registry Custom registry URL
+ * @returns Resolved version or null if no match
+ *
  * @example
- * const version = await resolveVersion("@okikio/animate@^1.0.0");
- * console.log(version);
- * // Output:
- * // "2.3.1"
+ * const v = await resolveVersion("@okikio/animate@^1.0.0");
+ * // Returns highest 1.x.x version
+ *
+ * const v2 = await resolveVersion("@okikio/animate@latest");
+ * // Returns version that 'latest' tag points to
  */
-export async function resolveVersion(input: string): Promise<string | null> {
+export async function resolveVersion(
+  input: string,
+  registry?: string
+): Promise<string | null> {
+  const { version: range, name } = getRegistryURL(input, registry);
+
+  if (!range) {
+    console.warn(`[npm-search] No version specified for "${name}"`);
+    return null;
+  }
+
   try {
-    let { version: range } = getRegistryURL(input);
-    if (!range) return null;
+    const { versions, tags } = await getPackageVersions(input, registry);
 
-    const versionsAndTags = await getPackageVersions(input);
-    if (versionsAndTags) {
-      const { versions, tags } = versionsAndTags;
-      if (range in tags)
-        range = tags[range];
-
-      if (versions.includes(range))
-        return range;
-
-      const versionArr = versions.map(v => parse(v));
-      const semVerRange = parseRange(range);
-      const maxVersion = maxSatisfying(versionArr, semVerRange);
-
-      if (!maxVersion) return null;
-      return format(maxVersion);
+    // Check if range is a dist-tag
+    if (range in tags) {
+      return tags[range];
     }
+
+    // Check if exact version exists
+    if (versions.includes(range)) {
+      return range;
+    }
+
+    // Try parsing as semver range
+    try {
+      const parsedVersions = versions
+        .map(v => {
+          try {
+            return parse(v);
+          } catch {
+            return null;
+          }
+        })
+        .filter((v): v is NonNullable<typeof v> => v !== null);
+
+      const semverRange = parseRange(range);
+      const maxVersion = maxSatisfying(parsedVersions, semverRange);
+
+      if (maxVersion) {
+        return format(maxVersion);
+      }
+    } catch {
+      // Not a valid semver range
+    }
+
+    console.warn(`[npm-search] No match for "${name}@${range}"`);
+    return null;
   } catch (e) {
-    console.warn(e);
+    console.warn(`[npm-search] Version resolution failed for "${input}":`, e);
     throw e;
   }
-
-  return null;
-};
+}
 
 /**
- * Fetches the metadata of a package with the resolved version from the npm registry.
- * 
- * @param input - Package name, including version (e.g., "@okikio/animate@1.0").
- * @returns The resolved package metadata.
- * 
+ * Fetch metadata for a package with resolved version.
+ *
+ * Combines resolveVersion() and getPackageOfVersion() for convenience.
+ *
+ * @param input Package with version range
+ * @param registry Custom registry URL
+ * @returns Metadata for the resolved version
+ *
  * @example
- * const resolvedPackage = await getResolvedPackage("@okikio/animate@^1.0.0");
- * console.log(resolvedPackage);
- * // Output:
- * // {
- * //   name: "@okikio/animate",
- * //   scope: "okikio",
- * //   version: "2.3.1",
- * //   description: "An animation library for the modern web...",
- * //   keywords: ["animation", "web", "API"],
- * //   date: "2021-06-30T07:01:08.871Z",
- * //   links: {
- * //     npm: "https://www.npmjs.com/package/@okikio/animate",
- * //     homepage: "https://animate.okikio.dev",
- * //     repository: "https://github.com/okikio/animate",
- * //     bugs: "https://github.com/okikio/animate/issues"
- * //   },
- * //   author: { name: "Okiki Imoesi" },
- * //   publisher: { username: "okikio", email: "okiki@example.com" },
- * //   maintainers: [{ username: "okikio", email: "okiki@example.com" }]
- * // }
+ * const pkg = await getResolvedPackage("@okikio/animate@^1.0.0");
+ * console.log(pkg.version); // Resolved from ^1.0.0
  */
-export async function getResolvedPackage(input: string) {
-  try {
-    const { name } = getRegistryURL(input);
-    const version = await resolveVersion(input);
+export async function getResolvedPackage(
+  input: string,
+  registry?: string
+): Promise<FullPackageVersion> {
+  const { name } = getRegistryURL(input, registry);
+  const version = await resolveVersion(input, registry);
 
-    return await getPackageOfVersion(`${name}@${version}`);
-  } catch (e) {
-    console.warn(e);
-    throw e;
+  if (!version) {
+    throw new Error(`Could not resolve version for "${input}"`);
   }
-};
+
+  return getPackageOfVersion(`${name}@${version}`, registry);
+}

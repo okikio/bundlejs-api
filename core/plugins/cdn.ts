@@ -5,6 +5,7 @@
  * - Modern exports/imports resolution from package.json
  * - Legacy main/module/browser field resolution
  * - npm alias unwrapping (npm:package@version)
+ * - JSR specifiers (jsr:@scope/name@version)
  * - URL-based version routing (https://pkg.pr.new/...)
  *
  * @module
@@ -16,6 +17,15 @@
  *
  * // Resolved to:
  * // https://unpkg.com/react@18.2.0/index.js
+ * ```
+ *
+ * @example JSR import
+ * ```ts
+ * // In user code:
+ * import { join } from "jsr:@std/path@^1.0.0";
+ *
+ * // Resolved directly to JSR registry:
+ * // https://jsr.io/@std/path/1.0.8/mod.ts
  * ```
  *
  * @example npm alias in package.json
@@ -70,7 +80,7 @@ import {
   joinSubpath,
   appendUrlSubpath,
   getUnsupportedSpecError,
-} from "@bundle/utils/npm-deps-spec";
+} from "@bundle/utils/npm-spec";
 import { computeEsbuildSideEffects } from "../utils/side-effects.ts";
 
 import { extname, isBareImport, join } from "@bundle/utils/path";
@@ -81,7 +91,17 @@ import { determineExtension, HTTP_NAMESPACE } from "./http.ts";
 import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 
 import { getCDNUrl, getCDNStyle, DEFAULT_CDN_HOST } from "../utils/cdn-format.ts";
-import { getLegacyMainFields, getResolverConditions } from "../utils/resolve-conditions.ts";
+import { getLegacyMainFields, getResolverConditions } from "@bundle/utils/resolve-conditions";
+
+// JSR (jsr.io) support
+import {
+  parseJSRSpec,
+  looksLikeJSRSpec,
+  getJSRModuleUrl,
+  resolveJSRVersion,
+  getJSRVersionMeta,
+  jsrToEsmSh,
+} from "../../utils/jsr-spec.ts";
 
 /** CDN Plugin Namespace */
 export const CDN_NAMESPACE = "cdn-url";
@@ -189,6 +209,100 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         }
         // deno-lint-ignore no-empty
       } catch (_) { }
+    }
+
+    // ========================================================================
+    // Handle JSR specifiers (jsr:@scope/name@version/subpath)
+    // ========================================================================
+
+    if (looksLikeJSRSpec(argPath)) {
+      const jsrSpec = parseJSRSpec(argPath);
+
+      if (jsrSpec) {
+        try {
+          // Resolve version range to exact version if needed
+          let resolvedVersion = jsrSpec.version;
+          if (!resolvedVersion || resolvedVersion.includes("^") || resolvedVersion.includes("~") || resolvedVersion === "latest") {
+            resolvedVersion = await resolveJSRVersion({
+              scope: jsrSpec.scope,
+              name: jsrSpec.name,
+              version: jsrSpec.version,
+            });
+          }
+
+          if (!resolvedVersion) {
+            return {
+              errors: [{
+                text: `Failed to resolve JSR version: ${argPath}`,
+                detail: `Could not find a version matching "${jsrSpec.version || "latest"}" for @${jsrSpec.scope}/${jsrSpec.name}`,
+              }],
+            };
+          }
+
+          // Get version metadata to resolve exports
+          let resolvedSubpath = jsrSpec.subpath || "/mod.ts";
+
+          try {
+            const versionMeta = await getJSRVersionMeta(jsrSpec.scope, jsrSpec.name, resolvedVersion);
+
+            // If subpath provided, try to resolve through exports
+            if (jsrSpec.subpath && versionMeta.exports) {
+              // Normalize subpath for exports lookup (./foo or .)
+              const exportsKey = jsrSpec.subpath === "/" ? "." : `.${jsrSpec.subpath}`;
+              const altKey = jsrSpec.subpath.replace(/^\//, "./");
+
+              if (versionMeta.exports[exportsKey]) {
+                resolvedSubpath = versionMeta.exports[exportsKey];
+              } else if (versionMeta.exports[altKey]) {
+                resolvedSubpath = versionMeta.exports[altKey];
+              }
+              // If no match, use the subpath directly
+            } else if (!jsrSpec.subpath && versionMeta.exports?.["."]) {
+              // Default export
+              resolvedSubpath = versionMeta.exports["."];
+            }
+          } catch {
+            // If we can't get version meta, fall back to subpath or default
+          }
+
+          // Generate direct JSR module URL
+          const moduleUrl = getJSRModuleUrl(
+            jsrSpec.scope,
+            jsrSpec.name,
+            resolvedVersion,
+            resolvedSubpath
+          );
+
+          // Resolve through HTTP plugin
+          const pathWithExt = await determineExtension(moduleUrl);
+
+          return {
+            namespace: HTTP_NAMESPACE,
+            path: pathWithExt.url,
+            pluginData: Object.assign({}, args.pluginData, {
+              manifest: {
+                name: jsrSpec.fullName,
+                version: resolvedVersion,
+                // JSR packages can have their own dependencies we might need to track
+                peerDependencies: initialManifest?.peerDependencies ?? {},
+              },
+            }),
+          };
+        } catch (e) {
+          // If direct JSR resolution fails, fall back to esm.sh proxy
+          dispatchEvent(LOGGER_WARN, `JSR direct resolution failed for ${argPath}, falling back to esm.sh proxy`);
+          dispatchEvent(LOGGER_WARN, e);
+
+          const esmShUrl = jsrToEsmSh(jsrSpec);
+          const pathWithExt = await determineExtension(esmShUrl);
+
+          return {
+            namespace: HTTP_NAMESPACE,
+            path: pathWithExt.url,
+            pluginData: args.pluginData,
+          };
+        }
+      }
     }
 
     // ========================================================================

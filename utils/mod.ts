@@ -8,14 +8,18 @@ export * as lzstring from "./lz-string.ts";
 export * from "./npm-search.ts";
 export * from "./parse-package-name.ts";
 
-export * as path from "./path.ts";
-export * from "./fmt.ts";
 export * from "./resolve-exports-imports.ts";
-export * from "./tar.ts";
-
+export * from "./resolve-conditions.ts";
 export * from "./archive-detect.ts";
 export * from "./archive-spec.ts";
-export * from "./npm-deps-spec.ts";
+export * from "./npm-spec.ts";
+export * from "./jsr-spec.ts";
+export * from "./runtime-builtins.ts";
+export * from "./resolve-import-map.ts";
+
+export * as path from "./path.ts";
+export * from "./fmt.ts";
+export * from "./tar.ts";
 
 export * from "./json-streams.ts";
 
@@ -39,4 +43,5 @@ export * as mediaTypes from "./media-types.ts";
 export * as archiveDetect from "./archive-detect.ts";
 export * as archiveSpec from "./archive-spec.ts";
 
-export * as npmDepsSpec from "./npm-deps-spec.ts";
+export * as npmDepsSpec from "./npm-spec.ts";
+export * as validatePackageName from "./validate-package-name.ts";

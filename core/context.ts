@@ -128,7 +128,7 @@ export async function rebuild(ctx: BuildContext): Promise<BuildResult> {
       ctx.state.target.failedExtensionChecks.clear();
       ctx.state.target.failedManifestUrls.clear();
       ctx.state.target.sideEffectsMatchersCache.clear();
-      ctx.state.target.filesystem?.clear?.();
+      // ctx.state.target.filesystem?.clear?.();
       // ctx.state.target.packageManifests.clear();
 
       build_result = await ctx.rebuild();

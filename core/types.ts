@@ -6,7 +6,7 @@ import type { InitOptions } from "./init.ts";
 import type { record } from "./context/context.ts";
 import type { IFileSystem } from "./utils/filesystem.ts";
 import type { TarballState } from "./plugins/tar.ts";
-import type { ResolverConditionInputs } from "./utils/resolve-conditions.ts";
+import type { ResolverConditionInputs } from "../utils/resolve-conditions.ts";
 import type { SideEffectsMatchers } from "./utils/side-effects.ts";
 
 export type { ESBUILD, ESBUILD_WASM };
