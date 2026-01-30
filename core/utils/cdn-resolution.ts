@@ -317,12 +317,12 @@ export function applyBrowserRemapping(
   if (!remappings || !resolvedPath) return resolvedPath;
 
   // Try multiple path variants for matching
-  const variants = [
+  const variants = new Set([
     resolvedPath,
     resolvedPath.replace(/^\.\//, ""),
     resolvedPath.startsWith("./") ? resolvedPath : `./${resolvedPath.replace(/^\//, "")}`,
     resolvedPath.replace(/^\//, ""),
-  ];
+  ]);
 
   for (const variant of variants) {
     if (variant in remappings) {
