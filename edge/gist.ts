@@ -1,16 +1,16 @@
+import type { ESBUILD } from "@bundle/core/types";
+
 // @deno-types="npm:@octokit/rest"
 import { Octokit } from "@octokit/rest";
 
 // @deno-types="npm:@octokit/plugin-throttling"
 import { throttling } from "@octokit/plugin-throttling";
 
-import { Velo } from "velo";
-import type { ESBUILD } from "@bundle/core/types";
+import { LruCache } from "@bundle/utils/lru";
+import { encodeBase64 } from "@bundle/utils/encoding";
+import { extname } from "@bundle/utils/path";
 
-import { encodeBase64 } from "@std/encoding/base64";
-import { extname } from "@std/path";
-
-export const GIST_CACHE = Velo.builder<string, string>().capacity(10).lru().ttl(30_000).build();
+export const GIST_CACHE = new LruCache<string, string>(10);
 export const CustomOctokit = Octokit.plugin(throttling);
 
 export const octokit = new CustomOctokit({
@@ -37,12 +37,12 @@ export const octokit = new CustomOctokit({
         `SecondaryRateLimit detected for request ${options.method} ${options.url}`
       );
     },
-    onAbuseLimit: (retryAfter: any, options: { method: any; url: any; }) => {
-      // does not retry, only logs a warning
-      octokit.log.warn(
-        `Abuse detected for request ${options.method} ${options.url}`
-      );
-    },
+    // onAbuseLimit: (retryAfter: any, options: { method: any; url: any; }) => {
+    //   // does not retry, only logs a warning
+    //   octokit.log.warn(
+    //     `Abuse detected for request ${options.method} ${options.url}`
+    //   );
+    // },
   },
 })
 
@@ -136,7 +136,7 @@ export async function getFile(id: string) {
 
 export async function deleteFile(id: string) {
   try {
-    if (GIST_CACHE.has(id)) GIST_CACHE.remove(id);
+    if (GIST_CACHE.has(id)) GIST_CACHE.delete(id);
 
     // 'DELETE /gists/{gist_id}'
     const result = await octokit.rest.gists.delete({

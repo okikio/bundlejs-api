@@ -2,7 +2,7 @@ import type { Redis } from "@upstash/redis";
 import type { CompressionType } from "@bundle/compress";
 import type { BundleResult } from "./bundle.ts";
 
-import { encodeBase64 } from "@std/encoding/base64";
+import { encodeBase64 } from "@bundle/utils/encoding";
 
 import { ansi } from "@bundle/utils";
 

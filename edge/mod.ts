@@ -7,9 +7,9 @@ import JSON5 from "./vendor/json5.ts";
 import ESBUILD_WASM from "@bundle/core/wasm";
 
 import { Redis } from "@upstash/redis";
-import { dirname, fromFileUrl, join, extname, basename } from "@std/path/posix";
+import { dirname, fromFileUrl, join, extname, basename } from "@bundle/utils/path";
 
-import { decodeBase64 } from "@std/encoding/base64";
+import { decodeBase64 } from "@bundle/utils/encoding";
 
 import { createCompressConfig } from "@bundle/compress";
 import { deepMerge, resolveVersion, parsePackageName } from "@bundle/utils";
