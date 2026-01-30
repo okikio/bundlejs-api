@@ -710,15 +710,6 @@ function parseRegistrySpec(spec: string): RegistrySpec | UnknownSpec {
 }
 
 // =============================================================================
-// Backwards Compatibility
-// =============================================================================
-
-/**
- * @deprecated Use parseNpmSpec instead
- */
-export const parseNpmDependencySpec = parseNpmSpec;
-
-// =============================================================================
 // Type Guards
 // =============================================================================
 

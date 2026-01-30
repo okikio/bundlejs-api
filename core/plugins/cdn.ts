@@ -64,22 +64,20 @@
 import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { LocalState, ESBUILD } from "@bundle/core/types";
 import type { SideEffectsMatchers } from "../utils/side-effects.ts";
-import type { record } from "../context/context.ts";
 
 import { Context, fromContext, withContext } from "../context/context.ts";
 
-import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 import { parsePackageName } from "@bundle/utils/parse-package-name";
 import { getPackageOfVersion, getRegistryURL, resolveVersion } from "@bundle/utils/npm-search";
 
 import {
-  parseNpmDependencySpec,
   isUrlSpec,
   isAliasSpec,
   isUnsupportedSpec,
   joinSubpath,
   appendUrlSubpath,
   getUnsupportedSpecError,
+  parseNpmSpec,
 } from "@bundle/utils/npm-spec";
 import { computeEsbuildSideEffects } from "../utils/side-effects.ts";
 
@@ -102,6 +100,7 @@ import {
   getJSRVersionMeta,
   jsrToEsmSh,
 } from "../../utils/jsr-spec.ts";
+import { computePeerDependencies, normalizeResolvedPath, resolveModern, resolvePackageEntry } from "../utils/cdn-resolution.ts";
 
 /** CDN Plugin Namespace */
 export const CDN_NAMESPACE = "cdn-url";
@@ -140,11 +139,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const build = fromContext("build", StateContext)!;
 
   const failedManifestUrls = fromContext("failedManifestUrls", StateContext) ?? new Set<string>();
-  const packageManifestsMap = fromContext("packageManifests", StateContext) ?? new Map<string, PackageJson | FullPackageVersion>();
-
-  const sideEffectsMatchersCache =
-    fromContext("sideEffectsMatchersCache", StateContext) ??
-    new Map<string, SideEffectsMatchers>();
+  const packageManifestsMap = fromContext("packageManifests", StateContext)
+    ?? new Map<string, PackageJson | FullPackageVersion>();
+  const sideEffectsMatchersCache = fromContext("sideEffectsMatchersCache", StateContext)
+    ?? new Map<string, SideEffectsMatchers>();
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     const conditions = getResolverConditions(args, effectiveResolveOpts);
@@ -185,30 +183,23 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
     // ========================================================================
 
     if (/^#/.test(argPath)) {
-      try {
-        // Resolving imports & exports from the package.json
-        // If an import starts with "#" then it's a subpath-import, and should be treated as so
-        const modernResolve = resolve(initialManifest, argPath, {
-          browser: conditions.browser,
-          conditions: conditions.conditions,
-          require: conditions.require
-        }) || 
-          // Compatibility fallback: if we're in ESM-import context but the package only
-          // defined require-branches, try require once (keeps existing "try hard" behavior).
-          (!conditions.require
-            ? resolve(initialManifest, argPath, {
-                browser: conditions.browser,
-                conditions: ["require", ...conditions.conditions],
-                require: true
-              })
-            : undefined);
+      // NEW: Use resolveModern for subpath imports
+      const result = resolveModern(initialManifest, argPath, conditions);
+      
+      if (result.success && result.path) {
+        argPath = join(initialManifest.name + "@" + initialManifest.version, result.path);
+      } else if (!result.success && !conditions.require) {
+        // Compatibility fallback: try require conditions
+        const fallback = resolveModern(initialManifest, argPath, {
+          ...conditions,
+          require: true,
+          conditions: ["require", ...conditions.conditions],
+        });
 
-        if (modernResolve) {
-          const resolvedPath = Array.isArray(modernResolve) ? modernResolve[0] : modernResolve;
-          argPath = join(initialManifest.name + "@" + initialManifest.version, resolvedPath);
+        if (fallback.success && fallback.path) {
+          argPath = join(initialManifest.name + "@" + initialManifest.version, fallback.path);
         }
-        // deno-lint-ignore no-empty
-      } catch (_) { }
+      }
     }
 
     // ========================================================================
@@ -323,16 +314,15 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       // If the version of package isn't determinable from the path argument,
       // check the inherited manifest for a potential version
       let assumedVersion = parsed.version || "latest";
-      if (!parsed.version) {
-        if (parsed.name in initialDeps)
-          assumedVersion = initialDeps[parsed.name];
+      if (!parsed.version && parsed.name in initialDeps) {
+        assumedVersion = initialDeps[parsed.name];
       }
 
       // ======================================================================
       // Parse dependency spec to handle URLs, aliases, git, etc.
       // ======================================================================
 
-      const spec = assumedVersion ? parseNpmDependencySpec(assumedVersion) : null;
+      const spec = assumedVersion ? parseNpmSpec(assumedVersion) : null;
 
       // Apply npm alias rewrite: "npm:react@^18" -> name=react, version=^18
       let effectiveName = parsed.name;
@@ -378,23 +368,21 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
         // Merge peerDependencies for version stabilization
         if (resolvedManifest && typeof resolvedManifest === "object") {
-          const peerDeps = Object.assign({},
-            initialManifest?.peerDependencies,
-            resolvedManifest?.peerDependencies,
-            { [effectiveName]: effectiveAssumedVersion}
-          );
-
-          const inheritPeerDependencies = structuredClone(peerDeps);
-          for (const [name, version] of Object.entries(peerDeps)) {
-            inheritPeerDependencies[name] = initialDeps[name] ?? version;
-          }
+          const inheritPeerDependencies = computePeerDependencies({
+            initialManifest,
+            resolvedManifest,
+            initialDeps,
+            packageName: effectiveName,
+            packageVersion: effectiveAssumedVersion,
+            isNpmCdn: NPM_CDN,
+          });
 
           Object.assign(resolvedPluginData, {
             manifest: deepMerge(
               structuredClone(resolvedManifest),
               { peerDependencies: inheritPeerDependencies }
             )
-          })
+          });
         }
 
         return Object.assign({}, resolved, {
@@ -487,92 +475,38 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           }
 
           // Combine any extra subpath from alias with the parsed subpath
-          const combinedSubpath = joinSubpath(
-            effectiveExtraSubpath,
-            parsedSubpath
-          );
-          const relativePath = combinedSubpath.replace(/^\//, "./");
+          const combinedSubpath = joinSubpath(effectiveExtraSubpath, parsedSubpath);
+          const legacyFields = getLegacyMainFields(resolvedManifest, args, effectiveResolveOpts);
 
-          let modernResolve: ReturnType<typeof resolve> | null = null;
-          let legacyResolve: ReturnType<typeof legacy> | null = null;
-          let resolvedPath: string | null = combinedSubpath;
+          // ================================================================
+          // NEW: Use resolvePackageEntry for combined resolution
+          // This is the key integration point!
+          // ================================================================
 
-          try {
-            // Resolving imports & exports from the package.json
-            // If an import starts with "#" then it's a subpath-import, and should be treated as so
-            modernResolve = resolve(resolvedManifest, relativePath || ".", {
-              browser: conditions.browser,
-              conditions: conditions.conditions,
-              require: conditions.require,
-              unsafe: true
-            }) ||
-              // Same compat fallback as above
-              (!conditions.require
-                ? resolve(resolvedManifest, relativePath, {
-                  browser: conditions.browser,
-                  conditions: ["require", ...conditions.conditions],
-                  require: true
-                })
-                : undefined
-              );
+          const resolutionResult = resolvePackageEntry({
+            manifest: resolvedManifest,
+            subpath: combinedSubpath,
+            conditions,
+            legacyFields,
+            allowLiteralSubpath: !isSubpathDirectoryPackage && combinedSubpath.trim().length > 0,
+          });
 
-            if (modernResolve) {
-              resolvedPath = Array.isArray(modernResolve) ? modernResolve[0] : modernResolve;
-            }
-            // deno-lint-ignore no-empty
-          } catch (_) { }
-
-          if (!modernResolve) {
-            // If the subpath has a package.json, and the modern resolve didn't work for it
-            // we can safely use legacy resolve,
-            // else, if the subpath doesn't have a package.json, then the subpath is literal,
-            // and we should just use the subpath as it is
-            const emptyRelativePath = relativePath.trim().length === 0
-            if (isSubpathDirectoryPackage || emptyRelativePath) {
-              try {
-                const legacyFields = getLegacyMainFields(resolvedManifest, args, effectiveResolveOpts);
-                
-                // Resolving using main, module, etc... from package.json
-                legacyResolve = legacy(resolvedManifest, {
-                  browser: conditions.browser,
-                  fields: legacyFields
-                });
-
-                if (legacyResolve) {
-                  // Some packages have `browser` fields in their package.json which have some values set to false
-                  // e.g. typescript -> https://unpkg.com/browse/typescript@4.9.5/package.json
-                  if (typeof legacyResolve === "object") {
-                    const values = Object.values(legacyResolve);
-                    const validValues = values.filter(x => x);
-                    if (validValues.length <= 0)
-                      legacyResolve = legacy(resolvedManifest);
-                  }
-
-                  if (Array.isArray(legacyResolve)) {
-                    resolvedPath = legacyResolve[0];
-                  } else if (typeof legacyResolve === "object") {
-                    const allKeys = Object.keys(legacyResolve);
-                    const nonCJSKeys = allKeys.filter(key => {
-                      return (
-                        !/\.cjs$/.exec(key) &&
-                        !/src\//.exec(key) &&
-                        (legacyResolve as record<string | false>)[key]!
-                      );
-                    });
-
-                    const keysToUse = nonCJSKeys.length > 0 ? nonCJSKeys : allKeys;
-                    resolvedPath = legacyResolve[keysToUse[0]] as string;
-                  } else {
-                    resolvedPath = legacyResolve;
-                  }
-                }
-                // deno-lint-ignore no-empty
-              } catch (_) { }
-            } else resolvedPath = relativePath;
+          if (resolutionResult.excluded) {
+            // Module is excluded for browser (e.g., browser: false)
+            return {
+              errors: [{
+                text: `Package "${effectiveName}" is excluded for browser environment`,
+                detail: "The package's browser field explicitly excludes this module.",
+              }],
+            };
           }
 
-          if (resolvedPath && typeof resolvedPath === "string") {
-            resultSubpath = resolvedPath.replace(/^(\.\/)/, "/");
+          if (resolutionResult.error) {
+            dispatchEvent(LOGGER_WARN, `Resolution error for ${effectiveName}: ${resolutionResult.error.message}`);
+          }
+
+          if (resolutionResult.path) {
+            resultSubpath = normalizeResolvedPath(resolutionResult.path);
           }
 
           if (subpath && isSubpathDirectoryPackage) {
@@ -590,37 +524,29 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
       const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
-      const packageId = `${effectiveName}@${knownVersion}`;
-
       // Store the package.json manifest of the dependencies fetched in the cache
+      const packageId = `${effectiveName}@${knownVersion}`;
       if (!packageManifestsMap.get(packageId)) {
         try {
           const _manifest = await getPackageOfVersion(packageId);
-          if (_manifest)
-            packageManifestsMap.set(packageId, _manifest);
+          if (_manifest) packageManifestsMap.set(packageId, _manifest);
         } catch (e) {
-          console.warn(e);
+          dispatchEvent(LOGGER_WARN, "Could not store the package.json manifests of the dependencies we fetched.");
+          dispatchEvent(LOGGER_WARN, e);
         }
       }
 
-      const peerDeps = Object.assign(
-        initialManifest?.peerDependencies ?? {},
-        resolvedManifest?.peerDependencies ?? {},
-        {
-          // Some packages rely on cyclic dependencies, e.g. https://x.com/jsbundle/status/1792325771354149261
-          // so we create a new field in peerDependencies and place the current package and it's version,
-          // the algorithm should then be able to use the correct version if a dependency is cyclic
-          [effectiveName]: NPM_CDN ? knownVersion : (initialDeps[effectiveName] ?? "latest")
-        }
-      );
-      const inheritPeerDependencies = structuredClone(peerDeps);
+      // NEW: Use computePeerDependencies utility
+      const inheritPeerDependencies = computePeerDependencies({
+        initialManifest,
+        resolvedManifest,
+        initialDeps,
+        packageName: effectiveName,
+        packageVersion: knownVersion,
+        isNpmCdn: NPM_CDN,
+      });
 
-      // Force inherit peerDependencies, makes it easier to keep versions stable 
-      // and to avoid duplicates
-      for (const [name, version] of Object.entries(peerDeps)) {
-        inheritPeerDependencies[name] = initialDeps[name] ?? version;
-      }
-
+      // NEW: Use computeSideEffects utility
       const computedSideEffects = computeEsbuildSideEffects(
         resolvedManifest,
         resultSubpath, // IMPORTANT: package-relative path (e.g. "/dist/index.js")
