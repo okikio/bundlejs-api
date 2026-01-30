@@ -491,7 +491,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             allowLiteralSubpath: !isSubpathDirectoryPackage && combinedSubpath.trim().length > 0,
           });
 
-          if (resolutionResult.excluded) {
+          if (resolutionResult.excluded && conditions.browser) {
             // Module is excluded for browser (e.g., browser: false)
             return {
               errors: [{

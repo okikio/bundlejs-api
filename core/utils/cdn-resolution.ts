@@ -30,7 +30,7 @@ import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { SideEffectsMatchers } from "./side-effects.ts";
 import type { ResolverConditions as BaseResolverConditions } from "@bundle/utils/resolve-conditions";
 
-import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
+import { resolve, legacy, imports } from "@bundle/utils/resolve-exports-imports";
 import { computeEsbuildSideEffects } from "./side-effects.ts";
 import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 
@@ -104,6 +104,10 @@ export interface SideEffectsConfig {
 /**
  * Resolve using modern exports/imports field.
  *
+ * This supports:
+ * - `exports` resolution (subpaths like "." or "./feature")
+ * - `imports` resolution (subpath imports like "#minpath")
+ *
  * @param manifest Package manifest
  * @param subpath Subpath to resolve (e.g., ".", "./utils")
  * @param conditions Resolution conditions
@@ -115,17 +119,30 @@ export interface SideEffectsConfig {
  *   // result.path = "./dist/esm/index.mjs"
  * }
  * ```
+ * 
+ * @example exports
+ * ```ts
+ * resolveModern(pkg, ".", conditions)
+ * ```
+ *
+ * @example imports (Node subpath imports)
+ * ```ts
+ * resolveModern(pkg, "#minpath", conditions)
+ * ```
  */
 export function resolveModern(
   manifest: Partial<PackageJson | FullPackageVersion>,
   subpath: string,
   conditions: ResolverConditions
 ): ModernResolutionResult {
+  const isSubpathImport = subpath.startsWith("#");
+
   // Normalize subpath for exports resolution
-  const exportSubpath =
+  const exportSubpath = isSubpathImport ? subpath : (
     subpath.startsWith("./") ? subpath :
-    subpath === "" || subpath === "." ? "." :
-    `./${subpath.replace(/^\//, "")}`;
+      subpath === "" || subpath === "." ? "." :
+        `./${subpath.replace(/^\//, "")}`
+  );
 
   try {
     // Primary resolution with specified conditions
@@ -383,7 +400,7 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
     const legacyResult = resolveLegacy(manifest, { browser: conditions.browser }, legacyFields);
 
     // Check if excluded for browser
-    if (legacyResult.excluded) {
+    if (conditions.browser && legacyResult.excluded) {
       result.excluded = true;
       result.error = new Error("Module excluded by browser field");
       return result;
