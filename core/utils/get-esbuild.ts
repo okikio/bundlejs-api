@@ -25,26 +25,32 @@ import * as ESBUILD_DENO_WASM from "esbuild"
 export async function getEsbuild(platform: Platform = PLATFORM_AUTO, version?: string | null): Promise<typeof ESBUILD | typeof ESBUILD_WASM> {
   version ??= defaultVersion;
 
+  console.log({
+    platform,
+    version
+  })
   try {
-    switch (platform) {
-      case "deno-wasm":
-        return ESBUILD_DENO_WASM;
-        // return await import(
-        //   /* @vite-ignore */
-        //   `https://deno.land/x/esbuild@v${version}/wasm.js`
-        // );
-    // case "deno":
-    //   return await import(
-    //     /* @vite-ignore */
-    //     `https://deno.land/x/esbuild@v${version}/mod.js`
-    //   );
-      case "node":
-        return await import("esbuild");
-      case "browser":
-      case "edge":
-      default:
-        return await import("esbuild-wasm");
-    }
+
+    return ESBUILD_DENO_WASM;
+    // switch (platform) {
+    //   case "deno-wasm":
+    //     return ESBUILD_DENO_WASM;
+    //     // return await import(
+    //     //   /* @vite-ignore */
+    //     //   `https://deno.land/x/esbuild@v${version}/wasm.js`
+    //     // );
+    // // case "deno":
+    // //   return await import(
+    // //     /* @vite-ignore */
+    // //     `https://deno.land/x/esbuild@v${version}/mod.js`
+    // //   );
+    //   case "node":
+    //     return await import("esbuild");
+    //   case "browser":
+    //   case "edge":
+    //   default:
+    //     return await import("esbuild-wasm");
+    // }
   } catch (e) {
     throw e;
   }
