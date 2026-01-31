@@ -64,6 +64,12 @@ export const DEFAULT_REGISTRY = "https://registry.npmjs.com";
  * escapePackageName("react") // "react"
  * escapePackageName("@types/node") // "@types%2fnode"
  * escapePackageName("@tanstack/react-query") // "@tanstack%2freact-query"
+ * 
+ * @example
+ * escapePackageName("@mdx-js/mdx") -> "@mdx-js%2fmdx"
+ *
+ * @example
+ * escapePackageName("#minpath") -> "%23minpath"
  */
 export function escapePackageName(name: string): string {
   return name.replace("/", "%2f");

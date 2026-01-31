@@ -39,6 +39,7 @@ import { setFile } from "../utils/filesystem.ts";
 
 import { isBareImport, isAbsolute } from "@bundle/utils/path";
 import { toURLPath, urlJoin } from "@bundle/utils/url";
+import { looksLikeJSRSpec } from "@bundle/utils/jsr-spec";
 
 /** HTTP Plugin Namespace */
 export const HTTP_NAMESPACE = "http-url";
@@ -297,7 +298,8 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
       const origin = NPM_CDN ? pathOrigin : host;
 
       // Bare import (e.g., "lodash") → delegate to CDN resolution
-      if (isBareImport(argPath)) {
+      // Also handle private imports (#internal) and JSR spec imports
+      if (/^#/.test(argPath) || isBareImport(argPath) || looksLikeJSRSpec(argPath)) {
         const ctx = withContext({ origin, build: Context.opaque(build) }, StateContext);
         return await CdnResolution(ctx)(args);
       }

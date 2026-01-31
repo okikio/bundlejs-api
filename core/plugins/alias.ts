@@ -1,17 +1,22 @@
 import type { ESBUILD, LocalState } from "../types.ts";
-import type { Context } from "../context/context.ts";
 
-import { fromContext } from "../context/context.ts";
+import { Context, fromContext, withContext } from "../context/context.ts";
 
 import { EXTERNALS_NAMESPACE } from "./external.ts";
 import { HttpResolution } from "./http.ts";
 
 import { parsePackageName } from "@bundle/utils/parse-package-name";
+import { looksLikeJSRSpec } from "@bundle/utils/jsr-spec";
 import { isBareImport } from "@bundle/utils/path";
+
 import { getCDNUrl } from "../utils/cdn-format.ts";
 
 /** Alias Plugin Namespace */
 export const ALIAS_NAMESPACE = "alias-globals";
+
+export interface AliasResolutionState<T> extends LocalState<T> {
+  build: ESBUILD.PluginBuild
+}
 
 /**
  * Checks if a package has an alias
@@ -20,7 +25,11 @@ export const ALIAS_NAMESPACE = "alias-globals";
  * @param aliases An object with package as the key and the package alias as the value, e.g. { "fs": "memfs" }
  */
 export function isAlias(id: string, aliases = {}) {
-  if (!isBareImport(id)) return false;
+  if (
+    !isBareImport(id) &&
+    !/^#/.test(id) &&
+    !looksLikeJSRSpec(id)
+  ) return false;
 
   const aliasKeys = Object.keys(aliases);
   const path = id.replace(/^node\:/, "");
@@ -38,7 +47,7 @@ export function isAlias(id: string, aliases = {}) {
  * @param host The default host origin to use if an import doesn't already have one
  * @param logger Console log
  */
-export function AliasResolution<T>(StateContext: Context<LocalState<T>>) {
+export function AliasResolution<T>(StateContext: Context<AliasResolutionState<T>>) {
   const LocalConfig = fromContext("config", StateContext)!;
   const { alias: aliases = {} } = LocalConfig;
 
@@ -51,10 +60,9 @@ export function AliasResolution<T>(StateContext: Context<LocalState<T>>) {
       const aliasPath = aliases[pkgDetails.name];
 
       if (aliasPath) {
-        return HttpResolution(StateContext)({
-          ...args,
+        return HttpResolution(StateContext)(Object.assign({}, args, {
           path: aliasPath
-        });
+        }));
       }
     }
   };
@@ -75,13 +83,15 @@ export function AliasPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Pl
   return {
     name: ALIAS_NAMESPACE,
     setup(build) {
+      const ctx = withContext({ build: Context.opaque(build) }, StateContext);
+      
       // Intercept import paths starting with "http:" and "https:" so
       // esbuild doesn't attempt to map them to a file system location.
       // Tag them with the "http-url" namespace to associate them with
       // this plugin.
       build.onResolve({ filter: /^node\:.*/ }, (args) => {
         if (isAlias(args.path, aliases))
-          return AliasResolution(StateContext)(args);
+          return AliasResolution(ctx)(args);
 
         if (!polyfill) {
           return {
@@ -97,8 +107,8 @@ export function AliasPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Pl
       // files will be in the "http-url" namespace. Make sure to keep
       // the newly resolved URL in the "http-url" namespace so imports
       // inside it will also be resolved as URLs recursively.
-      build.onResolve({ filter: /.*/ }, AliasResolution(StateContext));
-      build.onResolve({ filter: /.*/, namespace: ALIAS_NAMESPACE }, AliasResolution(StateContext));
+      build.onResolve({ filter: /.*/ }, AliasResolution(ctx));
+      build.onResolve({ filter: /.*/, namespace: ALIAS_NAMESPACE }, AliasResolution(ctx));
     },
   };
 };

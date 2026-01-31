@@ -180,17 +180,29 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
     // ========================================================================
     // Handle subpath imports (#internal/...)
     // https://nodejs.org/api/packages.html#subpath-imports
+    //
+    // IMPORTANT: Private imports MUST be resolved against the IMPORTER's manifest,
+    // not the root manifest. The vfile package imports #minpath, so we need
+    // vfile's package.json (passed via pluginData.manifest), not the entry point's.
     // ========================================================================
 
+    console.log({ argPath})
     if (/^#/.test(argPath)) {
-      // NEW: Use resolveModern for subpath imports
-      const result = resolveModern(initialManifest, argPath, conditions);
+      // Use importer's manifest if available, fall back to initial manifest
+      const importerManifest: Partial<PackageJson | FullPackageVersion> = 
+        args.pluginData?.manifest ?? initialManifest;
+      
+      const manifestName = importerManifest.name ?? initialManifest.name ?? "unknown";
+      const manifestVersion = importerManifest.version ?? initialManifest.version ?? "latest";
+      
+      // Try to resolve the subpath import
+      const result = resolveModern(importerManifest, argPath, conditions);
       
       if (result.success && result.path) {
-        argPath = join(initialManifest.name + "@" + initialManifest.version, result.path);
+        argPath = join(`${manifestName}@${manifestVersion}`, result.path);
       } else if (!result.success && !conditions.require) {
         // Compatibility fallback: try require conditions
-        const fallback = resolveModern(initialManifest, argPath, {
+        const fallback = resolveModern(importerManifest, argPath, {
           ...conditions,
           require: true,
           conditions: ["require", ...conditions.conditions],
@@ -198,6 +210,16 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
         if (fallback.success && fallback.path) {
           argPath = join(initialManifest.name + "@" + initialManifest.version, fallback.path);
+        } else {
+          // CRITICAL: Private import resolution failed
+          // Return error immediately - do NOT fall through to bare import handling
+          // as this would incorrectly try to resolve #minpath as an npm package
+          return {
+            errors: [{
+              text: `Failed to resolve private import "${argPath}"`,
+              detail: `The package "${manifestName}" does not define this import in its "imports" field, or the import conditions [${conditions.conditions.join(", ")}] don't match. This is a Node.js subpath import that must be defined in package.json.`,
+            }],
+          };
         }
       }
     }
@@ -492,15 +514,31 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           });
 
           if (resolutionResult.excluded && conditions.browser) {
-            // Module is excluded for browser (e.g., browser: false)
+            // Generate accurate error message based on exclusion reason
+            const reason = (resolutionResult as { exclusionReason?: string }).exclusionReason;
+            
+            let text: string;
+            let detail: string;
+            
+            if (reason === "browser" || reason === "browser-remapping") {
+              text = `Package "${effectiveName}" is excluded for browser environment`;
+              detail = "The package's browser field explicitly excludes this module.";
+            } else if (reason === "no-entry-point") {
+              text = `Could not find entry point for package "${effectiveName}"`;
+              detail = `The package.json does not define 'main', 'module', 'exports', or other entry point fields. Subpath: "${combinedSubpath || "."}".`;
+            } else {
+              text = `Package resolution failed for "${effectiveName}"`;
+              detail = resolutionResult.error?.message ?? "Unknown resolution error";
+            }
+
             return {
-              errors: [{
-                text: `Package "${effectiveName}" is excluded for browser environment`,
-                detail: "The package's browser field explicitly excludes this module.",
-              }],
+              errors: [{ text, detail }],
             };
           }
 
+          // If we're not building for browser, don't treat this as a hard exclusion.
+          // Prefer to continue and let normal "no entry point" errors surface if needed.
+          // (With the resolveLegacy + resolvePackageEntry fixes, this path should rarely trigger.)
           if (resolutionResult.error) {
             dispatchEvent(LOGGER_WARN, `Resolution error for ${effectiveName}: ${resolutionResult.error.message}`);
           }

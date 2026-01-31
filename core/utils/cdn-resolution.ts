@@ -30,7 +30,7 @@ import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { SideEffectsMatchers } from "./side-effects.ts";
 import type { ResolverConditions as BaseResolverConditions } from "@bundle/utils/resolve-conditions";
 
-import { resolve, legacy, imports } from "@bundle/utils/resolve-exports-imports";
+import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 import { computeEsbuildSideEffects } from "./side-effects.ts";
 import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 
@@ -53,6 +53,9 @@ export interface ModernResolutionResult {
   error?: Error;
 }
 
+/** Reasons for exclusion via browser field */
+export type ExclusionReason = "browser" | "browser-remapping" | "no-entry-point";
+
 /** Result from legacy field resolution */
 export interface LegacyResolutionResult {
   /** Resolved entry point (from main/module, NOT browser object keys) */
@@ -61,6 +64,8 @@ export interface LegacyResolutionResult {
   browserRemappings: BrowserRemappings | null;
   /** Whether module is excluded (browser: false) */
   excluded: boolean;
+  /** Why the module was excluded - helps generate accurate error messages */
+  exclusionReason?: ExclusionReason;
   error?: Error;
 }
 
@@ -227,6 +232,7 @@ export function resolveLegacy(
       // Case: browser field is `false` - module excluded
       if (!withBrowser) {
         result.excluded = true;
+        result.exclusionReason = "browser";
         return result;
       }
 
@@ -252,6 +258,7 @@ export function resolveLegacy(
         if (allFalse) {
           // Package has no browser support
           result.excluded = true;
+          result.exclusionReason = "browser";
           return result;
         }
 
@@ -271,7 +278,10 @@ export function resolveLegacy(
     });
 
     if (!entryPoint) {
+      // Note: This is NOT browser exclusion - it's "no entry point found"
+      // The error message should reflect this distinction
       result.excluded = true;
+      result.exclusionReason = "no-entry-point";
       return result;
     }
 
@@ -401,9 +411,28 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
 
     // Check if excluded for browser
     if (conditions.browser && legacyResult.excluded) {
-      result.excluded = true;
-      result.error = new Error("Module excluded by browser field");
-      return result;
+      const reason = legacyResult.exclusionReason;
+      
+      // Browser exclusion only matters when targeting browser
+      // When platform is 'node', browser: false doesn't exclude the module
+      if (reason === "browser" && !conditions.browser) {
+        // Platform is node, browser exclusion doesn't apply
+        // Continue resolution - module might have valid Node.js entry
+        dispatchEvent(LOGGER_WARN, 
+          `Package excluded for browser but platform is not browser, continuing resolution`);
+      } else if (reason === "no-entry-point") {
+        // No entry point is an error regardless of platform
+        result.excluded = true;
+        result.error = new Error("No entry point found in package.json");
+        (result as { exclusionReason?: string }).exclusionReason = reason;
+        return result;
+      } else {
+        // Browser exclusion when targeting browser
+        result.excluded = true;
+        result.error = new Error("Module excluded by browser field");
+        (result as { exclusionReason?: string }).exclusionReason = reason;
+        return result;
+      }
     }
 
     if (legacyResult.entryPoint) {
