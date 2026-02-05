@@ -68,6 +68,14 @@ When networking/infra is involved:
 - Avoid unsafe patterns (string-built SQL, unsafe eval, weak crypto).
 - Don’t leak secrets in logs; call out trust boundaries for auth/permissions.
 
+## Agent memory (file-based)
+When acting as an agent on multi-step work:
+- Read: `.agents/memory/ACTIVE/PLAN.md`, `TASKS.md`, `PROGRESS.md`
+- Update `PROGRESS.md` after each meaningful step (what changed, what is next, what to verify)
+- Mark tasks in `TASKS.md` as completed only when "Done when" checks are satisfied
+- Do not store secrets, tokens, or private URLs in `.agents/memory/`
+- Keep scratch notes in `.agents/memory/SESSIONS/` (gitignored)
+
 ## Where to look for more targeted rules
 This repo uses path-specific instructions under `.github/instructions/`.
 Follow the applicable file-based rules when working in:

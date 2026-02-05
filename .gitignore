@@ -158,3 +158,8 @@ packages/edge/@types/
 packages/edge/deno.lock
 repomix-output.xml.txt
 .vscode/mise-tools
+
+# Agent memory scratch
+.agents/memory/SESSIONS/
+.agents/memory/**/*.log
+.agents/memory/**/*.tmp
