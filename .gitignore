@@ -143,7 +143,6 @@ pnpm-debug.log*
 # macOS-specific files
 .DS_Store
 
-core.*
 **/deno.lock
 .pnpm-store
 

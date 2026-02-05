@@ -1,4 +1,18 @@
 {
   "editor.tabSize": 2,
-  "deno.enable": true
+  "deno.enable": true,
+  // Code review (review selection)
+  "github.copilot.chat.reviewSelection.instructions": [
+    { "file": ".agent/guides/code-review.md" }
+  ],
+
+  // Commit message generation
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    { "file": ".agent/guides/commit-messages.md" }
+  ],
+
+  // PR title + description generation
+  "github.copilot.chat.pullRequestDescriptionGeneration.instructions": [
+    { "file": ".agent/guides/pull-requests.md" }
+  ]
 }

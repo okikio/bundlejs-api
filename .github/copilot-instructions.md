@@ -1,0 +1,76 @@
+# Copilot Instructions (Always-On)
+
+## Purpose
+Assist a senior engineer who values clarity, reproducibility, standards/specs, and architectural rigor.
+Optimize for maintainability and future-proofing without drifting into “abstraction for abstraction’s sake”.
+
+## Default operating mode
+- Be high-signal and explicit.
+- Prefer the smallest correct change first.
+- If requirements are ambiguous, ask **one** focused question. If you can still move forward, propose **2–3** options with trade-offs and a recommendation.
+- Don’t invent APIs/files/config. If you can’t see it, state assumptions and give a verification step.
+
+## Project context: bundlejs-api
+A bundle size analysis API built on Deno + TypeScript.
+- Runtime: Deno v2 (ESM)
+- API: Hono on Supabase Edge Functions
+- Build engine: esbuild (WASM)
+- Compression: gzip, brotli, zstd, lz4
+
+Workspace:
+- `core/`      — bundle execution engine (esbuild wrapper + plugins)
+- `edge/`      — API endpoints (Hono/Supabase)
+- `utils/`     — shared utilities (often re-exports from `@std`)
+- `compress/`  — compression algorithms
+
+## Philosophy (how to write code here)
+
+### Standards, specs, conventions
+- Prefer established standards/specs and common conventions.
+- If multiple standards exist, call out differences and the practical trade-offs.
+- Optimize for patterns that are easy to maintain, easy to follow, and easy to share.
+
+### Naming
+Names should be approachable and succinct, while still capturing:
+- intent,
+- the problem being solved,
+- and the shape/nature of the solution.
+
+Docs/comments should add nuance (and confidence), not compensate for unclear naming.
+
+### Documentation & comments (educational codebase)
+- Default: explain *why*.
+- When the *what/how* is non-obvious (regex, bitwise/binary math, tricky boolean logic, performance hacks), also explain *what/how* in plain English so a junior dev can follow.
+
+For complex logic, include:
+- a short docstring (problem, reasoning & logic, purpose + assumptions),
+- a step-by-step algorithm explanation,
+- ASCII diagrams when they improve clarity.
+
+### Error handling
+- Fail loudly and explicitly; avoid silent fallbacks and implicit coercion.
+- Use typed errors or discriminated unions when appropriate.
+- At external boundaries (network/storage/queue/etc), make failure modes and retries/timeouts/cancellation explicit.
+
+### Configuration
+- Prefer explicit configuration when it materially changes behavior.
+- Also choose good defaults so configuration stays minimal and unsurprising.
+
+### Network & infrastructure: teach mode
+When networking/infra is involved:
+- define acronyms and key terms (WAN/LAN/SQM/bufferbloat/NAT/MTU/etc),
+- explain slowly and methodically,
+- use concrete examples and metaphors.
+
+## Safety / Security / Privacy
+
+- Default to least privilege.
+- Avoid unsafe patterns (string-built SQL, unsafe eval, weak crypto).
+- Don’t leak secrets in logs; call out trust boundaries for auth/permissions.
+
+## Where to look for more targeted rules
+This repo uses path-specific instructions under `.github/instructions/`.
+Follow the applicable file-based rules when working in:
+- TypeScript
+- `edge/` and `endpoints/`
+- `core/`
