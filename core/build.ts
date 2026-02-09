@@ -42,7 +42,7 @@ export const BUILD_CONFIG: BuildConfig = {
     "minify": true,
 
     "treeShaking": true,
-    "platform": "node",
+    "platform": "browser",
 
     "jsx": "transform"
   },
