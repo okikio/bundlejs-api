@@ -8,10 +8,12 @@
  * - Graceful degradation when Redis unavailable
  */
 
+import type { EndpointMiddlewareHandler, FunctionAppEnv } from '#shared/server/types.ts'
+
 import { createMiddleware } from 'hono/factory'
 import { rateLimiter } from 'hono-rate-limiter'
 import { RedisStore } from '@hono-rate-limiter/redis'
-import { getRedisClient, isCacheHealthy } from '#shared/cache/client.ts'
+import { getRedisClient } from '#shared/cache/client.ts'
 import { rateLimitExceeded } from '#shared/response/mod.ts'
 
 export interface RateLimitOptions {
@@ -23,7 +25,9 @@ export interface RateLimitOptions {
 /**
  * Create rate limit middleware with configurable limits
  */
-export function rateLimitMiddleware(options: RateLimitOptions) {
+export function rateLimitMiddleware<Env extends FunctionAppEnv = FunctionAppEnv>(
+  options: RateLimitOptions
+): EndpointMiddlewareHandler<Env> {
   const { windowMs, limit, keyGenerator } = options
   
   const redis = getRedisClient()
@@ -34,7 +38,7 @@ export function rateLimitMiddleware(options: RateLimitOptions) {
     : undefined
   
   return createMiddleware(
-    rateLimiter({
+    rateLimiter<Env>({
       windowMs,
       limit,
       standardHeaders: 'draft-6',  // RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset

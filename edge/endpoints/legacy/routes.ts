@@ -6,11 +6,12 @@
  * Allows gradual migration without breaking existing clients.
  */
 
-import type { Hono } from 'hono'
+import type { Hono, Env } from 'hono'
+import type { BlankEnv } from 'hono/types'
 import type { EndpointHandlerModule } from '#shared/server/types.ts'
 
-export function registerLegacyRoutes(
-  app: Hono,
+export function registerLegacyRoutes<E extends Env = BlankEnv>(
+  app: Hono<E>,
   handlers: Record<string, EndpointHandlerModule>
 ) {
   // Main bundle endpoint (root)
@@ -69,6 +70,9 @@ export function registerLegacyRoutes(
   // Cache control (legacy paths)
   // GET /no-cache → /v1/bundle with cache=bypass
   // (Handled via query param in new API, but we can support path)
+  if (bundleRun?.default) {
+    app.get('/no-cache', ...(bundleRun.Middleware ?? []), bundleRun.default)
+  }
   
   // GET/POST /delete-cache → /v1/cache/purge
   const cachePurge = handlers['cache-purge']

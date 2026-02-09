@@ -16,16 +16,14 @@ import type { EndpointHandler, EndpointMiddlewareHandler, FunctionAppEnv } from 
 import type { CorrelationVariables } from '#shared/middleware/correlation.ts'
 
 import { createValidator } from '#shared/middleware/validation.ts'
-import { rateLimitMiddleware } from '#middleware/rate-limit.ts'
-import { cacheControlMiddleware, type CacheControlVariables } from '#middleware/cache-control.ts'
+import { rateLimitMiddleware } from '#shared/middleware/rate-limit.ts'
+import { cacheControlMiddleware, type CacheControlVariables } from '#shared/middleware/cache-control.ts'
 
-import { ok, internalServerError, badRequest } from '#shared/response/mod.ts'
+import { ok, internalServerError, badRequest, validationFailed } from '#shared/response/mod.ts'
 import { getLogger } from '#shared/middleware/correlation.ts'
 
-import { parseQueryToConfig } from '#shared/bundle/parse.ts'
-import { executeBundle } from '#shared/bundle/service.ts'
-import { generateCacheKey } from '#shared/cache/keys.ts'
-import { getCachedResult, setCachedResult } from '#shared/cache/operations.ts'
+import { resolveBundleRequest } from '#shared/bundle/request.ts'
+import { generateLegacyResponse } from '#shared/bundle/legacy-response.ts'
 
 import Definition from './definition.ts'
 
@@ -43,7 +41,7 @@ export type AppEnv = FunctionAppEnv<HandlerVariables>
 
 export const Middleware: EndpointMiddlewareHandler<AppEnv>[] = [
   // Rate limit: 120 req/min for bundling (expensive compute)
-  rateLimitMiddleware({ windowMs: 60_000, limit: 120 }),
+  rateLimitMiddleware<AppEnv>({ windowMs: 60_000, limit: 120 }),
   
   // Parse cache mode from query
   cacheControlMiddleware,
@@ -59,64 +57,80 @@ export const Middleware: EndpointMiddlewareHandler<AppEnv>[] = [
 export const Handler: EndpointHandler<AppEnv, typeof Definition> = async function (c) {
   const logger = getLogger(c)
   const startTime = performance.now()
+  const method = c.req.method
+  const isLegacyPath = !c.req.path.includes('/v1/')
   
   try {
     // Get input from query or body
-    const method = c.req.method
-    const input = method === 'POST' 
+    let input = method === 'POST'
       ? await c.req.json()
       : c.req.valid('query')
-    
-    // Parse into bundle config
-    const { inputCode, config, modules } = await parseQueryToConfig(input)
-    
-    if (!inputCode && modules.length === 0) {
-      return c.json(...badRequest(c.req.path, 'No modules or code provided'))
-    }
-    
-    // Generate cache key
-    const cacheKey = generateCacheKey(config, modules)
-    
-    // Check cache (unless bypassing)
-    const cacheMode = c.get('cacheMode') ?? 'use'
-    
-    if (cacheMode === 'use') {
-      const cached = await getCachedResult(cacheKey)
-      if (cached) {
-        logger.info('Cache HIT', { key: cacheKey.slice(0, 20) })
-        c.header('X-Cache', 'HIT')
-        return c.json(...ok({ ...cached, cached: true }))
+
+    if (method === 'GET') {
+      const requestUrl = new URL(c.req.url)
+      if (requestUrl.searchParams.has('docs')) {
+        return Response.redirect(
+          'https://blog.okikio.dev/documenting-an-online-bundler-bundlejs#heading-configuration'
+        )
       }
     }
-    
-    logger.info('Cache MISS - executing bundle', {
-      modules: modules.length,
-      cacheMode,
-    })
-    c.header('X-Cache', cacheMode === 'bypass' ? 'BYPASS' : 'MISS')
-    
-    // Execute bundle
-    const result = await executeBundle({
-      config,
-      inputCode,
-      entryPointHash: cacheKey.slice(0, 8),
-    })
-    
-    // Cache result (unless bypassing)
-    if (cacheMode !== 'bypass') {
-      await setCachedResult(cacheKey, result)
+
+    if (method === 'POST' && Definition.Schemas.Json) {
+      const result = Definition.Schemas.Json.safeParse(input)
+      if (!result.success) {
+        const errors = result.error.issues.map((issue) => ({
+          field: issue.path.length > 0 ? issue.path.join('.') : '_root',
+          message: issue.message,
+        }))
+        return c.json(...validationFailed(c.req.path, errors))
+      }
+
+      input = result.data
     }
-    
-    // Add timing header
+
+    const cacheMode = c.get('cacheMode') ?? 'use'
+
+    const resolution = await resolveBundleRequest({
+      input,
+      baseUrl: c.req.url,
+      cacheMode,
+      includeOutputText: isLegacyPath ? 'auto' : false,
+    })
+
+    if (!resolution.inputCode && resolution.modules.length === 0) {
+      return c.json(...badRequest(c.req.path, 'No modules or code provided'))
+    }
+
+    if (isLegacyPath) {
+      return await generateLegacyResponse({
+        url: resolution.url,
+        result: resolution.result,
+        outputText: resolution.outputText,
+        cached: resolution.cached,
+        durationMs: resolution.durationMs,
+        cacheKey: resolution.cacheKey,
+      })
+    }
+
     const duration = performance.now() - startTime
     c.header('X-Bundle-Duration-ms', duration.toFixed(2))
-    
+    c.header(
+      'X-Cache',
+      resolution.cached
+        ? 'HIT'
+        : cacheMode === 'bypass'
+        ? 'BYPASS'
+        : cacheMode === 'refresh'
+        ? 'REFRESH'
+        : 'MISS'
+    )
+
     logger.info('Bundle complete', {
       duration_ms: duration.toFixed(2),
-      output_size: result.outputText?.length ?? 0,
+      cached: resolution.cached,
     })
-    
-    return c.json(...ok(result))
+
+    return c.json(...ok(resolution.result))
     
   } catch (error) {
     logger.error('Bundle failed', {

@@ -1,14 +1,7 @@
-// endpoints/badge/svg/handler.ts
 /**
- * Badge SVG Handler
- * 
- * GET /v1/badge
- * 
- * Generates shields.io badge from bundle size.
- * Handles:
- * - Bundle result lookup (cache or compute)
- * - Badge generation with timeout
- * - SVG response with caching headers
+ * Bundle Raw Handler
+ *
+ * GET /v1/bundle/raw
  */
 
 import type { EndpointHandler, EndpointMiddlewareHandler, FunctionAppEnv } from '#shared/server/types.ts'
@@ -25,21 +18,13 @@ import { generateLegacyResponse } from '#shared/bundle/legacy-response.ts'
 
 import Definition from './definition.ts'
 
-export type AppEnv = FunctionAppEnv<CacheControlVariables>
-
-// ============================================================================
-// MIDDLEWARE
-// ============================================================================
+type AppEnv = FunctionAppEnv<CacheControlVariables>
 
 export const Middleware: EndpointMiddlewareHandler<AppEnv>[] = [
-	rateLimitMiddleware<AppEnv>({ windowMs: 60_000, limit: 300 }),
+	rateLimitMiddleware<AppEnv>({ windowMs: 60_000, limit: 120 }),
 	cacheControlMiddleware,
 	createValidator('query', Definition.Schemas.Query),
 ]
-
-// ============================================================================
-// HANDLER
-// ============================================================================
 
 export const Handler: EndpointHandler<AppEnv, typeof Definition> = async function (c) {
 	const input = c.req.valid('query')

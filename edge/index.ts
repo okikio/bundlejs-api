@@ -30,11 +30,16 @@ import * as CacheClearHandler from './endpoints/cache/clear/handler.ts'
 import * as OpenApiHandler from './endpoints/static/openapi/handler.ts'
 import * as PluginHandler from './endpoints/static/plugin/handler.ts'
 import * as RobotsHandler from './endpoints/static/robots/handler.ts'
+import * as LlmHandler from './endpoints/static/llms/handler.ts'
+import * as ServiceWorkerHandler from './endpoints/static/sw/handler.ts'
+import * as FaviconHandler from './endpoints/static/favicon/handler.ts'
+import * as AppleTouchIconHandler from './endpoints/static/apple-touch-icon/handler.ts'
+import * as AppleTouchIconPrecomposedHandler from './endpoints/static/apple-touch-icon-precomposed/handler.ts'
 
 import * as HealthHandler from './endpoints/health/handler.ts'
 
 import { EndpointDefinitions } from './endpoints/bundle/mod.ts'
-import { registerLegacyRoutes } from './endpoints/bundle/legacy/routes.ts'
+import { registerLegacyRoutes } from './endpoints/legacy/routes.ts'
 
 // ============================================================================
 // Handler Registry
@@ -61,6 +66,11 @@ export const EndpointHandlers = {
   [EndpointDefinitions.OpenApi.Name]: OpenApiHandler,
   [EndpointDefinitions.Plugin.Name]: PluginHandler,
   [EndpointDefinitions.Robots.Name]: RobotsHandler,
+  [EndpointDefinitions.Llm.Name]: LlmHandler,
+  [EndpointDefinitions.ServiceWorker.Name]: ServiceWorkerHandler,
+  [EndpointDefinitions.Favicon.Name]: FaviconHandler,
+  [EndpointDefinitions.AppleTouchIcon.Name]: AppleTouchIconHandler,
+  [EndpointDefinitions.AppleTouchIconPrecomposed.Name]: AppleTouchIconPrecomposedHandler,
   
   // Health
   [EndpointDefinitions.Health.Name]: HealthHandler,
@@ -86,7 +96,7 @@ const app = createApp('bundle', {
 
 Object.values(EndpointDefinitions).forEach((endpoint) => {
   const route = endpoint.Route
-  const methods = Array.from(new Set(endpoint.Methods)) as Array
+  const methods = Array.from(new Set(endpoint.Methods)) as Array<
     'GET' | 'POST' | 'DELETE' | 'PUT' | 'PATCH'
   >
 
@@ -99,7 +109,7 @@ Object.values(EndpointDefinitions).forEach((endpoint) => {
     return
   }
 
-  app.on(methods, route, ...middleware, handler)
+  app.on(methods, [route], ...middleware, handler)
 })
 
 // Register legacy routes for backward compatibility

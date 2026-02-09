@@ -103,6 +103,9 @@ export const BundleQuerySchema = z.object({
 		.optional()
 		.transform((v) => v === '' || v === 'true'),
 
+	/** Cache control mode */
+	cache: z.enum(['use', 'bypass', 'refresh']).optional(),
+
 	/** Warnings output */
 	warnings: z
 		.union([z.literal(''), z.literal('true'), z.literal('false')])

@@ -12,9 +12,10 @@
 
 import type { EndpointDefinition } from '#shared/server/types.ts'
 import { z } from 'zod'
-import { BaseQuerySchema, BaseJsonSchema } from '#shared/server/schemas.ts'
+import { BaseJsonSchema } from '#shared/server/schemas.ts'
 import { makeSuccessResponseSchema } from '#shared/response/schemas.ts'
 import { BundleResultSchema } from '#shared/schemas/bundle-result.ts'
+import { BundleQuerySchema } from '#shared/bundle/schema.ts'
 
 // ============================================================================
 // INPUT SCHEMAS
@@ -23,35 +24,7 @@ import { BundleResultSchema } from '#shared/schemas/bundle-result.ts'
 /**
  * Query parameters (GET requests)
  */
-export const QuerySchema = BaseQuerySchema.extend({
-  // Module selection
-  q: z.string().optional(),
-  query: z.string().optional(),          // Alias for q
-  
-  // Code input
-  text: z.string().optional(),            // Inline code
-  share: z.string().optional(),           // LZ-compressed code
-  
-  // Treeshaking
-  treeshake: z.string().optional(),       // Export selections
-  
-  // Build options
-  config: z.string().optional(),          // JSON5 config
-  minify: z.coerce.boolean().default(true),
-  tsx: z.coerce.boolean().default(false),
-  target: z.string().default('esnext'),
-  format: z.enum(['esm', 'cjs', 'iife']).default('esm'),
-  
-  // Compression
-  compression: z.enum(['gzip', 'brotli', 'zstd', 'lz4', 'none']).default('gzip'),
-  
-  // Cache control
-  cache: z.enum(['use', 'bypass', 'refresh']).default('use'),
-  
-  // Output modifiers
-  analysis: z.coerce.boolean().default(false),
-  metafile: z.coerce.boolean().default(false),
-})
+export const QuerySchema = BundleQuerySchema
 
 /**
  * Body schema (POST requests with large payloads)
@@ -59,16 +32,30 @@ export const QuerySchema = BaseQuerySchema.extend({
 export const JsonSchema = BaseJsonSchema.pipe(
   z.object({
     query: z.string().optional(),
+    q: z.string().optional(),
     text: z.string().optional(),
     share: z.string().optional(),
     treeshake: z.string().optional(),
-    config: z.record(z.unknown()).optional(),
-    minify: z.boolean().default(true),
-    tsx: z.boolean().default(false),
-    target: z.string().default('esnext'),
-    format: z.enum(['esm', 'cjs', 'iife']).default('esm'),
-    compression: z.enum(['gzip', 'brotli', 'zstd', 'lz4', 'none']).default('gzip'),
-    cache: z.enum(['use', 'bypass', 'refresh']).default('use'),
+    config: z.union([z.record(z.unknown()), z.string()]).optional(),
+    minify: z.boolean().optional(),
+    pretty: z.boolean().optional(),
+    sourcemap: z.union([z.boolean(), z.literal('inline'), z.literal('external'), z.literal('both')]).optional(),
+    tsx: z.boolean().optional(),
+    jsx: z.boolean().optional(),
+    polyfill: z.boolean().optional(),
+    format: z.enum(['esm', 'cjs', 'iife']).optional(),
+    analysis: z.union([z.boolean(), z.string()]).optional(),
+    analyze: z.union([z.boolean(), z.string()]).optional(),
+    metafile: z.boolean().optional(),
+    badge: z.string().optional(),
+    'badge-style': z.string().optional(),
+    'badge-raster': z.boolean().optional(),
+    png: z.boolean().optional(),
+    file: z.boolean().optional(),
+    raw: z.boolean().optional(),
+    warnings: z.boolean().optional(),
+    warning: z.boolean().optional(),
+    cache: z.enum(['use', 'bypass', 'refresh']).optional(),
   }).partial()
 )
 

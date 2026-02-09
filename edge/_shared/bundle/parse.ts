@@ -50,6 +50,103 @@ export const DEFAULT_INPUT_CODE = [
 ].join('\n')
 
 // =============================================================================
+// Input Normalization
+// =============================================================================
+
+export type BundleRequestInput = URL | Record<string, unknown>
+
+/**
+ * Build a URL from request-like input.
+ *
+ * This allows POST bodies to be normalized into the same parsing flow
+ * as query parameters, preserving legacy behavior.
+ */
+export function buildUrlFromInput(
+	input: Record<string, unknown>,
+	baseUrl: string = 'https://bundlejs.invalid/'
+): URL {
+	const url = new URL(baseUrl)
+
+	const addParam = (key: string, value: unknown) => {
+		if (value === undefined || value === null) return
+
+		if (Array.isArray(value)) {
+			url.searchParams.set(key, value.map((v) => String(v)).join(','))
+			return
+		}
+
+		if (typeof value === 'boolean') {
+			url.searchParams.set(key, value ? '' : 'false')
+			return
+		}
+
+		if (typeof value === 'object') {
+			if (key === 'config') {
+				url.searchParams.set(key, JSON5.stringify(value))
+				return
+			}
+			url.searchParams.set(key, JSON.stringify(value))
+			return
+		}
+
+		url.searchParams.set(key, String(value))
+	}
+
+	const entries: Array<[string, unknown]> = [
+		['q', input.q],
+		['query', input.query],
+		['treeshake', input.treeshake],
+		['share', input.share],
+		['text', input.text],
+		['config', input.config],
+		['minify', input.minify],
+		['pretty', input.pretty],
+		['sourcemap', input.sourcemap],
+		['format', input.format],
+		['target', input.target],
+		['tsx', input.tsx],
+		['jsx', input.jsx],
+		['polyfill', input.polyfill],
+		['analysis', input.analysis],
+		['analyze', input.analyze],
+		['metafile', input.metafile],
+		['badge', input.badge],
+		['badge-style', input['badge-style']],
+		['badge-raster', input['badge-raster']],
+		['png', input.png],
+		['file', input.file],
+		['raw', input.raw],
+		['warnings', input.warnings],
+		['warning', input.warning],
+		['cache', input.cache],
+	]
+
+	for (const [key, value] of entries) {
+		addParam(key, value)
+	}
+
+	return url
+}
+
+/**
+ * Parse request input into bundle configuration.
+ *
+ * Accepts either a URL (GET requests) or a plain object (POST bodies).
+ */
+export async function parseInputToConfig(
+	input: BundleRequestInput,
+	baseUrl?: string
+): Promise<ParsedQueryConfig & { url: URL }> {
+	const url = input instanceof URL
+		? input
+		: buildUrlFromInput(input, baseUrl)
+
+	const parsed = await parseQueryToConfig(url)
+
+	return Object.assign({}, parsed, { url })
+}
+
+// =============================================================================
 // Public API
 // =============================================================================
 
