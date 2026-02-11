@@ -18,7 +18,7 @@ import { decodeBase64 } from '@bundle/utils/encoding'
 import { getEsbuild } from '@bundle/core'
 
 import { generateBadge } from '../external/shields.ts'
-import { getBadgeKey, generateBadgeId } from '../cache/keys.ts'
+import { getBadgeKey, generateBadgeId } from '../bundle/key.ts'
 import { getCachedBadge, setCachedBadge } from '../cache/operations.ts'
 import { API_DOCS } from './schema.ts'
 

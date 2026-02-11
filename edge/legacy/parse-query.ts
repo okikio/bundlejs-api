@@ -1,6 +1,6 @@
 import { deepMerge, lzstring, parsePackageName } from "@bundle/utils";
 import { basename, extname } from "@bundle/utils/path";
-import JSON5 from "./vendor/json5.ts";
+import JSON5 from "@bundle/utils/json5";
 
 const { decompressFromURL } = lzstring;
 

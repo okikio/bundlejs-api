@@ -3,7 +3,7 @@ import type { PackageJson } from "@bundle/utils/types";
 import type { CompressConfig } from "@bundle/compress";
 import type { BundleResult } from "./bundle.ts";
 
-import JSON5 from "./vendor/json5.ts";
+import JSON5 from "@bundle/utils/json5";
 import ESBUILD_WASM from "@bundle/core/wasm";
 
 import { Redis } from "@upstash/redis";
