@@ -9,9 +9,9 @@
  * - Config JSON5 parsing
  */
 
-import type { BundleQuery, NormalizedBundleQuery } from '../../endpoints/_schemas.ts'
+import type { BundleQuery } from '../bundle/schema.ts'
 import { lzstring, parsePackageName, deepMerge } from '@bundle/utils'
-import JSON5 from '../vendor/json5.ts'
+import JSON5 from '@bundle/utils/json5'
 
 const { decompressFromURL } = lzstring
 
@@ -25,6 +25,21 @@ export const DEFAULT_INPUT = [
   'export * from "spring-easing";',
   'export { default } from "spring-easing";',
 ].join('\n')
+
+export type NormalizedBundleQuery = {
+  packages: string[]
+  modules: Array<[string, 'import' | 'export']>
+  treeshakeExports: string[]
+  exportAll: boolean
+  inputCode: string
+  config: Record<string, unknown>
+  tsx: boolean
+  minify?: boolean
+  sourcemap?: '' | 'true' | 'false' | 'inline' | 'external' | 'both'
+  format?: 'esm' | 'cjs' | 'iife'
+  polyfill: boolean
+  metafile: boolean
+}
 
 // =============================================================================
 // Treeshake Parsing
@@ -256,7 +271,7 @@ export function normalizeBundleQuery(raw: BundleQuery): NormalizedBundleQuery {
   const tsx = Boolean(raw.tsx || raw.jsx || (config as Record<string, unknown>).tsx)
   
   // Minify: explicit minify=true/false, or inverse of pretty
-  let minify: boolean | null = null
+  let minify: boolean | undefined = undefined
   if (raw.minify !== undefined) {
     minify = raw.minify
   } else if (raw.pretty !== undefined) {
@@ -264,10 +279,10 @@ export function normalizeBundleQuery(raw: BundleQuery): NormalizedBundleQuery {
   }
 
   // Sourcemap
-  const sourcemap = raw.sourcemap ?? null
+  const sourcemap = raw.sourcemap ?? undefined
 
   // Format
-  const format = raw.format ?? null
+  const format = raw.format ?? undefined
 
   // Feature flags
   const polyfill = Boolean(raw.polyfill)
