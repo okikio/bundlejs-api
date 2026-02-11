@@ -1,19 +1,48 @@
 # bundlejs: Architecture & Usage Guide
 
-> Bundle anywhere. Bundle everywhere.
+> *Bundle anywhere. Bundle everywhere.*
 
-bundlejs is a JavaScript/TypeScript bundling service that runs esbuild entirely in WebAssembly — no native binaries, no filesystem, no local install. You give it package names (or raw code), and it returns minified, tree-shaken bundles with compressed size measurements. It works as an HTTP API deployed on Deno Deploy, as an embeddable library (`@bundle/core`) for any JavaScript runtime, and as the engine behind [bundlejs.com](https://bundlejs.com) for quick package size checks.
+bundlejs is a JavaScript/TypeScript bundling service that runs **[esbuild](https://esbuild.github.io/)** — a blazing-fast bundler written in Go — entirely in **WebAssembly (WASM)**. No native binaries, no filesystem, no local install. You give it package names (or raw code), and it returns *minified, tree-shaken bundles* with compressed size measurements.
 
-The problem it solves: *"How big will this dependency be in my production bundle?"* — answered in seconds, from anywhere, with real esbuild output rather than estimates. Unlike tools that guess sizes from package metadata, bundlejs runs a real bundler. It performs actual tree-shaking, dead code elimination, scope hoisting, and minification, then compresses the result and reports the exact size.
+It works three ways:
 
-The kinds of developers who reach for it include library authors verifying their package's bundle footprint, teams evaluating dependency costs before adoption, CI pipelines that need automated size checks via API, and anyone building tools that require programmatic bundling without native dependencies.
+- **HTTP API** — deployed on **[Deno Deploy](https://deno.com/deploy)** (a serverless edge runtime for JavaScript/TypeScript)
+- **Embeddable library** — import `@bundle/core` in *any* JavaScript runtime
+- **Web UI** — the engine behind [bundlejs.com](https://bundlejs.com) for quick, visual package size checks
 
-bundlejs is not a replacement for your local build tool — it is not webpack, Vite, or Rollup. It does not manage `node_modules`, does not install packages to disk, and does not run your code. Everything is fetched over HTTP, held in memory, bundled, measured, and discarded.
+The problem it solves:
+
+> *"How big will this dependency be in my production bundle?"*
+>
+> Answered in seconds, from anywhere, with **real esbuild output** rather than estimates.
+
+Unlike tools that guess sizes from package metadata, bundlejs runs a *real* bundler — performing actual **tree-shaking** (removing unused code), dead code elimination, scope hoisting, and minification. It then compresses the result and reports the exact size.
+
+**Who reaches for it:**
+
+- **Library authors** — verifying their package's bundle footprint before publish
+- **Teams** — evaluating dependency costs *before* adoption
+- **CI pipelines** — automated size checks via the HTTP API
+- **Tool builders** — anyone needing programmatic bundling without native dependencies
+
+> **What bundlejs is *not*:** It is not a replacement for your local build tool (webpack, Vite, Rollup). It does not manage `node_modules`, does not install packages to disk, and does not run your code. Everything is fetched over HTTP, held in memory, bundled, measured, and discarded.
 
 
 ## How to Think About bundlejs
 
-At the highest level, bundlejs is an adapter layer that makes esbuild work without a filesystem. esbuild is extremely fast but assumes local files exist on disk. bundlejs intercepts every module resolution and file read that esbuild attempts, redirects them to CDN fetches, tarball extraction, or an in-memory virtual filesystem (VFS), and hands the results back to esbuild as if they were local files. esbuild does the heavy lifting — parsing, linking, tree-shaking, minification, code generation. bundlejs does the plumbing: figuring out where modules live, fetching them, and presenting them to esbuild as if they were local.
+At the highest level, bundlejs is an **adapter layer** that makes esbuild work *without a filesystem*.
+
+esbuild is extremely fast, but it assumes local files exist on disk. bundlejs intercepts every module resolution and file read that esbuild attempts, then redirects them to:
+
+- **CDN fetches** — downloading packages from a Content Delivery Network (CDN) like [unpkg.com](https://unpkg.com) or [esm.sh](https://esm.sh)
+- **Tarball extraction** — unpacking `.tgz` archives from services like [pkg.pr.new](https://pkg.pr.new)
+- **In-memory VFS** — a Virtual File System held entirely in RAM
+
+…and hands the results back to esbuild *as if they were local files*.
+
+> **The division of labor:** esbuild does the heavy lifting — parsing, linking, tree-shaking, minification, code generation. bundlejs does the plumbing — figuring out *where* modules live, fetching them, and presenting them to esbuild as local.
+>
+> In short: *"esbuild, plus a portable module system implemented as plugins and shared resolvers."*
 
 ```
                           bundlejs Pipeline
@@ -48,19 +77,21 @@ At the highest level, bundlejs is an adapter layer that makes esbuild work witho
   └─────────────────────────────────────────────────────────────┘
 ```
 
-There is no local filesystem at any stage. Every file — entry points, npm packages, transitive dependencies — lives in an in-memory VFS or is fetched over HTTP from a CDN. The esbuild plugins are the mechanism that makes this possible. bundlejs is essentially *"esbuild, plus a portable module system implemented as plugins and shared resolvers."*
+No local filesystem exists at any stage. Every file — entry points, npm packages, transitive dependencies — lives in the **VFS** or arrives over **HTTP** from a CDN.
 
-What bundlejs explicitly does not do:
+**What bundlejs explicitly does *not* do:**
 
-- Install packages to disk (everything is fetched and held in memory)
-- Run your code (it only bundles and measures)
-- Support git/workspace/link dependency specifiers (only registry, URL, and JSR specs)
-- Persist VFS state between requests (each bundle starts with a fresh build context)
+| ❌ Does not | Why |
+|:-----------|:----|
+| Install packages to disk | Everything is fetched and held *in memory* |
+| Run your code | It only bundles and measures |
+| Support `git:` / `workspace:` / `link:` specs | Only registry, URL, and JSR specifiers |
+| Persist VFS between requests | Each bundle starts with a *fresh* build context |
 
 
 ## Getting Started
 
-**Prerequisites:** [Deno](https://deno.land/) installed (the project is a Deno workspace).
+**Prerequisites:** [Deno](https://deno.land/) installed. Deno is a modern JavaScript/TypeScript runtime (like Node.js, but with built-in TypeScript support, web-standard APIs, and secure-by-default permissions). bundlejs is a **Deno workspace** — a monorepo where each package has its own `deno.jsonc` config.
 
 ```sh
 git clone https://github.com/okikio/bundlejs-api.git
@@ -68,7 +99,7 @@ cd bundlejs-api
 deno serve -A --watch edge/mod.ts
 ```
 
-The API is now running at `http://localhost:8000`. The simplest meaningful invocation is:
+The API is now running at `http://localhost:8000`. Try the simplest invocation:
 
 ```
 http://localhost:8000/?q=react
@@ -91,7 +122,11 @@ This returns JSON with the bundle size of `react`:
 }
 ```
 
-Three early mistakes to avoid. First, forgetting `UPSTASH_URL` and `UPSTASH_TOKEN` environment variables — Redis caching will silently degrade and every request triggers a fresh build. Second, expecting filesystem imports — bundlejs resolves everything over HTTP, so local `import "./my-file.ts"` only works if that file exists in the VFS. Third, assuming Node.js — this is a Deno project; use `deno` commands, not `npm`/`node`.
+> **⚠️ Three early mistakes to avoid:**
+>
+> 1. **Forgetting env vars** — `UPSTASH_URL` and `UPSTASH_TOKEN` are needed for Redis caching. Without them, every request triggers a fresh build.
+> 2. **Expecting filesystem imports** — `import "./my-file.ts"` only works if that file exists *in the VFS*. bundlejs resolves everything over HTTP.
+> 3. **Assuming Node.js** — this is a Deno project. Use `deno` commands, not `npm`/`node`.
 
 
 ## The Four Modules
@@ -121,36 +156,90 @@ The dependency graph looks like this:
     └── uses ──▶ @bundle/utils      (encoding, formatting)
 ```
 
-`@bundle/utils` is the foundation — it has no internal dependencies. It provides the shared substrate: package name parsing ([utils/parse-package-name.ts](../utils/parse-package-name.ts)), npm and JSR spec classification ([utils/npm-spec.ts](../utils/npm-spec.ts), [utils/jsr-spec.ts](../utils/jsr-spec.ts)), export condition computation ([utils/resolve-conditions.ts](../utils/resolve-conditions.ts)), exports/imports field resolution ([utils/resolve-exports-imports.ts](../utils/resolve-exports-imports.ts)), import map resolution ([utils/resolve-import-map.ts](../utils/resolve-import-map.ts)), Node.js builtin catalogs with polyfill mappings ([utils/runtime-builtins.ts](../utils/runtime-builtins.ts)), and a caching HTTP fetch layer ([utils/fetch-and-cache.ts](../utils/fetch-and-cache.ts)).
+`@bundle/utils` is the **foundation** — zero internal dependencies. It provides the shared substrate that every other package builds on:
 
-A deliberate design principle runs through `@bundle/utils`: it wraps Web APIs instead of Node.js APIs. `fetch()` instead of `node:http`. `ReadableStream` / `WritableStream` instead of `node:stream`. `crypto.subtle` instead of `node:crypto`. `CompressionStream` instead of `zlib`. `TextEncoder` / `TextDecoder` instead of `Buffer`. This is strategic — by building on web standards, the same code runs in Deno Deploy, browsers, Cloudflare Workers, and Node.js without platform-specific shims.
+- **Package parsing** — [utils/parse-package-name.ts](../utils/parse-package-name.ts) splits specifiers like `@scope/pkg@^2.0.0/sub` into name, version, and subpath
+- **Spec classification** — [utils/npm-spec.ts](../utils/npm-spec.ts) and [utils/jsr-spec.ts](../utils/jsr-spec.ts) categorize specifiers as *semver*, *tag*, *URL*, *alias*, or *unsupported*
+- **Export conditions** — [utils/resolve-conditions.ts](../utils/resolve-conditions.ts) computes the right condition set (`browser`, `import`, `require`, etc.) for a given runtime
+- **Exports/imports resolution** — [utils/resolve-exports-imports.ts](../utils/resolve-exports-imports.ts) resolves subpaths through `package.json` `exports` and `imports` fields
+- **Import map resolution** — [utils/resolve-import-map.ts](../utils/resolve-import-map.ts) applies import map remappings
+- **Builtin catalogs** — [utils/runtime-builtins.ts](../utils/runtime-builtins.ts) catalogs ~50 Node.js builtins with browser polyfill mappings
+- **Caching fetch** — [utils/fetch-and-cache.ts](../utils/fetch-and-cache.ts) wraps `fetch()` with multi-tier caching (LRU + Cache API)
+
+A deliberate design principle runs through `@bundle/utils` — it wraps **Web APIs** instead of Node.js APIs. This is strategic: by building on web standards, the same code runs in Deno Deploy, browsers, Cloudflare Workers, *and* Node.js without platform-specific shims.
+
+| Purpose | Web API (used) | Node.js API (avoided) |
+|:--------|:---------------|:----------------------|
+| HTTP requests | `fetch()` | `node:http` |
+| Streams | `ReadableStream` / `WritableStream` | `node:stream` |
+| Cryptography | `crypto.subtle` | `node:crypto` |
+| Compression | `CompressionStream` | `node:zlib` |
+| Text encoding | `TextEncoder` / `TextDecoder` | `Buffer` |
 
 
 ## esbuild: The Foundation
 
-Every design decision in bundlejs is shaped by esbuild's architecture, so understanding esbuild is essential to understanding bundlejs.
+Every design decision in bundlejs is shaped by esbuild's architecture, so understanding esbuild is essential.
 
-esbuild is a JavaScript/TypeScript bundler written in Go. It is 10-100x faster than webpack or Rollup because it parses, links, and generates code in parallel, avoids JavaScript-based AST transformations, and uses a single-pass architecture that minimizes memory allocation. It has a three-phase pipeline:
+**[esbuild](https://esbuild.github.io/)** is a JavaScript/TypeScript *bundler* written in Go. A bundler takes many source files with `import`/`export` statements and combines them into fewer output files. esbuild is **10–100× faster** than webpack or Rollup because it:
+
+- Parses, links, and generates code **in parallel** (Go’s goroutines)
+- Avoids JavaScript-based AST transformations
+- Uses a **single-pass architecture** that minimizes memory allocation
+
+Its internal pipeline has three phases:
 
 ```
-┌───────────────┐     ┌────────────────┐     ┌────────────────┐
-│ Parse Phase   │────▶│  Bundle Phase  │────▶│   Link Phase   │
-│ (read files,  │     │  (resolve      │     │   (generate    │
-│  build ASTs)  │     │   imports,     │     │    output,     │
-│               │     │   link modules │     │    minify)     │
-└───────────────┘     └────────────────┘     └────────────────┘
+         ┌───────────────┐
+         │  Parse Phase  │  Read files, build ASTs
+         └───────┬───────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │ Bundle Phase  │  Resolve imports, link modules
+         └───────┬───────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │  Link Phase   │  Generate output, minify
+         └───────────────┘
 ```
 
-esbuild exposes two APIs. The **Build API** (`esbuild.build()`) takes entry points, resolves imports, and bundles everything into output files — it normally reads from and writes to the filesystem. The **Transform API** (`esbuild.transform()`) takes a single string of code, applies transformations (minify, transpile, etc.), and returns the result without filesystem access.
+esbuild exposes **two APIs**:
 
-The plugin system is where bundlejs hooks in. Plugins intercept two operations:
+| API | Purpose | Filesystem? |
+|:----|:--------|:------------|
+| **Build API** — `esbuild.build()` | Takes entry points, resolves imports, bundles into output files | Normally reads/writes disk |
+| **Transform API** — `esbuild.transform()` | Takes a single string, applies transformations (minify, transpile) | No filesystem access |
 
-- **`onResolve`** — Called when esbuild encounters an `import` statement. The plugin receives the import path and returns a resolved path (where to find the file) and a namespace (which group of files this belongs to). If a plugin does not handle it, esbuild tries the next plugin.
-- **`onLoad`** — Called when esbuild needs to read a file's contents. The plugin receives the resolved path and namespace and returns the source code plus a loader type (JavaScript, TypeScript, CSS, etc.).
+bundlejs uses the *Build API*, but replaces all filesystem access with its plugin pipeline.
 
-**Namespaces** are esbuild's mechanism for routing modules through different handlers. A module's identity is the tuple `(namespace, path)`. Two modules with the same path but different namespaces are treated as distinct. bundlejs uses namespaces to distinguish between VFS files, HTTP-fetched modules, tarball-extracted files, and CDN-resolved packages. Module caching in esbuild is keyed by this `(namespace, path)` tuple, so plugins must return canonical paths — if the same module resolves to different paths on different calls, esbuild fetches and bundles it multiple times.
+### The Plugin System
 
-bundlejs always loads esbuild as WebAssembly. The `getEsbuild()` function in [core/utils/get-esbuild.ts](../core/utils/get-esbuild.ts) has a platform-detection switch commented out — it currently returns `ESBUILD_DENO_WASM` unconditionally, using esbuild v0.27.2. The WASM binary is embedded as an encoded string in [core/wasm.ts](../core/wasm.ts) and decoded at startup, so there is no filesystem or network dependency for loading esbuild itself. This is a deliberate trade-off: WASM esbuild is roughly 2-5x slower than the native Go binary, but it runs everywhere JavaScript runs.
+The **plugin system** is where bundlejs hooks in. An esbuild plugin is a JavaScript object that registers callback functions for two interception points:
+
+- **`onResolve`** — called when esbuild encounters an `import` statement. The plugin receives the import path and returns:
+  - A **resolved path** (where to find the file)
+  - A **namespace** (which group of files this belongs to)
+  - If the plugin returns `undefined`, esbuild tries the next plugin
+
+- **`onLoad`** — called when esbuild needs to *read* a file’s contents. The plugin receives the resolved path + namespace and returns:
+  - The **source code** (as a string)
+  - A **loader type** (`"js"`, `"ts"`, `"css"`, `"json"`, etc.)
+
+> **Namespaces** are esbuild’s mechanism for routing modules through different handlers. A module's identity is the tuple *`(namespace, path)`*. Two modules with the same path but *different* namespaces are treated as **distinct files**. bundlejs uses namespaces to distinguish between VFS files, HTTP-fetched modules, tarball-extracted files, and CDN-resolved packages.
+>
+> Module caching in esbuild is keyed by this tuple — so plugins must return **canonical paths**. If the same module resolves to different paths on different calls, esbuild fetches and bundles it multiple times.
+
+### WASM Loading
+
+bundlejs **always** loads esbuild as WebAssembly. The `getEsbuild()` function in [core/utils/get-esbuild.ts](../core/utils/get-esbuild.ts) returns `ESBUILD_DENO_WASM` unconditionally (a platform-detection switch exists but is commented out), using **esbuild v0.27.2**.
+
+The WASM binary is embedded as an encoded string in [core/wasm.ts](../core/wasm.ts) and decoded at startup — so there is *no filesystem or network dependency* for loading esbuild itself.
+
+> **Trade-off:** WASM esbuild is roughly **2–5× slower** than the native Go binary, but it runs *everywhere* JavaScript runs — browsers, edge functions, server runtimes.
+
+### Default Configuration
 
 bundlejs initializes esbuild with these defaults (defined in [core/build.ts](../core/build.ts)):
 
@@ -177,16 +266,16 @@ export const BUILD_CONFIG: BuildConfig = {
 };
 ```
 
-At build time, these are augmented with explicit loader mappings and defines (from [core/build.ts](../core/build.ts)):
+At build time, these are augmented with explicit **loader mappings** and **defines** (from [core/build.ts](../core/build.ts)):
 
 ```typescript
 loader: {
-  ".png": "file",    // Binary assets handled by esbuild's file loader
+  ".png": "file",    // Binary assets → referenced by URL, not inlined
   ".jpeg": "file",
   ".ttf": "file",
-  ".svg": "text",    // SVG and HTML as text
+  ".svg": "text",    // SVG and HTML → imported as strings
   ".html": "text",
-  ".scss": "css",    // SCSS treated as CSS
+  ".scss": "css",    // SCSS → treated as CSS
 },
 define: {
   "__NODE__": "false",
@@ -196,12 +285,17 @@ write: false,        // Output to memory, not filesystem
 outdir: "/",         // Virtual output directory
 ```
 
-Everything runs in-memory. `write: false` means esbuild produces output files as JavaScript objects rather than writing to disk. The `file` loader for `.png`, `.jpeg`, and `.ttf` tells esbuild to treat those as external binary assets — referenced by URL rather than inlined.
+Key details:
+
+- **`write: false`** — esbuild produces output as JavaScript objects rather than writing to disk
+- **`file` loader** for `.png`, `.jpeg`, `.ttf` — tells esbuild to treat those as external binary assets (referenced by URL)
+- **`text` loader** for `.svg`, `.html` — imports return the raw string content
+- **`"production"` define** — enables dead code elimination in libraries that branch on `NODE_ENV`
 
 
 ## The Plugin Pipeline
 
-The six esbuild plugins are registered in a specific order in [core/build.ts](../core/build.ts), and this order is load-bearing. esbuild evaluates `onResolve` callbacks in registration order — the first plugin that returns a result wins. Returning `undefined` passes control to the next plugin.
+The six esbuild plugins are registered in a **specific order** in [core/build.ts](../core/build.ts) — and this order is *load-bearing*. esbuild evaluates `onResolve` callbacks in registration order; the **first plugin that returns a result wins**. Returning `undefined` passes control to the next plugin.
 
 ```typescript
 plugins: [
@@ -242,13 +336,44 @@ CdnPlugin        Bare import → resolve from CDN               ── YES ─�
                   4. Return CDN URL in http-url namespace
 ```
 
-Each plugin has one job; complex behavior emerges from their composition.
+Each plugin has one job; complex behavior emerges from their composition. Here is what each does:
 
-**AliasPlugin** ([core/plugins/alias.ts](../core/plugins/alias.ts)) runs first because aliases must rewrite the import path before any other plugin tries to resolve it. If the config specifies `{ alias: { "fs": "memfs" } }`, this plugin transforms `import "fs"` to `import "memfs"` so downstream plugins resolve the right package. It also handles npm-style aliases from `package.json` dependencies (e.g., `"react": "npm:preact@10"`). By running first, it ensures all subsequent resolution operates on the intended package name.
+---
 
-**ExternalPlugin** ([core/plugins/external.ts](../core/plugins/external.ts)) runs second to handle Node.js built-in modules before the CDN plugin tries to fetch them from npm. Its behavior depends on the `polyfill` setting: when `polyfill` is `false` (the default), Node.js builtins like `fs` and `path` are marked external and excluded from the bundle with an empty `export default {}`. When `polyfill` is `true`, builtins are rewritten to browser polyfill packages (e.g., `fs` → `memfs`, `path` → `path-browserify`) using mappings from [utils/runtime-builtins.ts](../utils/runtime-builtins.ts), which catalogs ~50 Node.js builtins with their browser alternatives. The rewritten import then falls through to the CdnPlugin for actual resolution.
+### 1. AliasPlugin — *Rewrite import paths before resolution*
 
-**VirtualFileSystemPlugin** ([core/plugins/fs.ts](../core/plugins/fs.ts)) runs third and provides the in-memory filesystem layer. This is how the entry point (the code the user provides) and any local files are made available to esbuild. The plugin registers three `onResolve` handlers with carefully scoped filters:
+> **Source:** [core/plugins/alias.ts](../core/plugins/alias.ts)
+
+Runs first because aliases must rewrite the import path *before* any other plugin tries to resolve it.
+
+- If config specifies `{ alias: { "fs": "memfs" } }`, transforms `import "fs"` → `import "memfs"`
+- Also handles **npm-style aliases** from `package.json` dependencies (e.g., `"react": "npm:preact@10"`)
+- By running first, ensures all subsequent resolution operates on the *intended* package name
+
+---
+
+### 2. ExternalPlugin — *Handle Node.js builtins*
+
+> **Source:** [core/plugins/external.ts](../core/plugins/external.ts)
+
+Runs second to catch Node.js built-in modules (like `fs`, `path`, `crypto`) *before* the CDN plugin tries to fetch them from npm. Behavior depends on the **`polyfill`** setting:
+
+| `polyfill` value | What happens to `import "fs"` |
+|:-----------------|:-----------------------------|
+| `false` *(default)* | Marked **external** — excluded from bundle with empty `export default {}` |
+| `true` | Rewritten to a browser polyfill (e.g., `fs` → `memfs`, `path` → `path-browserify`), then falls through to CdnPlugin |
+
+Polyfill mappings come from [utils/runtime-builtins.ts](../utils/runtime-builtins.ts), which catalogs **~50 Node.js builtins** with their browser alternatives.
+
+---
+
+### 3. VirtualFileSystemPlugin — *In-memory file layer*
+
+> **Source:** [core/plugins/fs.ts](../core/plugins/fs.ts)
+
+Provides the in‑memory filesystem. This is how the **entry point** (the code the user provides) and any local files are made available to esbuild.
+
+The plugin registers three `onResolve` handlers with carefully scoped filters:
 
 ```
 ┌────────────────────┬─────────────┬──────────────────────────────────┐
@@ -260,20 +385,76 @@ Each plugin has one job; complex behavior emerges from their composition.
 └────────────────────┴─────────────┴──────────────────────────────────┘
 ```
 
-This scoping is deliberate. By limiting relative path handling to VFS-namespace importers, the plugin avoids intercepting relative imports inside HTTP-fetched modules (those belong to HttpPlugin). Bare imports (no `.` or `/` prefix) skip this plugin entirely and fall through to the CDN. Resolution follows esbuild's filesystem pattern: exact path match, then extension probing (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`), then `/index.*` fallback.
+**Why this scoping matters:**
 
-**TarballPlugin** ([core/plugins/tar.ts](../core/plugins/tar.ts)) runs fourth and handles tarball-based package sources, primarily from `pkg.pr.new` (a service that builds npm packages from pull requests and serves them as tarballs). When it detects a tarball URL, it fetches the archive, extracts files into the VFS under `/__tarballs__/<hash>/`, reads the extracted `package.json`, and resolves the entry point via `exports` or legacy fields. Content-addressed caching (SHA-256 hash of the URL) ensures the same tarball is only fetched once per build, even if multiple imports reference it. The plugin also handles self-reference imports — when code inside an extracted tarball imports its own package name, it resolves against the tarball's manifest instead of fetching from a CDN.
+- Relative path handling is limited to **VFS-namespace importers** — avoids intercepting relative imports inside HTTP-fetched modules (those belong to HttpPlugin)
+- **Bare imports** (no `.` or `/` prefix) skip this plugin entirely → fall through to CDN
+- Resolution follows esbuild's filesystem pattern: *exact path match* → *extension probing* (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`) → `/index.*` fallback
 
-**HttpPlugin** ([core/plugins/http.ts](../core/plugins/http.ts)) runs fifth and is the workhorse for all HTTP/HTTPS URL resolution and loading. It serves three roles: handling direct URL imports (like `import "https://esm.sh/react"`), resolving relative imports inside CDN-fetched modules against the **final URL** after redirects (critical because CDNs frequently redirect `react@latest` to `react@19.0.0`), and performing extension probing when a relative import has no extension. The probing tries two path variants (`""`, `"/index"`) crossed with nine extensions (`.js`, `.mjs`, `.ts`, `.tsx`, `.cjs`, `.jsx`, `.mts`, `.cts`, `""`), making 18 total combinations. The plugin also scans fetched source for `new URL("...", import.meta.url)` patterns to discover WASM files and web workers that need fetching alongside the module.
+---
 
-**CdnPlugin** ([core/plugins/cdn.ts](../core/plugins/cdn.ts)) runs last as the catch-all for bare npm imports. By this point every other strategy has had a chance. This plugin performs the heaviest resolution work — parsing the package specifier, fetching `package.json` from the configured CDN, resolving the entry point through conditional exports or legacy fields, computing side effects metadata, and constructing the final CDN URL. It also handles JSR specifiers (`jsr:@scope/name`), npm aliases (`npm:pkg@version`), and subpath imports (`#internal/...`). The full resolution algorithm is detailed in the next section.
+### 4. TarballPlugin — *Extract packages from `.tgz` archives*
+
+> **Source:** [core/plugins/tar.ts](../core/plugins/tar.ts)
+
+Handles tarball-based package sources, primarily from **[pkg.pr.new](https://pkg.pr.new)** (a service that builds npm packages from pull requests and serves them as tarballs).
+
+- Detects tarball URLs → fetches archive → extracts into VFS under `/__tarballs__/<sha256-hash>/`
+- Reads the extracted `package.json` → resolves entry point via `exports` or legacy fields
+- **Content-addressed caching** (SHA-256 hash of the URL) ensures the same tarball is fetched only once per build
+- Handles **self-reference imports** — when code *inside* a tarball imports its own package name, resolves against the tarball's manifest instead of fetching from CDN
+
+---
+
+### 5. HttpPlugin — *Fetch and resolve HTTP/HTTPS URLs*
+
+> **Source:** [core/plugins/http.ts](../core/plugins/http.ts)
+
+The workhorse for all HTTP/HTTPS resolution and loading. Serves **three roles**:
+
+1. **Direct URL imports** — handles `import "https://esm.sh/react"` directly
+2. **Relative import resolution** — resolves paths like `"./jsx-runtime.js"` inside CDN-fetched modules against the **final URL** after redirects (critical because CDNs redirect `react@latest` → `react@19.0.0`)
+3. **Extension probing** — when a relative import has no extension, tries **18 combinations**:
+
+```
+  2 path variants ("", "/index")
+  × 9 extensions (.js, .mjs, .ts, .tsx, .cjs, .jsx, .mts, .cts, "")
+  = 18 total probes
+```
+
+Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers** that need fetching alongside the module.
+
+---
+
+### 6. CdnPlugin — *Catch-all for bare npm imports*
+
+> **Source:** [core/plugins/cdn.ts](../core/plugins/cdn.ts)
+
+Runs last — by this point, every other strategy has had a chance. This plugin does the *heaviest* resolution work:
+
+1. Parse the package specifier (name, version, subpath)
+2. Fetch `package.json` from the configured **CDN** (Content Delivery Network)
+3. Resolve the entry point through **conditional exports** or legacy fields
+4. Compute **side effects** metadata (for tree-shaking)
+5. Construct the final CDN URL
+
+Also handles **JSR specifiers** (`jsr:@scope/name`), **npm aliases** (`npm:pkg@version`), and **subpath imports** (`#internal/...`). The full resolution algorithm is detailed next.
 
 
 ## How Resolution Works
 
-The resolution system must faithfully implement the Node.js module resolution algorithm, but against CDN-hosted packages instead of a local `node_modules` directory. It handles the full spectrum: modern `exports`/`imports` fields, legacy `main`/`module`/`browser` fallbacks, subpath patterns with wildcards, and browser field remappings.
+The resolution system must faithfully implement the **Node.js module resolution algorithm** — the set of rules Node.js uses to find the actual file behind an `import` statement — but against *CDN-hosted packages* instead of a local `node_modules` directory.
 
-bundlejs supports multiple CDN patterns, each with its own URL format (from [core/utils/cdn-format.ts](../core/utils/cdn-format.ts)):
+> **Node.js module resolution**, in brief: when you write `import "react"`, Node.js searches `node_modules/react/`, reads its `package.json`, follows the `exports` field (or falls back to `main`/`module`/`browser`), and returns the resolved file path. bundlejs does exactly this, but over HTTP against a CDN.
+
+The resolution system handles the full spectrum:
+
+- **Modern** `exports`/`imports` fields with conditional exports and subpath patterns
+- **Legacy** `main`/`module`/`browser` fallbacks
+- **Wildcard** subpath patterns (`"./features/*"`)
+- **Browser field** remappings (both string and object forms)
+
+bundlejs supports multiple **CDN** (Content Delivery Network) patterns, each with its own URL format (from [core/utils/cdn-format.ts](../core/utils/cdn-format.ts)):
 
 | Config value | CDN URL | Style |
 |:------------|:--------|:------|
@@ -286,7 +467,9 @@ bundlejs supports multiple CDN patterns, each with its own URL format (from [cor
 | `"github"` | `https://raw.githubusercontent.com` | github |
 | Any full URL | Used directly | Detected from URL |
 
-The **modern resolution path** uses the `exports` field from `package.json`, following the Node.js conditional exports specification. A package's `exports` field maps subpaths to files under different conditions:
+### Modern Resolution (exports field)
+
+The modern path uses the `exports` field from `package.json`, following the [Node.js conditional exports spec](https://nodejs.org/api/packages.html#conditional-exports). The `exports` field maps subpaths to files under different **conditions** — a way for packages to serve different code for different environments:
 
 ```json
 {
@@ -303,9 +486,30 @@ The **modern resolution path** uses the `exports` field from `package.json`, fol
 }
 ```
 
-The resolver walks the conditions in priority order. For bundlejs targeting browsers with ESM, the typical condition chain is `browser → import → default`. If ESM conditions fail, the resolver falls back to `require` conditions, because some packages only define CJS exports. Subpath patterns with `*` wildcards are fully supported — `import "pkg/features/auth"` matches `"./features/*"` and substitutes `"auth"` into the target to produce `./dist/features/auth.js`. Subpath imports (the `imports` field, prefixed with `#`) work similarly but are private to the package — only code within the package can use them.
+The resolver walks conditions in **priority order**. For bundlejs targeting browsers with ESM:
 
-The **legacy resolution path** activates when a package lacks an `exports` field. It checks: `browser` field → `module` field → `main` field → `index.js` fallback. The `browser` field deserves special attention because it has two forms with very different semantics:
+```
+  Condition priority: browser → import → default
+  Fallback:           require  (some packages only define CJS exports)
+```
+
+**Subpath patterns** with `*` wildcards are fully supported:
+
+- `import "pkg/features/auth"` matches `"./features/*"` in exports
+- `"auth"` substitutes into the target → `./dist/features/auth.js`
+
+**Subpath imports** (the `imports` field, prefixed with `#`) work similarly but are *private* to the package — only code *within* the package can use them.
+
+### Legacy Resolution (no exports field)
+
+Activates when a package lacks an `exports` field. Checks, in order:
+
+1. **`browser`** field
+2. **`module`** field
+3. **`main`** field
+4. **`index.js`** fallback
+
+The `browser` field deserves special attention — it has **two forms** with very different semantics:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -332,9 +536,11 @@ The **legacy resolution path** activates when a package lacks an `exports` field
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-This distinction is critical — many packages use the browser field incorrectly, and different bundlers interpret edge cases differently. bundlejs follows the Node.js spec.
+> **⚠️ This distinction matters.** Many packages use the browser field incorrectly, and different bundlers interpret edge cases differently. bundlejs follows the Node.js spec.
 
-**Side effects** computation rounds out the resolution picture. Tree-shaking requires knowing which modules execute code on import (like `window.polyfill = true`). bundlejs reads the `sideEffects` field from `package.json` (from [core/utils/side-effects.ts](../core/utils/side-effects.ts)):
+### Side Effects
+
+**Tree-shaking** (removing unused code) requires knowing which modules execute code on import — like a polyfill that sets `window.polyfill = true`. bundlejs reads the `sideEffects` field from `package.json` (via [core/utils/side-effects.ts](../core/utils/side-effects.ts)):
 
 | `sideEffects` value | Meaning |
 |:----|:----|
@@ -349,24 +555,91 @@ Glob patterns like `*.css` are normalized to `**/*.css` to match anywhere in the
 
 Abstract rules are easier to understand through concrete examples. Here are seven scenarios that exercise different paths through the resolution system.
 
-**Scenario 1 — Simple bare import.** `import { useState } from "react"` passes through AliasPlugin (no alias), ExternalPlugin (not a builtin), VFSPlugin (not a path), TarballPlugin (not a URL), HttpPlugin (not a URL), and lands in CdnPlugin. The plugin parses the package name, finds no version specified, assumes `"latest"`, resolves the exact version via the npm registry (e.g., `"19.0.0"`), fetches `https://unpkg.com/react@19.0.0/package.json`, resolves the entry point through `exports["."]`, and returns `https://unpkg.com/react@19.0.0/index.js` in the `http-url` namespace.
+---
 
-**Scenario 2 — Scoped package with subpath export.** `import { QueryClient } from "@tanstack/react-query/build/modern"` hits the CdnPlugin, which parses out the name `@tanstack/react-query`, the subpath `/build/modern`, resolves the version, fetches `package.json`, and resolves `"./build/modern"` against the `exports` field. The modern resolver finds a matching pattern and returns the appropriate CDN URL.
+**Scenario 1 — Simple bare import**
 
-**Scenario 3 — Tarball from a pull request preview.** When `package.json` declares a dependency like `"@tanstack/react-query": "https://pkg.pr.new/@tanstack/react-query@7988"`, the CdnPlugin parses the version as a URL spec and re-enters the plugin chain via `build.resolve()`. The TarballPlugin intercepts the `pkg.pr.new` URL, fetches and extracts the tarball into the VFS under `/__tarballs__/<sha256-hash>/`, reads the extracted `package.json`, resolves the entry point, and returns a VFS path. Subsequent imports from within the package resolve against the VFS mount point, so relative imports like `"./query-client"` work correctly.
+> `import { useState } from "react"`
 
-**Scenario 4 — Relative import inside a CDN-fetched module.** When `https://esm.sh/react@18.2.0/index.js` contains `import { createElement } from "./jsx-runtime.js"`, the HttpPlugin resolves the relative path against the parent's **final URL** (after redirects). CDNs like esm.sh may redirect `react@18.2.0/index.js` to `react@18.2.0/es2022/index.js`. The relative import must resolve against where the file actually lives, not where it was originally requested. The HttpPlugin stores the redirected URL in `pluginData.url` and uses it as the resolution base.
+| Step | Plugin | Decision |
+|:-----|:-------|:---------|
+| 1 | AliasPlugin | No alias → pass |
+| 2 | ExternalPlugin | Not a builtin → pass |
+| 3 | VFSPlugin | Not a path → pass |
+| 4 | TarballPlugin | Not a URL → pass |
+| 5 | HttpPlugin | Not a URL → pass |
+| 6 | **CdnPlugin** | **Bare import → handle it** |
 
-**Scenario 5 — Node.js builtin with polyfill enabled.** `import { readFile } from "fs"` with `{ polyfill: true }` reaches the ExternalPlugin, which recognizes `"fs"` as a Node.js builtin, looks up its browser polyfill (`"memfs"`), rewrites the import, and delegates to the CdnPlugin. The CdnPlugin resolves `"memfs"` from the CDN normally. With `polyfill: false`, the ExternalPlugin instead marks `"fs"` as external, excluding it from the bundle entirely and returning an empty `export default {}`.
+CdnPlugin parses `"react"` → assumes `"latest"` → resolves exact version (`19.0.0`) → fetches `https://unpkg.com/react@19.0.0/package.json` → resolves entry via `exports["."]` → returns `https://unpkg.com/react@19.0.0/index.js` in `http-url` namespace.
 
-**Scenario 6 — Package with browser field exclusion.** When a package has `"browser": { "./dist/server-stream.js": false }`, the CdnPlugin resolves the entry point normally from `main` or `module`. But when esbuild processes the entry and encounters `import { stream } from "./server-stream.js"`, the browser remapping kicks in and returns an empty module, effectively excluding the server-only code from the browser bundle.
+---
 
-**Scenario 7 — Subpath export with wildcard.** `import { Button } from "@ui-lib/components/button"` hits the CdnPlugin, which parses the subpath `"./button"`, matches it against the `exports` pattern `"./*"`, captures `"button"`, substitutes into the target `"./dist/esm/*.js"`, and returns `https://unpkg.com/@ui-lib/components@latest/dist/esm/button.js`.
+**Scenario 2 — Scoped package with subpath**
+
+> `import { QueryClient } from "@tanstack/react-query/build/modern"`
+
+- CdnPlugin parses: name = `@tanstack/react-query`, subpath = `./build/modern`
+- Resolves version → fetches `package.json` → looks up `"./build/modern"` in `exports` field
+- Modern resolver finds a matching pattern → returns the appropriate CDN URL
+
+---
+
+**Scenario 3 — Tarball from PR preview**
+
+> `"@tanstack/react-query": "https://pkg.pr.new/@tanstack/react-query@7988"`
+
+1. CdnPlugin parses the version as a **URL spec** → re-enters plugin chain via `build.resolve()`
+2. **TarballPlugin** intercepts the `pkg.pr.new` URL
+3. Fetches tarball → extracts into VFS under `/__tarballs__/<sha256-hash>/`
+4. Reads extracted `package.json` → resolves entry point → returns VFS path
+5. Subsequent relative imports (e.g., `"./query-client"`) resolve against the VFS mount point
+
+---
+
+**Scenario 4 — Relative import inside CDN module**
+
+> `https://esm.sh/react@18.2.0/index.js` contains `import { createElement } from "./jsx-runtime.js"`
+
+The HttpPlugin resolves the relative path against the parent's **final URL** after redirects — *not* the originally-requested URL. CDNs frequently redirect (e.g., `react@18.2.0/index.js` → `react@18.2.0/es2022/index.js`). The plugin stores the redirected URL in `pluginData.url` and uses it as the resolution base.
+
+---
+
+**Scenario 5 — Node.js builtin ± polyfill**
+
+> `import { readFile } from "fs"`
+
+| Polyfill setting | What happens |
+|:-----------------|:-------------|
+| `polyfill: true` | ExternalPlugin recognizes `"fs"` as builtin → rewrites to `"memfs"` → CdnPlugin resolves from CDN |
+| `polyfill: false` | ExternalPlugin marks `"fs"` as **external** → excluded from bundle → empty `export default {}` |
+
+---
+
+**Scenario 6 — Browser field exclusion**
+
+> Package has `"browser": { "./dist/server-stream.js": false }`
+
+- CdnPlugin resolves entry normally from `main`/`module`
+- When esbuild encounters `import { stream } from "./server-stream.js"`, the browser remapping returns an **empty module**
+- Server-only code is excluded from the browser bundle
+
+---
+
+**Scenario 7 — Subpath wildcard**
+
+> `import { Button } from "@ui-lib/components/button"`
+
+- CdnPlugin parses subpath: `"./button"`
+- Matches `exports` pattern `"./*"` → captures `"button"`
+- Substitutes into target `"./dist/esm/*.js"` → `./dist/esm/button.js`
+- Returns `https://unpkg.com/@ui-lib/components@latest/dist/esm/button.js`
 
 
 ## Plugin Shared State
 
-All six plugins share state through a `Context` object — a reactive, hierarchical data container built on `EventTarget` and `Proxy` (defined in [core/context/context.ts](../core/context/context.ts)). Every build creates a `LocalState` (defined in [core/types.ts](../core/types.ts)) that all plugins read from and write to:
+All six plugins share state through a **`Context`** object — a *reactive, hierarchical* data container built on `EventTarget` and `Proxy` (defined in [core/context/context.ts](../core/context/context.ts)).
+
+Every build creates a **`LocalState`** (from [core/types.ts](../core/types.ts)) that all plugins read and write:
 
 ```typescript
 interface LocalState {
@@ -384,7 +657,12 @@ interface LocalState {
 }
 ```
 
-The Context supports two data modes. **Shared data** is inherited from parent contexts — changes propagate bidirectionally, so all plugins share the same manifest cache, version cache, and VFS. **Isolated data** is created via `withContext()` — properties set in a child context don't affect the parent. This is how the CdnPlugin gets its own `origin` setting without polluting the shared state:
+The Context supports **two data modes**:
+
+| Mode | Behavior | Example |
+|:-----|:---------|:--------|
+| **Shared** | Inherited from parent — changes propagate bidirectionally | Manifest cache, version cache, VFS |
+| **Isolated** | Created via `withContext()` — child changes don't affect parent | CdnPlugin's `origin` setting |
 
 ```typescript
 // All plugins share the same caches
@@ -399,14 +677,20 @@ const StateContext = new Context<LocalState>({
 CdnPlugin(withContext({ origin: host }, StateContext))
 ```
 
-`Context.opaque()` marks values as "unproxyable" — objects like `Map`, `Set`, `Promise`, and `ArrayBuffer` have methods that break under proxy interception, so they are excluded from the reactive wrapping.
+> **`Context.opaque()`** marks values as *unproxyable* — objects like `Map`, `Set`, `Promise`, and `ArrayBuffer` have methods that break under proxy interception, so they are excluded from reactive wrapping.
 
-The context is accessed through three functions: `fromContext("key", ctx)` to read, `toContext("key", value, ctx)` to write, and `withContext({ key: value }, ctx)` to create a scoped child.
+**Three accessor functions:**
+
+- `fromContext("key", ctx)` — read a value
+- `toContext("key", value, ctx)` — write a value
+- `withContext({ key: value }, ctx)` — create a scoped child context
 
 
 ## The Edge Runtime
 
-The HTTP API layer lives in `@bundle/edge` and runs on Deno Deploy. The entry point exports a `fetch` handler (in [edge/mod.ts](../edge/mod.ts)):
+The HTTP API layer lives in `@bundle/edge` and runs on **[Deno Deploy](https://deno.com/deploy)** — a serverless platform that runs JavaScript/TypeScript at the edge (meaning close to users, in data centers worldwide). It uses the web-standard `Request`/`Response` pattern.
+
+The entry point exports a `fetch` handler (in [edge/mod.ts](../edge/mod.ts)):
 
 ```typescript
 export default {
@@ -416,78 +700,124 @@ export default {
 }
 ```
 
-When run locally with `deno serve -A --watch edge/mod.ts`, Deno picks up this default export and runs it as an HTTP server.
+> When run locally with `deno serve -A --watch edge/mod.ts`, Deno picks up this default export and serves it at `http://localhost:8000`.
 
-The request lifecycle flows through several stages. First, query parameters are parsed (by [edge/parse-query.ts](../edge/parse-query.ts)) into a build configuration. The `q` parameter supports multiple packages separated by commas (`?q=react,vue`), the `treeshake` parameter uses bracket syntax for per-package exports (`?treeshake=[{useState}],[*]`), the `share` parameter accepts LZ-string compressed code for large inputs, and the `config` parameter accepts a JSON5 configuration object. Next, the edge function checks Redis (Upstash) for a cached result keyed by the SHA-256 hash of the full configuration. On cache hit, it returns immediately. On cache miss, it writes the user's code to the VFS as an entry point, invokes `@bundle/core`'s `build()`, compresses the output via `@bundle/compress`, assembles the JSON response, caches it, and returns.
+### Request Lifecycle
 
-The API supports multiple response modes depending on query parameters:
+Each request flows through these stages:
 
-| Query | Result |
-|:------|:-------|
-| `/?q=react` | JSON with bundle size |
-| `/?q=react&treeshake=[{useState}]` | Tree-shaken size for specific exports |
-| `/?q=react&badge` | SVG badge image |
-| `/?q=react&badge=detailed` | Badge with module names |
-| `/?q=react&file` | Raw bundled JavaScript |
-| `/?q=react&analysis` | esbuild bundle analysis (HTML) |
-| `/?q=react&metafile` | esbuild metafile JSON |
-| `/?q=react&polyfill` | Enable Node.js polyfills |
-| `/?q=react&minify=false` | Disable minification |
-| `/?q=react&format=cjs` | Output as CommonJS |
-| `/?q=react&config={...}` | JSON5 config object |
+```
+  Request arrives
+       │
+       ▼
+  ┌──────────────────────┐
+  │ 1. Parse query       │  ?q=react&treeshake=[{useState}]
+  │    (parse-query.ts)  │  → BuildConfig
+  └─────────┬────────────┘
+            │
+            ▼
+  ┌────────────────────┐
+  │ 2. Check Redis     │  Key: SHA-256(config + input)
+  │    cache hit?      │
+  └──┬──────────┬──────┘
+     │ hit      │ miss
+     ▼          ▼
+  Return    ┌───────────────────┐
+  cached    │ 3. Write entry    │  User code → VFS
+  result    │ 4. Build          │  @bundle/core.build()
+            │ 5. Compress       │  @bundle/compress
+            │ 6. Cache & return │  Store in Redis, respond
+            └───────────────────┘
+```
 
-The `/?file` endpoint is noteworthy — it returns the raw bundled JavaScript, which means you can directly import from the bundlejs API: `import { something } from "https://deno.bundlejs.com/?q=my-package&file"`.
+**Query parameter reference:**
+
+| Parameter | Example | Effect |
+|:----------|:--------|:-------|
+| `q` | `react,vue` | Packages to bundle (comma-separated) |
+| `treeshake` | `[{useState}],[*]` | Per-package named exports |
+| `share` | *(LZ-string)* | Compressed code for large inputs |
+| `config` | `{"cdn":"esm.sh"}` | JSON5 config object |
+| `badge` | `true` or `detailed` | SVG badge image |
+| `file` | *(flag)* | Raw bundled JavaScript output |
+| `analysis` | *(flag)* | esbuild bundle analysis (HTML) |
+| `metafile` | *(flag)* | esbuild metafile JSON |
+| `polyfill` | *(flag)* | Enable Node.js polyfills |
+| `minify` | `false` | Disable minification |
+| `format` | `cjs` | Output format (`esm`, `cjs`, `iife`) |
+
+> **Tip:** The `/?file` endpoint returns raw bundled JavaScript — you can import directly from the API:
+> ```typescript
+> import { something } from "https://deno.bundlejs.com/?q=my-package&file";
+> ```
 
 
 ## Caching Architecture
 
-bundlejs uses a multi-tiered caching strategy. Understanding these tiers matters because they determine when you get near-instant responses versus cold builds.
+bundlejs uses a **multi-tiered caching** strategy. These tiers determine when you get *near-instant* responses versus cold builds.
 
 ```
-Request arrives
-   │
-   ▼
-┌──────────────────┐
-│ Redis (Upstash)  │  Tier 1: Edge-level, persists across deploys
-│ TTL: 24h         │  Key: SHA-256(full config + input)
-└────────┬─────────┘
-         │ miss
-         ▼
-┌──────────────────┐
-│ Cache API        │  Tier 2: Runtime-level, persists within Deno Deploy isolate
-│ "EXTERNAL_FETCHES" │  Used by fetch-and-cache.ts for HTTP responses
-└────────┬─────────┘
-         │ miss
-         ▼
-┌──────────────────┐
-│ In-memory LRU    │  Tier 3: Process-level, resets on restart
-│ 300 responses    │  Keyed by final URL (after redirects)
-│ 500 redirects    │  Also stores redirect mappings for aliased URLs
-└────────┬─────────┘
-         │ miss
-         ▼
+  Request arrives
+       │
+       ▼
+  ┌──────────────────┐
+  │ Redis (Upstash)  │  Tier 1: Edge-level, persists across deploys
+  │ TTL: 24h         │  Key: SHA-256(full config + input)
+  └────────┬─────────┘
+           │ miss
+           ▼
+  ┌────────────────────┐
+  │ Cache API          │  Tier 2: Runtime-level, persists within
+  │ "EXTERNAL_FETCHES" │  Deno Deploy isolate (per HTTP fetch)
+  └────────┬───────────┘
+           │ miss
+           ▼
+  ┌──────────────────┐
+  │ In-memory LRU    │  Tier 3: Process-level, resets on restart
+  │ 300 responses    │  Keyed by final URL (after redirects)
+  │ 500 redirects    │  Also stores redirect mappings
+  └────────┬─────────┘
+           │ miss
+           ▼
       Network fetch
 ```
 
-The first tier is Redis (Upstash), used in `@bundle/edge` to cache complete API responses. Results are keyed by the SHA-256 hash of the full configuration plus input, with a 24-hour TTL. Badge images are cached separately. Cache control endpoints include `/delete-cache` to remove a specific entry, `/no-cache` to bypass cache for the current request, and `/clear-all-cache-123` for administrative cache flush.
+### Tier details
 
-The second and third tiers live in `@bundle/utils`'s `fetch-and-cache.ts` module, which handles all HTTP fetching throughout the build pipeline. It maintains an in-memory LRU cache (300 responses, 500 redirect mappings) and optionally uses the Cache API (available on Deno Deploy) as a persistent layer. A key design decision: responses are always cached under the **final** URL after redirects, not the original request URL. This ensures relative imports resolve correctly and avoids stale redirect targets when CDN aliases like `@latest` change. A redirect map separately tracks original-to-final URL mappings so requests to aliased URLs can find cached content without re-fetching.
+| Tier | Where | Scope | TTL | Key strategy |
+|:-----|:------|:------|:----|:-------------|
+| **Redis** (Upstash) | `@bundle/edge` | Across deploys | 24h | SHA-256 of full config + input |
+| **Cache API** | `@bundle/utils` | Within Deno Deploy isolate | Runtime-managed | Final URL after redirects |
+| **LRU** | `@bundle/utils` | Per process | Until restart | Final URL + redirect map |
 
-Within a single build, additional per-build caches live in `LocalState`: package manifests, resolved versions, compiled side-effects matchers, and failed extension probes. These are local to each build context and do not persist.
+**Key design decisions:**
+
+- Responses are cached under the **final URL** after redirects — *not* the original request URL. This ensures relative imports resolve correctly and avoids stale redirect targets when CDN aliases like `@latest` change.
+- A **redirect map** separately tracks *original → final* URL mappings, so requests to aliased URLs find cached content without re-fetching.
+- **Cache control endpoints:** `/delete-cache` (remove specific entry), `/no-cache` (bypass for current request), `/clear-all-cache-123` (admin flush)
+
+### Per-build caches
+
+Within a single build, additional caches live in `LocalState` (not persisted across requests):
+
+- **`packageManifests`** — cached `package.json` data
+- **`versions`** — resolved package versions
+- **`sideEffectsMatchersCache`** — compiled side-effects glob patterns
+- **`failedExtensionChecks`** / **`failedManifestUrls`** — negative caches to avoid retrying known failures
 
 
 ## Compression
 
-After bundling, `@bundle/compress` compresses the output to give accurate production size numbers. The `compress()` function (in [compress/compress.ts](../compress/compress.ts)) accepts an array of `Uint8Array` chunks (supporting multi-file output from code splitting) and returns both compressed and uncompressed sizes.
+After bundling, `@bundle/compress` compresses the output to report accurate **production size** numbers. The `compress()` function (in [compress/compress.ts](../compress/compress.ts)) accepts an array of `Uint8Array` chunks (supporting multi-file output from code splitting) and returns both compressed and uncompressed sizes.
 
-| Algorithm | Implementation | Quality configurable | Notes |
-|:----------|:--------------|:----|:-----|
-| gzip (default) | Native `CompressionStream` API | No | Fastest, most compatible |
-| brotli | WASM module | Yes (1–11) | Best compression ratio for web |
-| zstd | WASM module | Yes (1–11) | Fast decompression, good ratio |
-| lz4 | WASM module | No | Fastest decompression |
+| Algorithm | Implementation | Quality | Notes |
+|:----------|:--------------|:--------|:------|
+| **gzip** *(default)* | Native `CompressionStream` API | Fixed | Fastest, most compatible, no WASM |
+| **brotli** | WASM module | 1–11 | Best compression ratio for web |
+| **zstd** | WASM module | 1–11 | Fast decompression, good ratio |
+| **lz4** | WASM module | Fixed | Fastest decompression |
 
-Gzip uses the web-standard `CompressionStream` API available in all modern runtimes — no WASM needed. Brotli, zstd, and lz4 are implemented as WASM modules that are lazily loaded only when the chosen algorithm requires them. Configuration is handled through `createCompressConfig()`, which uses deep merge and `structuredClone` to produce final settings.
+> Brotli, zstd, and lz4 WASM modules are **lazily loaded** — only initialized when the chosen algorithm requires them.
 
 
 ## Configuration Reference
@@ -538,7 +868,17 @@ interface BuildConfig {
 }
 ```
 
-The `cdn` option accepts short names (`"unpkg"`, `"esm.sh"`, `"esm"`, `"jsr"`, `"skypack"`, `"jsdelivr"`, `"deno"`, `"github"`) or full URLs. Export condition resolution supports 10+ runtime profiles including Deno, Bun, Electron (main/renderer), React Native, Cloudflare Workers, and Vercel Edge — the conditions are computed from the `platform`, `format`, and `resolve` settings.
+The `cdn` option accepts **short names** (`"unpkg"`, `"esm.sh"`, `"esm"`, `"jsr"`, `"skypack"`, `"jsdelivr"`, `"deno"`, `"github"`) or full URLs.
+
+**Export condition resolution** supports 10+ runtime profiles:
+
+- Deno, Bun, Node.js
+- Electron (main/renderer)
+- React Native
+- Cloudflare Workers, Vercel Edge
+- …and more
+
+Conditions are computed from the `platform`, `format`, and `resolve` settings.
 
 Compression is configured separately when using the edge API:
 
@@ -554,12 +894,13 @@ type CompressConfig =
 
 ## Using bundlejs as a Building Block
 
-**As a library** — import `@bundle/core` directly and build something with the programmatic API:
+### As a library
+
+Import `@bundle/core` directly for the programmatic API:
 
 ```typescript
 import { build, transform } from "@bundle/core";
 
-// Bundle in-memory code
 const result = await build({
   entryPoints: ["/index.ts"],
   cdn: "esm.sh",
@@ -569,7 +910,9 @@ const result = await build({
 // result.packageSizeArr → per-package install sizes
 ```
 
-**With a custom filesystem** — provide your own VFS for pre-populated files:
+### With a custom VFS
+
+Pre-populate the virtual filesystem before building:
 
 ```typescript
 import { build, useFileSystem, setFile } from "@bundle/core";
@@ -581,7 +924,9 @@ await setFile(fsInstance, "/index.ts", `export { useState } from "react";`);
 const result = await build({ entryPoints: ["/index.ts"] }, fs);
 ```
 
-**With incremental builds** — `context()` creates a persistent build context for repeated builds without cold starts:
+### With incremental builds
+
+`context()` creates a persistent build context — repeated builds skip cold starts:
 
 ```typescript
 import { context } from "@bundle/core";
@@ -593,7 +938,7 @@ const result2 = await ctx.rebuild();  // Incremental, faster
 ctx.dispose();                        // Clean up when done
 ```
 
-**In CI pipelines** — use the HTTP API for automated bundle size checks:
+### In CI pipelines
 
 ```sh
 # Check bundle size of a package
@@ -603,32 +948,39 @@ curl "https://deno.bundlejs.com/?q=@tanstack/react-query&treeshake=[{useQuery}]"
 # https://deno.bundlejs.com/?q=my-package&badge
 ```
 
-**As an importable bundle** — the `/?file` endpoint returns raw bundled JavaScript:
+### As an importable bundle
+
+The `/?file` endpoint returns raw bundled JavaScript:
 
 ```typescript
 import { something } from "https://deno.bundlejs.com/?q=my-package&file";
 ```
 
-The event system (defined in [core/configs/events.ts](../core/configs/events.ts)) uses the web-standard `EventTarget` API for lifecycle hooks. Events are namespaced with `bundlejs.` prefix. Key events include `bundlejs.init.start`, `bundlejs.init.complete`, `bundlejs.init.error`, `bundlejs.build.error`, and `bundlejs.logger.*` for info/warn/error logging. This lets you observe and react to build lifecycle events without monkey-patching.
+### Event system
+
+The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses the web-standard `EventTarget` API for lifecycle hooks. Events are namespaced with `bundlejs.` prefix:
+
+| Event | When |
+|:------|:-----|
+| `bundlejs.init.start` | esbuild WASM initialization begins |
+| `bundlejs.init.complete` | esbuild ready |
+| `bundlejs.init.error` | Initialization failed |
+| `bundlejs.build.error` | Build failed |
+| `bundlejs.logger.*` | Info/warn/error logging |
 
 
 ## Limitations, Trade-offs, and Gotchas
 
-**WASM esbuild is slower than native.** Running esbuild in WebAssembly is roughly 2-5x slower than the native Go binary. This is the fundamental trade-off for universal portability — the same code runs in browsers, edge functions, and server runtimes. For a size-checking tool that runs infrequently, this is acceptable. For a production build tool running on every save, it would be a bottleneck.
-
-**CDN dependency.** bundlejs is only as reliable as its CDN. If unpkg.com goes down, resolution fails. The configurable CDN origin mitigates this — switch to `esm.sh`, `jsdelivr`, or any other CDN — but there is no automatic failover between CDNs.
-
-**Extension probing generates many HTTP requests.** When an import like `"./utils"` has no extension, bundlejs tries up to 18 URL combinations. Each is an HTTP request. CDN-level caching and HTTP/2 multiplexing help, but this can be slow for deeply nested dependency trees with extensionless imports. Failed probes are cached in `failedExtensionChecks` to avoid retrying known failures.
-
-**No git/workspace/link dependencies.** Dependency specs like `git+https://...`, `workspace:*`, `link:../path`, and `file:./local.tgz` produce explicit errors. Only npm registry (semver/tags), URL, and JSR specs are supported (classified by [utils/npm-spec.ts](../utils/npm-spec.ts)).
-
-**Browser field inconsistency across the ecosystem.** The dual-form `browser` field (string vs. object) is one of npm's most inconsistent conventions. Many packages use it incorrectly, and different bundlers interpret edge cases differently. bundlejs follows the Node.js spec, which means some packages that "work" in webpack might resolve differently here.
-
-**No dynamic import resolution.** bundlejs resolves static imports. `import("react")` works (esbuild handles code splitting), but the resolution plugins cannot resolve imports computed at runtime (e.g., `import(someVariable)`).
-
-**Tarball support is limited to known CDN patterns.** Currently, only `pkg.pr.new`-style URLs trigger tarball extraction. Arbitrary `.tgz` URLs are not automatically detected — the TarballPlugin checks against known tarball CDN patterns via `getCDNStyle()`.
-
-**Environment variables for full functionality.** Redis caching requires `UPSTASH_URL` and `UPSTASH_TOKEN`. GitHub gist storage requires `GITHUB_AUTH_TOKEN`. Without these, the API still works but caching degrades and some features (like shareable gist links) are unavailable. The init is wrapped so Redis can fail without taking the whole server down.
+| Limitation | Details |
+|:-----------|:--------|
+| **WASM esbuild is slower** | ~2–5× slower than native Go binary. Acceptable for infrequent size checks; too slow for build-on-save workflows. |
+| **CDN dependency** | If unpkg.com goes down, resolution fails. Configurable CDN origin mitigates this, but there is *no automatic failover*. |
+| **Extension probing = many HTTP requests** | Up to 18 URL probes per extensionless import. HTTP/2 multiplexing and `failedExtensionChecks` caching help, but deep trees can be slow. |
+| **No git/workspace/link deps** | `git+https://`, `workspace:*`, `link:../path`, `file:./local.tgz` all produce explicit errors. Only npm/URL/JSR specs. |
+| **Browser field inconsistency** | The dual-form `browser` field is one of npm's most inconsistent conventions. bundlejs follows the Node.js spec — some packages that "work" in webpack may resolve differently. |
+| **No dynamic import resolution** | Static `import("react")` works (esbuild handles code splitting), but `import(someVariable)` cannot be resolved. |
+| **Tarball support is limited** | Only `pkg.pr.new`-style URLs trigger extraction. Arbitrary `.tgz` URLs are not auto-detected. |
+| **Env vars for full functionality** | `UPSTASH_URL`/`UPSTASH_TOKEN` (Redis), `GITHUB_AUTH_TOKEN` (gist links). Without them, the API works but features degrade gracefully. |
 
 
 ## What to Do Next
@@ -653,6 +1005,3 @@ The event system (defined in [core/configs/events.ts](../core/configs/events.ts)
 
 10. **Read the esbuild docs.** bundlejs inherits all of esbuild's configuration options. Understanding `target`, `format`, `platform`, `external`, and `conditions` will help you understand what bundlejs passes through vs. what it intercepts.
 
----
-
-*This document reflects the state of the `simplify-edge-functions` branch.*
