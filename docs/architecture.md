@@ -443,18 +443,11 @@ Also handles **JSR specifiers** (`jsr:@scope/name`), **npm aliases** (`npm:pkg@v
 
 ## How Resolution Works
 
-The resolution system must faithfully implement the **Node.js module resolution algorithm** — the set of rules Node.js uses to find the actual file behind an `import` statement — but against *CDN-hosted packages* instead of a local `node_modules` directory.
+The CdnPlugin (and the resolution utilities it calls) must faithfully implement the **Node.js module resolution algorithm** — the set of rules Node.js uses to find the actual file behind an `import` statement — but against *CDN-hosted packages* instead of a local `node_modules` directory.
 
 > **Node.js module resolution**, in brief: when you write `import "react"`, Node.js searches `node_modules/react/`, reads its `package.json`, follows the `exports` field (or falls back to `main`/`module`/`browser`), and returns the resolved file path. bundlejs does exactly this, but over HTTP against a CDN.
 
-The resolution system handles the full spectrum:
-
-- **Modern** `exports`/`imports` fields with conditional exports and subpath patterns
-- **Legacy** `main`/`module`/`browser` fallbacks
-- **Wildcard** subpath patterns (`"./features/*"`)
-- **Browser field** remappings (both string and object forms)
-
-bundlejs supports multiple **CDN** (Content Delivery Network) patterns, each with its own URL format (from [core/utils/cdn-format.ts](../core/utils/cdn-format.ts)):
+bundlejs supports multiple **CDN** (Content Delivery Network) sources. The `cdn` config option selects which one to use — each has its own URL format (from [core/utils/cdn-format.ts](../core/utils/cdn-format.ts)):
 
 | Config value | CDN URL | Style |
 |:------------|:--------|:------|
@@ -467,172 +460,337 @@ bundlejs supports multiple **CDN** (Content Delivery Network) patterns, each wit
 | `"github"` | `https://raw.githubusercontent.com` | github |
 | Any full URL | Used directly | Detected from URL |
 
-### Modern Resolution (exports field)
+The resolution algorithm has several distinct paths depending on what kind of import it encounters. Let's walk through each one with real examples.
 
-The modern path uses the `exports` field from `package.json`, following the [Node.js conditional exports spec](https://nodejs.org/api/packages.html#conditional-exports). The `exports` field maps subpaths to files under different **conditions** — a way for packages to serve different code for different environments:
+---
+
+**Bare npm import — the common case.** When you write `import { useState } from "react"`, the CdnPlugin:
+
+1. Parses the specifier → name: `react`, version: `null`, subpath: `null`
+2. No version specified → assumes `"latest"` → resolves exact version via the registry (e.g., `19.0.0`)
+3. Fetches `https://unpkg.com/react@19.0.0/package.json`
+4. Reads the `exports` field and resolves `"."` (the root entry point)
+5. Returns `https://unpkg.com/react@19.0.0/index.js` in the `http-url` namespace
+
+The **condition priority chain** determines which export path the resolver picks. For bundlejs targeting browsers with ESM, the default chain is:
+
+```
+  import → browser → module → default
+  Fallback: require  (some packages only define CJS exports)
+```
+
+These conditions come from [utils/resolve-conditions.ts](../utils/resolve-conditions.ts) and vary by platform. Deno adds `["deno", "node"]`, Bun adds `["bun", "node"]`, Cloudflare Workers adds `["workerd", "worker", "browser"]`, and so on — bundlejs supports 10+ runtime profiles.
+
+To see this in action, here's what React's `package.json` `exports` field might look like and how bundlejs resolves it:
 
 ```json
 {
+  "name": "react",
+  "version": "19.0.0",
   "exports": {
     ".": {
-      "browser": "./dist/browser.js",
-      "import": "./dist/esm.js",
-      "require": "./dist/cjs.js",
-      "default": "./dist/esm.js"
+      "react-server": "./react.react-server.js",
+      "browser": "./index.js",
+      "import": "./index.js",
+      "require": "./index.js",
+      "default": "./index.js"
     },
-    "./utils": "./dist/utils.js",
-    "./features/*": "./dist/features/*.js"
+    "./jsx-runtime": {
+      "browser": "./jsx-runtime.js",
+      "import": "./jsx-runtime.js",
+      "require": "./jsx-runtime.js"
+    },
+    "./jsx-dev-runtime": "./jsx-dev-runtime.js",
+    "./package.json": "./package.json"
   }
 }
 ```
 
-The resolver walks conditions in **priority order**. For bundlejs targeting browsers with ESM:
+The resolver walks the conditions for `"."` in priority order: `browser` matches → returns `./index.js`. If this were a server-side build with `platform: "node"`, it would check `import` first (since `browser` isn't in the node condition set), and still get `./index.js`.
 
+---
+
+**Subpath exports with wildcards.** A more complex example — suppose you import from a UI component library:
+
+```typescript
+import { Button } from "@radix-ui/react-button";
+import { Dialog } from "@radix-ui/react-dialog";
 ```
-  Condition priority: browser → import → default
-  Fallback:           require  (some packages only define CJS exports)
+
+Each scoped package is independent, but some libraries use subpath exports to expose multiple entry points from a single package. Consider a library whose `package.json` looks like:
+
+```json
+{
+  "name": "@ui-lib/components",
+  "exports": {
+    ".": "./dist/index.js",
+    "./*": "./dist/esm/*.js",
+    "./features/*": "./dist/features/*/index.js"
+  }
+}
 ```
 
-**Subpath patterns** with `*` wildcards are fully supported:
+When you write `import { Button } from "@ui-lib/components/button"`:
 
-- `import "pkg/features/auth"` matches `"./features/*"` in exports
-- `"auth"` substitutes into the target → `./dist/features/auth.js`
+1. CdnPlugin parses: name = `@ui-lib/components`, subpath = `./button`
+2. The resolver tries each `exports` key against `"./button"`
+3. `"."` doesn't match (subpath isn't empty)
+4. `"./*"` matches — captures `"button"` — substitutes into `"./dist/esm/*.js"` → `./dist/esm/button.js`
+5. Returns `https://unpkg.com/@ui-lib/components@latest/dist/esm/button.js`
 
-**Subpath imports** (the `imports` field, prefixed with `#`) work similarly but are *private* to the package — only code *within* the package can use them.
+And `import { Tooltip } from "@ui-lib/components/features/tooltip"` would match `"./features/*"` → capture `"tooltip"` → produce `./dist/features/tooltip/index.js`.
 
-### Legacy Resolution (no exports field)
+**Subpath imports** (the `imports` field, prefixed with `#`) work similarly but are *private* to the package — only code *within* the package can use them. For example, some packages use `#internal/utils` as a private alias. bundlejs detects the `#` prefix in the CdnPlugin, looks up the *importer's manifest* (not the root manifest), and resolves through `imports`:
 
-Activates when a package lacks an `exports` field. Checks, in order:
+```json
+{
+  "name": "vfile",
+  "imports": {
+    "#minpath": { "node": "./lib/minpath.node.js", "default": "./lib/minpath.browser.js" }
+  }
+}
+```
+
+When code inside `vfile` does `import path from "#minpath"`, bundlejs resolves it using the browser condition → `./lib/minpath.browser.js`. If this resolution fails, bundlejs returns a **hard error** immediately — it never falls through to treat `#minpath` as a bare npm package name.
+
+---
+
+**Legacy resolution — packages without `exports`.** Many older packages predate the `exports` field. When the resolver finds no `exports`, it falls back to legacy fields in this order:
 
 1. **`browser`** field
 2. **`module`** field
 3. **`main`** field
 4. **`index.js`** fallback
 
-The `browser` field deserves special attention — it has **two forms** with very different semantics:
+The `browser` field has **two forms** with very different semantics. Consider `readable-stream`, a package that needs different implementations for Node.js and browsers:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ String form: direct entry point replacement                     │
-│                                                                 │
-│   { "browser": "./dist/browser.js" }                            │
-│                                                                 │
-│   → Use this directly as the entry point.                       │
-├─────────────────────────────────────────────────────────────────┤
-│ Object form: remapping layer (NOT an entry point)               │
-│                                                                 │
-│   { "main": "./lib/index.js",                                   │
-│     "browser": {                                                │
-│       "./lib/node-impl.js": "./lib/browser-impl.js",            │
-│       "fs": false                                               │
-│     }                                                           │
-│   }                                                             │
-│                                                                 │
-│   → Entry still comes from "main" or "module".                  │
-│   → Object maps are applied as the bundler resolves             │
-│     imports within the package.                                 │
-│   → Setting a value to `false` excludes the module entirely     │
-│     in browser builds.                                          │
-└─────────────────────────────────────────────────────────────────┘
+```json
+{
+  "name": "readable-stream",
+  "version": "3.6.2",
+  "main": "./lib/stream.js",
+  "browser": {
+    "./lib/internal/streams/pipeline.js": "./lib/internal/streams/pipeline-browser.js",
+    "./lib/internal/streams/finished.js": "./lib/internal/streams/finished-browser.js",
+    "util": false,
+    "string_decoder": false
+  }
+}
 ```
 
-> **⚠️ This distinction matters.** Many packages use the browser field incorrectly, and different bundlers interpret edge cases differently. bundlejs follows the Node.js spec.
+This is the **object form** — it is *not* an entry point. The entry still comes from `main` (`./lib/stream.js`). The object maps are applied as the bundler resolves imports *within* the package:
+- `import "./pipeline.js"` → remapped to `./pipeline-browser.js`
+- `import "util"` → `false` means **excluded** (empty module returned)
 
-### Side Effects
+Compare with the **string form**, which *is* the entry point:
 
-**Tree-shaking** (removing unused code) requires knowing which modules execute code on import — like a polyfill that sets `window.polyfill = true`. bundlejs reads the `sideEffects` field from `package.json` (via [core/utils/side-effects.ts](../core/utils/side-effects.ts)):
+```json
+{
+  "name": "some-isomorphic-lib",
+  "main": "./lib/node.js",
+  "browser": "./lib/browser.js"
+}
+```
+
+Here, `browser` replaces the entry entirely — no remapping, just a different file.
+
+> **⚠️ This distinction matters.** Many packages use the browser field incorrectly, and different bundlers interpret edge cases differently. bundlejs follows the Node.js spec. The resolver in [core/utils/cdn-resolution.ts](../core/utils/cdn-resolution.ts) checks `typeof browser` — string/array → direct entry; object → remapping layer applied *after* finding the entry from other fields.
+
+---
+
+**Side effects** round out the resolution picture. **Tree-shaking** (removing unused code) requires knowing which modules execute code on import — like a CSS file that applies styles, or a polyfill that patches `window`. bundlejs reads the `sideEffects` field from `package.json` (via [core/utils/side-effects.ts](../core/utils/side-effects.ts)):
+
+```json
+{
+  "name": "lodash-es",
+  "sideEffects": false
+}
+```
 
 | `sideEffects` value | Meaning |
 |:----|:----|
-| `false` | Entire package is side-effect-free. Safe to tree-shake. |
+| `false` | Entire package is side-effect-free. Safe to tree-shake aggressively. |
 | `["*.css", "./src/init.js"]` | Only listed files have side effects. Everything else is safe. |
-| Not present | Assume everything has side effects (conservative). |
+| Not present | Assume everything has side effects (conservative, no tree-shaking). |
 
-Glob patterns like `*.css` are normalized to `**/*.css` to match anywhere in the package tree. Compiled matchers are cached per package via `sideEffectsMatchersCache` in `LocalState`. The computed `sideEffects` value is passed to esbuild via the `onResolve` return value, enabling accurate tree-shaking even for CDN-fetched packages.
+Glob patterns like `*.css` are normalized to `**/*.css` to match anywhere in the package tree. The computed `sideEffects` value is passed to esbuild via the `onResolve` return value, enabling accurate tree-shaking even for CDN-fetched packages.
 
-
-## Resolution Scenarios
-
-Abstract rules are easier to understand through concrete examples. Here are seven scenarios that exercise different paths through the resolution system.
+This is why `/?q=lodash-es&treeshake=[{debounce}]` produces a dramatically smaller bundle than `/?q=lodash-es` — lodash-es declares `"sideEffects": false`, so esbuild can discard everything except `debounce` and its dependencies.
 
 ---
 
-**Scenario 1 — Simple bare import**
-
-> `import { useState } from "react"`
-
-| Step | Plugin | Decision |
-|:-----|:-------|:---------|
-| 1 | AliasPlugin | No alias → pass |
-| 2 | ExternalPlugin | Not a builtin → pass |
-| 3 | VFSPlugin | Not a path → pass |
-| 4 | TarballPlugin | Not a URL → pass |
-| 5 | HttpPlugin | Not a URL → pass |
-| 6 | **CdnPlugin** | **Bare import → handle it** |
-
-CdnPlugin parses `"react"` → assumes `"latest"` → resolves exact version (`19.0.0`) → fetches `https://unpkg.com/react@19.0.0/package.json` → resolves entry via `exports["."]` → returns `https://unpkg.com/react@19.0.0/index.js` in `http-url` namespace.
+So far we've covered npm packages — the most common case. But bundlejs also handles several non-npm module systems that the CdnPlugin routes through before reaching the standard npm resolution path.
 
 ---
 
-**Scenario 2 — Scoped package with subpath**
+**JSR modules — Deno's modern registry.** [JSR](https://jsr.io) (JavaScript Registry) is a newer registry designed for TypeScript-first packages. It uses a different URL scheme and resolution protocol than npm. When you write:
 
-> `import { QueryClient } from "@tanstack/react-query/build/modern"`
+```typescript
+import { join } from "jsr:@std/path@1.0.0";
+```
 
-- CdnPlugin parses: name = `@tanstack/react-query`, subpath = `./build/modern`
-- Resolves version → fetches `package.json` → looks up `"./build/modern"` in `exports` field
-- Modern resolver finds a matching pattern → returns the appropriate CDN URL
+The CdnPlugin detects the `jsr:` prefix and takes a completely different path from npm resolution:
 
----
+1. Parses with `parseJSRSpec()` → scope: `std`, name: `path`, version: `1.0.0`
+2. If the version contains `^`, `~`, or is omitted → calls `resolveJSRVersion()` against the JSR registry API (`https://jsr.io/@std/path/meta.json`) to find the highest matching non-yanked version
+3. Fetches the version metadata from `https://jsr.io/@std/path/1.0.0_meta.json`, which contains an `exports` map
+4. Resolves the subpath (default: `"."` → typically `./mod.ts`) through the exports
+5. Constructs the final URL: `https://jsr.io/@std/path/1.0.0/mod.ts`
 
-**Scenario 3 — Tarball from PR preview**
+Notice the URL format is different from npm CDNs — the version is a **path segment** (`/1.0.0/`), not an `@version` suffix. JSR modules are typically TypeScript source files (`.ts`) served directly, unlike npm packages which are usually pre-compiled JavaScript.
 
-> `"@tanstack/react-query": "https://pkg.pr.new/@tanstack/react-query@7988"`
+If direct JSR resolution fails (e.g., due to a network issue), bundlejs falls back to `esm.sh`'s JSR proxy: `https://esm.sh/jsr/@std/path@1.0.0`.
 
-1. CdnPlugin parses the version as a **URL spec** → re-enters plugin chain via `build.resolve()`
-2. **TarballPlugin** intercepts the `pkg.pr.new` URL
-3. Fetches tarball → extracts into VFS under `/__tarballs__/<sha256-hash>/`
-4. Reads extracted `package.json` → resolves entry point → returns VFS path
-5. Subsequent relative imports (e.g., `"./query-client"`) resolve against the VFS mount point
+You can bundle JSR packages through the API like any other:
 
----
-
-**Scenario 4 — Relative import inside CDN module**
-
-> `https://esm.sh/react@18.2.0/index.js` contains `import { createElement } from "./jsx-runtime.js"`
-
-The HttpPlugin resolves the relative path against the parent's **final URL** after redirects — *not* the originally-requested URL. CDNs frequently redirect (e.g., `react@18.2.0/index.js` → `react@18.2.0/es2022/index.js`). The plugin stores the redirected URL in `pluginData.url` and uses it as the resolution base.
+```
+/?q=jsr:@std/path&treeshake=[{join,resolve}]
+```
 
 ---
 
-**Scenario 5 — Node.js builtin ± polyfill**
+**npm aliases — version pinning and package swapping.** The `npm:` prefix in dependency versions lets you alias one package to another. This is commonly used in `package.json` for Deno compatibility or to swap implementations:
 
-> `import { readFile } from "fs"`
+```json
+{
+  "dependencies": {
+    "react": "npm:preact@10.24.0",
+    "path": "npm:path-browserify@1.0.1"
+  }
+}
+```
 
-| Polyfill setting | What happens |
-|:-----------------|:-------------|
-| `polyfill: true` | ExternalPlugin recognizes `"fs"` as builtin → rewrites to `"memfs"` → CdnPlugin resolves from CDN |
-| `polyfill: false` | ExternalPlugin marks `"fs"` as **external** → excluded from bundle → empty `export default {}` |
+When bundlejs encounters `import "react"`, the AliasPlugin (or CdnPlugin's dependency lookup) detects the `npm:preact@10.24.0` alias via `parseNpmSpec()`, which classifies it as an `AliasSpec`. The CdnPlugin then unwraps the alias:
 
----
-
-**Scenario 6 — Browser field exclusion**
-
-> Package has `"browser": { "./dist/server-stream.js": false }`
-
-- CdnPlugin resolves entry normally from `main`/`module`
-- When esbuild encounters `import { stream } from "./server-stream.js"`, the browser remapping returns an **empty module**
-- Server-only code is excluded from the browser bundle
+- `effectiveName` = `preact` (the *actual* package to fetch)
+- `effectiveVersion` = `10.24.0`
+- Resolution continues as normal, but fetches `preact` instead of `react`
 
 ---
 
-**Scenario 7 — Subpath wildcard**
+**URL dependencies — tarballs from PR previews.** This is one of bundlejs's most useful features for library development. Services like [pkg.pr.new](https://pkg.pr.new) build npm packages from pull requests and serve them as tarball URLs. You can test a PR's bundle size *before it merges*:
 
-> `import { Button } from "@ui-lib/components/button"`
+```json
+{
+  "dependencies": {
+    "@tanstack/react-query": "https://pkg.pr.new/@tanstack/react-query@7988"
+  }
+}
+```
 
-- CdnPlugin parses subpath: `"./button"`
-- Matches `exports` pattern `"./*"` → captures `"button"`
-- Substitutes into target `"./dist/esm/*.js"` → `./dist/esm/button.js`
-- Returns `https://unpkg.com/@ui-lib/components@latest/dist/esm/button.js`
+When bundlejs processes this, the CdnPlugin classifies the version as a `UrlSpec` and re-enters the plugin chain via `build.resolve()`. The **TarballPlugin** intercepts the `pkg.pr.new` URL and runs through this process:
+
+```
+  URL: https://pkg.pr.new/@tanstack/react-query@7988
+       │
+       ▼
+  TarballPlugin detects tarball CDN (getCDNStyle → "tarball")
+       │
+       ▼
+  Hash the URL → SHA-256 → "a1b2c3d4e5f6g7h8" (16 chars)
+       │
+       ▼
+  Check: is /__tarballs__/a1b2c3d4e5f6g7h8/ already in VFS?
+       │
+    ┌──┴──┐
+    │ YES │ → Skip fetch, reuse mount
+    │ NO  │ → Fetch .tgz → extract via streaming tar parser
+    └──┬──┘
+       │
+       ▼
+  Write all files to VFS:
+    /__tarballs__/a1b2c3d4e5f6g7h8/package.json
+    /__tarballs__/a1b2c3d4e5f6g7h8/dist/index.js
+    /__tarballs__/a1b2c3d4e5f6g7h8/dist/query-client.js
+    ...
+       │
+       ▼
+  Read extracted package.json → resolve entry via exports/legacy
+       │
+       ▼
+  Return VFS path: /__tarballs__/a1b2c3d4e5f6g7h8/dist/index.js
+```
+
+The content-addressed hash ensures the same tarball is only fetched once per build, even if multiple dependencies reference it. Each mount is tracked in `LocalState.tarballMounts` with its manifest and root path.
+
+The TarballPlugin also handles **self-reference imports**. If code *inside* the extracted `@tanstack/react-query` tarball does `import { QueryClient } from "@tanstack/react-query"` (importing itself by name), the plugin detects this — the import path matches the mount's `manifest.name` — and resolves against the local VFS mount instead of fetching from a CDN. This is critical for packages that use their own name in internal imports.
+
+You can test tarball dependencies through the API:
+
+```
+/?q=@tanstack/react-query&config={"package.json":{"dependencies":{"@tanstack/react-query":"https://pkg.pr.new/@tanstack/react-query@7988"}}}
+```
+
+---
+
+**Relative imports inside CDN-fetched modules** are handled by the HttpPlugin and deserve a concrete walkthrough. When the CdnPlugin resolves `react` to `https://unpkg.com/react@19.0.0/index.js`, esbuild fetches that file. Inside, it might contain:
+
+```javascript
+// https://unpkg.com/react@19.0.0/index.js
+export { createElement, Fragment } from "./jsx-runtime.js";
+export { useState, useEffect } from "./hooks.js";
+```
+
+The `"./jsx-runtime.js"` import needs to resolve against the correct base URL. But here's the complication: CDNs frequently **redirect**. The original request to `react@19.0.0/index.js` might redirect to `react@19.0.0/es2022/index.js`. If the HttpPlugin resolved the relative import against the *original* URL, it would look for `react@19.0.0/jsx-runtime.js` — wrong directory.
+
+The HttpPlugin solves this by storing the **final URL** (post-redirect) in `pluginData.url`. Relative imports are resolved with:
+
+```typescript
+resolvedPath = urlJoin(args.pluginData?.url, "../", argPath);
+// e.g., urlJoin("https://esm.sh/react@19.0.0/es2022/index.js", "../", "./jsx-runtime.js")
+//     → "https://esm.sh/react@19.0.0/es2022/jsx-runtime.js"  ✓
+```
+
+When a relative import has **no file extension** (e.g., `import "./utils"`), the HttpPlugin tries up to 18 URL combinations — 2 path variants (`""`, `"/index"`) × 9 extensions (`.js`, `.mjs`, `.ts`, `.tsx`, `.cjs`, `.jsx`, `.mts`, `.cts`, `""`). Failed probes are cached in `failedExtensionChecks` to avoid repeating HEAD requests for the same URLs.
+
+---
+
+**Node.js builtins — polyfill or exclude.** When a CDN-fetched module does `import { readFile } from "fs"`, the ExternalPlugin catches it before the CdnPlugin can try to fetch `fs` from npm (which doesn't exist as a package). The behavior depends on the polyfill setting:
+
+With `polyfill: false` (the default), the builtin is **excluded** and an empty export is returned. This is the right choice when measuring browser bundle size — you don't want `fs` inflating your numbers:
+
+```
+/?q=some-server-pkg                      → fs excluded, reports browser-only size
+```
+
+With `polyfill: true`, the builtin is **rewritten** to its browser polyfill. The mappings from [utils/runtime-builtins.ts](../utils/runtime-builtins.ts) include ~50 entries like:
+
+| Node.js builtin | Browser polyfill |
+|:----------------|:-----------------|
+| `fs` | `memfs` |
+| `path` | `path-browserify` |
+| `crypto` | `crypto-browserify` |
+| `stream` | `stream-browserify` |
+| `buffer` | `buffer` |
+| `events` | `events` |
+
+The rewritten import falls through to the CdnPlugin, which fetches the polyfill package from the CDN normally.
+
+```
+/?q=some-server-pkg&polyfill             → fs → memfs, reports full polyfilled size
+```
+
+---
+
+**Unsupported dependency types** are caught early with clear errors. The `parseNpmSpec()` function in [utils/npm-spec.ts](../utils/npm-spec.ts) classifies every dependency version into one of these types:
+
+| Type | Example | Supported? |
+|:-----|:--------|:-----------|
+| **semver** | `^1.2.3`, `~1.0.0`, `>=2.0.0` | ✅ |
+| **version** | `1.2.3` (exact) | ✅ |
+| **tag** | `latest`, `next`, `beta` | ✅ |
+| **alias** | `npm:preact@^10` | ✅ |
+| **url** | `https://pkg.pr.new/...` | ✅ (via TarballPlugin) |
+| **jsr** | `jsr:@std/path@1.0.0` | ✅ (via JSR API) |
+| `git` | `github:user/repo#semver:^1.0.0` | ❌ Error |
+| `file` | `file:./local.tgz` | ❌ Error |
+| `directory` | `file:./packages/foo` | ❌ Error |
+| `workspace` | `workspace:*` | ❌ Error |
+| `link` | `link:../sibling` | ❌ Error |
+
+The unsupported types all require local filesystem access or git operations — neither of which bundlejs has. When encountered, the CdnPlugin returns a descriptive error telling you what was found and why it can't be resolved.
+
+That covers the full resolution picture — from bare npm imports through JSR, tarballs, aliases, and builtins. What makes all of this work *across* plugins is a shared data layer that every plugin reads and writes during a build.
 
 
 ## Plugin Shared State
