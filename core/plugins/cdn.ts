@@ -148,6 +148,11 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
     const conditions = getResolverConditions(args, effectiveResolveOpts);
     let argPath = args.path;
 
+    console.log({
+      argPath,
+      conditions
+    })
+
     // ========================================================================
     // Build initial manifest from config + inherited pluginData
     // ========================================================================
@@ -186,7 +191,6 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
     // vfile's package.json (passed via pluginData.manifest), not the entry point's.
     // ========================================================================
 
-    console.log({ argPath})
     if (/^#/.test(argPath)) {
       // Use importer's manifest if available, fall back to initial manifest
       const importerManifest: Partial<PackageJson | FullPackageVersion> = 
