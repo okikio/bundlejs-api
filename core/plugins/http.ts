@@ -34,6 +34,8 @@ import { decode } from "@bundle/utils/encode-decode";
 import { LOGGER_ERROR, LOGGER_INFO, LOGGER_WARN, dispatchEvent } from "../configs/events.ts";
 
 import { DEFAULT_CDN_HOST, getCDNStyle, getCDNUrl } from "../utils/cdn-format.ts";
+import { applyBrowserRemapping } from "../utils/cdn-resolution.ts";
+import { getResolverConditions } from "@bundle/utils/resolve-conditions";
 import { inferLoader } from "../utils/loader.ts";
 import { setFile } from "../utils/filesystem.ts";
 
@@ -272,6 +274,12 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
   const host = fromContext("host", StateContext)!;
   const build = fromContext("build", StateContext)!;
 
+  // Extract resolve config for computing conditions (needed for browser field remapping)
+  const LocalConfig = fromContext("config", StateContext)!;
+  const esbuildOpts = LocalConfig.esbuild ?? {};
+  const resolveOpts = LocalConfig.resolve ?? {};
+  const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
+
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     const argPath = args.path;
 
@@ -325,6 +333,45 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
     } else {
       // Relative: "./foo" resolved against parent URL
       resolvedPath = urlJoin(args.pluginData?.url, "../", argPath);
+    }
+
+    // ========================================================================
+    // Apply browser field remappings for relative imports within a package
+    //
+    // When a CDN-resolved package has a browser field object like:
+    //   { "./fallback/platform.js": "./fallback/platform.browser.js" }
+    // relative imports matching those entries must be rewritten to the
+    // browser-specific variant. Without this, the default (often Node.js)
+    // version is fetched instead.
+    //
+    // The packageBaseUrl (set by CdnPlugin) lets us convert the resolved
+    // absolute URL back to a package-relative path for lookup in the
+    // browser remapping table.
+    // ========================================================================
+    const manifest = args.pluginData?.manifest;
+    const packageBaseUrl: string | undefined = args.pluginData?.packageBaseUrl;
+
+    if (packageBaseUrl && manifest?.browser && typeof manifest.browser === "object") {
+      const conditions = getResolverConditions(args, effectiveResolveOpts);
+
+      if (conditions.browser && resolvedPath.startsWith(packageBaseUrl)) {
+        const packageRelPath = "./" + resolvedPath.slice(packageBaseUrl.length);
+        const remapped = applyBrowserRemapping(packageRelPath, manifest.browser);
+
+        if (remapped === false) {
+          // Module excluded by browser field — surface as a build error
+          return {
+            errors: [{
+              text: `Module "${packageRelPath}" excluded by browser field`,
+              detail: `Package "${manifest.name ?? "unknown"}" maps this path to false for browser environments.`,
+            }],
+          };
+        }
+
+        if (remapped !== packageRelPath) {
+          resolvedPath = packageBaseUrl + remapped.replace(/^\.\//, "");
+        }
+      }
     }
 
     return {

@@ -566,6 +566,11 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
       const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
+      // Compute the package root URL so downstream plugins (HttpPlugin) can derive
+      // package-relative paths and apply browser field remappings correctly.
+      // e.g. "https://unpkg.com/@exodus/bytes@1.13.0/"
+      const { url: packageBaseUrl } = getCDNUrl(`${effectiveName}${cdnVersionFormat}/`, origin);
+
       // Store the package.json manifest of the dependencies fetched in the cache
       const packageId = `${effectiveName}@${knownVersion}`;
       if (!packageManifestsMap.get(packageId)) {
@@ -607,7 +612,8 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           manifest: deepMerge(
             structuredClone(resolvedManifest),
             { peerDependencies: inheritPeerDependencies }
-          )
+          ),
+          packageBaseUrl: packageBaseUrl.href
         })
       };
     }
