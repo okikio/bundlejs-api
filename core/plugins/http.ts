@@ -431,6 +431,11 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
       // Route all imports within HTTP namespace through HttpResolution
       build.onResolve({ filter: /.*/, namespace: HTTP_NAMESPACE }, HttpResolution(ctx));
 
+      // Whether esbuild has source maps enabled — when true we ask
+      // maybeStripFlow to embed an inline source map so esbuild can
+      // fold the Flow transformation into the final bundle map.
+      const enableSourceMaps = !!build.initialOptions.sourcemap;
+
       // Load content from HTTP URLs
       build.onLoad({ filter: /.*/, namespace: HTTP_NAMESPACE }, async (args) => {
         // Probe for correct extension and fetch content
@@ -468,7 +473,7 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
         // so we pre-process these files before handing them to the bundler.
         const { contents: processedContent, wasStripped } = maybeStripFlow(
           content as Uint8Array,
-          { url }
+          { url, sourceMap: enableSourceMaps }
         );
 
         if (wasStripped) {

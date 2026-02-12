@@ -242,13 +242,18 @@ export function VirtualFileSystemPlugin<T = Uint8Array>(
         // `getFile` returns null when missing/invalid; empty files are OK.
         if (content === null) return;
 
+        // Whether esbuild has source maps enabled — when true we ask
+        // maybeStripFlow to embed an inline source map so esbuild can
+        // fold the Flow transformation into the final bundle map.
+        const enableSourceMaps = !!build.initialOptions.sourcemap;
+
         // Strip Flow type annotations from files that use Flow syntax.
         // Tarball-extracted packages (e.g. react-native from npm registry)
         // land in VFS and may contain raw Flow annotations that esbuild
         // can't parse. We pre-process these before handing them to the bundler.
         const { contents: processedContent, wasStripped } = maybeStripFlow(
           content as Uint8Array,
-          { url: args.path }
+          { url: args.path, sourceMap: enableSourceMaps }
         );
 
         if (wasStripped) {

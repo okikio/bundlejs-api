@@ -186,8 +186,95 @@ function regexStripFlow(source: string): string {
 }
 
 // ============================================================================
+// Source Map Helpers
+// ============================================================================
+
+/**
+ * Source Map v3 shape returned by `flow-remove-types`.
+ *
+ * `flow-remove-types` generates maps via `.generateMap()`. The mappings
+ * are only populated when `pretty: true` — in non-pretty mode,
+ * whitespace replacement preserves all line/column positions, making
+ * the map trivial (identity mapping).
+ *
+ * We augment the raw map with `sources` (the original filename) and
+ * `sourcesContent` (the original source text) so that downstream
+ * consumers (esbuild, browser devtools) can display the original code.
+ */
+export interface FlowSourceMap {
+  version: 3;
+  sources: string[];
+  sourcesContent?: string[];
+  names: string[];
+  mappings: string;
+  file?: string;
+}
+
+/**
+ * Encode a v3 source map as a `data:` URI for inline embedding.
+ *
+ * esbuild's `onLoad` has no dedicated `sourceMap` field — the
+ * convention is to append `//# sourceMappingURL=data:...` to
+ * the returned `contents` string. esbuild parses the comment
+ * and folds it into the final bundle source map.
+ *
+ * @param map  A v3 source map object
+ * @returns    A data URI string: `data:application/json;charset=utf-8;base64,<payload>`
+ */
+function sourceMapToDataUrl(map: FlowSourceMap): string {
+  const json = JSON.stringify(map);
+  const encoded = btoa(json);
+  return `data:application/json;charset=utf-8;base64,${encoded}`;
+}
+
+/**
+ * Append an inline `//# sourceMappingURL=` comment to source code.
+ *
+ * @param code  Transformed source code
+ * @param map   v3 source map to embed
+ * @returns     Source code with the inline source map comment appended
+ */
+function appendInlineSourceMap(code: string, map: FlowSourceMap): string {
+  return `${code}\n//# sourceMappingURL=${sourceMapToDataUrl(map)}`;
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
+
+/** Options for {@link stripFlowTypes}. */
+export interface StripFlowOptions {
+  /** Remove whitespace left by type erasure (default: true). */
+  pretty?: boolean;
+  /** Strip all files, not just those with `@flow` pragma (default: true). */
+  all?: boolean;
+  /**
+   * Generate a v3 source map alongside the stripped output.
+   *
+   * When `true`, the returned object includes a `sourceMap` field.
+   * Source maps are only meaningful when `pretty` is also `true` —
+   * non-pretty mode preserves all positions via whitespace, so the
+   * map would be an identity mapping.
+   */
+  sourceMap?: boolean;
+  /**
+   * Filename to record in `sources[0]` of the generated map.
+   * Defaults to `"source.js"`.
+   */
+  sourceFileName?: string;
+}
+
+/** Result of {@link stripFlowTypes}. */
+export interface StripFlowResult {
+  /** The transformed source code with Flow annotations removed. */
+  code: string;
+  /**
+   * A v3 source map mapping the transformed code back to the original.
+   * Only present when `opts.sourceMap` is `true` and `flow-remove-types`
+   * was used (the regex fallback does not produce maps).
+   */
+  sourceMap?: FlowSourceMap;
+}
 
 /**
  * Strip Flow type annotations from JavaScript source code.
@@ -196,31 +283,90 @@ function regexStripFlow(source: string): string {
  * Falls back to regex-based stripping if the package isn't available.
  *
  * @param source  Source code (string or Uint8Array)
- * @param opts    Options:
- *   - `pretty`: Remove whitespace left by type removal (default: true)
- *   - `all`: Strip all files, not just those with `@flow` pragma (default: true)
- * @returns Transformed source code as a string
+ * @param opts    Stripping and source-map options
+ * @returns       The stripped code and an optional source map
  */
 export function stripFlowTypes(
   source: string | Uint8Array,
-  opts?: { pretty?: boolean; all?: boolean }
-): string {
+  opts?: StripFlowOptions
+): StripFlowResult {
   const text = typeof source === "string" ? source : decodeBytes(source);
 
-  const { pretty = true, all = true } = opts ?? {};
+  const { pretty = true, all = true, sourceMap = false, sourceFileName } = opts ?? {};
 
   // Try the full parser-based stripper first
   if (flowRemoveTypes) {
     try {
       const result = flowRemoveTypes(text, { pretty, all });
-      return result.toString();
+      const code = result.toString();
+
+      // Generate source map when requested.
+      // `flow-remove-types` only produces meaningful mappings when
+      // `pretty: true` — in non-pretty mode every position is
+      // already preserved via whitespace replacement.
+      let map: FlowSourceMap | undefined;
+      if (sourceMap) {
+        try {
+          map = result.generateMap() as FlowSourceMap;
+
+          // Patch the raw map with caller-supplied filename and
+          // original source content so devtools can show the
+          // pre-transformation code.
+          if (sourceFileName) {
+            map.sources = [sourceFileName];
+          }
+          map.sourcesContent = [text];
+        } catch {
+          // If map generation fails, proceed without a map.
+          // This is non-fatal — the stripped code is still valid.
+        }
+      }
+
+      return { code, sourceMap: map };
     } catch {
       // If flow-remove-types fails (e.g., parse error), fall through to regex
     }
   }
 
-  // Fallback: regex-based stripping
-  return regexStripFlow(text);
+  // Fallback: regex-based stripping.
+  // The regex fallback does NOT produce source maps — it would require
+  // tracking every replacement offset, which defeats the "lightweight
+  // fallback" purpose. Callers should prefer the full parser path.
+  return { code: regexStripFlow(text) };
+}
+
+/** Options for {@link maybeStripFlow}. */
+export interface MaybeStripFlowOptions {
+  /** Package name hint for known-package fast path. */
+  packageName?: string;
+  /** URL hint for URL-based detection heuristic. */
+  url?: string;
+  /** Remove whitespace left by type erasure (default: true). */
+  pretty?: boolean;
+  /**
+   * Generate a source map and embed it as an inline
+   * `//# sourceMappingURL=data:...` comment in the returned contents.
+   *
+   * This lets esbuild fold the Flow transformation map into the
+   * final bundle source map, so devtools show the *original* Flow
+   * source rather than the stripped intermediate.
+   *
+   * Only effective when `flow-remove-types` is used (not the regex
+   * fallback) and `pretty` is `true`.
+   */
+  sourceMap?: boolean;
+}
+
+/** Result of {@link maybeStripFlow}. */
+export interface MaybeStripFlowResult {
+  /**
+   * Processed file contents.
+   * - Original `Uint8Array` when no Flow was detected (zero-copy).
+   * - Stripped `string` (potentially with inline source map) when Flow was removed.
+   */
+  contents: string | Uint8Array;
+  /** Whether Flow annotations were detected and stripped. */
+  wasStripped: boolean;
 }
 
 /**
@@ -230,23 +376,35 @@ export function stripFlowTypes(
  * Returns the original content (as Uint8Array) if no Flow is found,
  * or the stripped string if Flow was detected and removed.
  *
+ * When `sourceMap: true`, the stripped output includes an inline
+ * `//# sourceMappingURL=data:...` comment that esbuild folds into
+ * the final bundle source map. This makes it possible to debug the
+ * original Flow source in browser devtools even after stripping.
+ *
  * @param content   Raw file content
- * @param opts      Detection hints (packageName, url) and strip options
- * @returns Object with `contents` (string if stripped, original Uint8Array if not)
- *          and `wasStripped` flag
+ * @param opts      Detection hints (packageName, url) and strip/sourceMap options
+ * @returns         Processed contents and a `wasStripped` flag
  */
 export function maybeStripFlow(
   content: Uint8Array,
-  opts?: { packageName?: string; url?: string; pretty?: boolean }
-): { contents: string | Uint8Array; wasStripped: boolean } {
+  opts?: MaybeStripFlowOptions
+): MaybeStripFlowResult {
   if (!containsFlow(content, opts)) {
     return { contents: content, wasStripped: false };
   }
 
-  const stripped = stripFlowTypes(content, {
+  const { code, sourceMap } = stripFlowTypes(content, {
     pretty: opts?.pretty ?? true,
     all: true,
+    sourceMap: opts?.sourceMap ?? false,
+    sourceFileName: opts?.url,
   });
 
-  return { contents: stripped, wasStripped: true };
+  // When a source map was produced, embed it inline so esbuild can
+  // incorporate it into the final bundle map.
+  const contents = sourceMap
+    ? appendInlineSourceMap(code, sourceMap)
+    : code;
+
+  return { contents, wasStripped: true };
 }
