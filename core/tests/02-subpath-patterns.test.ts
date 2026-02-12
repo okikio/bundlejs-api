@@ -13,16 +13,11 @@ import { expect } from "@std/expect";
 
 import {
   resolveModern,
-  resolvePackageEntry,
   getResolverConditions,
-  getLegacyMainFields,
   manifest,
   importArgs,
   resolveOpts,
   buildPackage,
-  getOutputText,
-  outputContains,
-  NETWORK_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================
