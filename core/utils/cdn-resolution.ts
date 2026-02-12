@@ -268,6 +268,15 @@ export function resolveLegacy(
   };
 
   try {
+    // Step 0: Direct boolean false check on browser field
+    // resolve.exports' legacy() falls through to main when browser is false,
+    // so we must detect this exclusion before calling legacy()
+    if (conditions.browser && manifest.browser === false) {
+      result.excluded = true;
+      result.exclusionReason = "browser";
+      return result;
+    }
+
     // Step 1: Check browser field if browser conditions requested
     if (conditions.browser) {
       const withBrowser = legacy(manifest, {
