@@ -165,6 +165,8 @@ The dependency graph looks like this:
 - **Import map resolution** — [utils/resolve-import-map.ts](../utils/resolve-import-map.ts) applies import map remappings
 - **Builtin catalogs** — [utils/runtime-builtins.ts](../utils/runtime-builtins.ts) catalogs ~50 Node.js builtins with browser polyfill mappings
 - **Caching fetch** — [utils/fetch-and-cache.ts](../utils/fetch-and-cache.ts) wraps `fetch()` with multi-tier caching (LRU + Cache API)
+- **npm registry API** — [utils/npm-search.ts](../utils/npm-search.ts) wraps the npm registry REST API — version resolution, packument fetching, tarball URL construction. Handles scoped packages (`@scope/name`) with the registry's `%2f` encoding convention and a full-packument fallback when version-specific endpoints fail
+- **`.npmrc` parsing** — [utils/npmrc.ts](../utils/npmrc.ts) extracts registry configuration from `.npmrc` content — default registry overrides, scoped registry mappings (`@scope:registry=https://...`), comment stripping, and environment variable interpolation. Intentionally omits auth tokens (security boundary)
 
 A deliberate design principle runs through `@bundle/utils` — it wraps **Web APIs** instead of Node.js APIs. This is strategic: by building on web standards, the same code runs in Deno Deploy, browsers, Cloudflare Workers, *and* Node.js without platform-specific shims.
 
@@ -426,7 +428,7 @@ The plugin registers three `onResolve` handlers with carefully scoped filters:
 
 > **Source:** [core/plugins/http.ts](../core/plugins/http.ts)
 
-The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles**:
+The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
 
 1. **Direct URL imports** — handles `import "https://esm.sh/react"` directly
 2. **Relative import resolution** — resolves paths like `"./jsx-runtime.js"` inside CDN-fetched modules against the **final URL** after redirects (critical because CDNs redirect `react@latest` → `react@19.0.0`)
@@ -438,6 +440,10 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles**:
   × 9 extensions (.js, .mjs, .ts, .tsx, .cjs, .jsx, .mts, .cts, "")
   = 18 total probes
 ```
+
+5. **Registry mode propagation** — when the configured CDN host is a *registry* (`getCDNStyle(host) === "registry"`), bare imports encountered inside HTTP-fetched files are resolved through the registry rather than following the parent file's CDN origin. This ensures **all transitive dependencies** flow through the configured registry when registry mode is active, even if a file was originally loaded from a different CDN.
+
+   Without this, a file loaded from e.g. `esm.sh` would resolve its bare imports through `esm.sh` (CDN-follows-parent behavior). The `REGISTRY_HOST` check overrides this: `const origin = REGISTRY_HOST ? host : (NPM_CDN ? pathOrigin : host)` — registry mode always wins.
 
 Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers** that need fetching alongside the module.
 
@@ -458,6 +464,43 @@ Runs last — by this point, every other strategy has had a chance. This plugin 
 5. Construct the final CDN URL
 
 Also handles **JSR specifiers** (`jsr:@scope/name`), **npm aliases** (`npm:pkg@version`), and **subpath imports** (`#internal/...`). The full resolution algorithm is detailed next.
+
+#### Registry Tarball Mode
+
+When the CDN origin is a **registry** (`getCDNStyle(cdn) === "registry"` — triggered by `cdn: "npm"`, `cdn: "npm.registry"`, or `cdn: "https://registry.npmjs.org"`), the CdnPlugin takes a fundamentally different path. Instead of resolving individual files via a CDN like unpkg or esm.sh, it downloads the **entire package tarball** in one shot, extracts it to VFS, then resolves entry points from the extracted tree.
+
+```
+  ┌───── User code ──────┐            ┌──── Registry ─────┐
+  │ import "react"       │──────────▶ │  registry.npmjs   │
+  │ import "@scope/pkg"  │            │   .org/react/-    │
+  └──────────────────────┘            │  /react-18.tgz    │
+                                      └────────┬──────────┘
+                                               │ extract
+                                               ▼
+                                      ┌──── VFS mount ─────┐
+                                      │  /__tarballs__/    │
+                                      │    <sha256>/...    │
+                                      │  resolve via       │
+                                      │  exports/main      │
+                                      └────────────────────┘
+```
+
+The REGISTRY_CDN flow:
+
+1. **Resolve version** — calls `resolveVersion()` against the npm registry API (or a custom registry from `.npmrc` configuration)
+2. **Fetch manifest** — calls `getPackageOfVersion()` to get the version-specific metadata, including `dist.tarball`
+3. **Construct tarball URL** — `getPackageTarballUrl()` prefers the manifest's `dist.tarball` field (authoritative) and falls back to URL construction by convention
+4. **Route through TarballPlugin** — calls `build.resolve(tarballUrl)`, which TarballPlugin intercepts, fetches, extracts to VFS, and resolves the entry point
+
+**Why registry mode exists:**
+
+- **Fewer HTTP requests** — large packages with many internal imports (lodash-es, @aws-sdk/*) generate hundreds of individual HTTP fetches in CDN mode. Registry mode collapses this into a single tarball download + local VFS resolution.
+- **Exact npm parity** — uses the exact same files that `npm install` would produce.
+- **No CDN quirks** — eliminates CDN-specific redirect/resolution differences.
+
+**Scoped registry support.** The CdnPlugin normalizes the `BuildConfig.registry` field at init time via `normalizeRegistryConfig()` (from [utils/npmrc.ts](../utils/npmrc.ts)). For each bare import, `getRegistryForPackage()` resolves the appropriate registry by scope — e.g., `@jsr/std__path` routes to `https://npm.jsr.io` while `react` routes to the default registry. This config accepts a `RegistryConfig` object, a plain URL string, or raw `.npmrc` content (auto-detected by the presence of `=` or newlines).
+
+**Transitive dependency propagation.** All bare imports from within extracted tarballs also resolve through the registry. The CdnPlugin always has the registry origin configured, and the [HttpPlugin's registry propagation](#5-httpplugin--fetch-and-resolve-httphttps-urls) ensures even files loaded from different CDNs route their deps through the registry when registry mode is active.
 
 
 ## How Resolution Works
@@ -480,8 +523,10 @@ bundlejs supports multiple **CDN** (Content Delivery Network) sources. The `cdn`
 | `"skypack"` | `https://cdn.skypack.dev` | npm |
 | `"jsdelivr"` | `https://cdn.jsdelivr.net/npm` | npm |
 | `"jsr"` | `https://jsr.io` | jsr |
+| `"jsr.registry"` | `https://jsr.io` | jsr |
 | `"deno"` | `https://deno.land/x` | deno |
 | `"github"` | `https://raw.githubusercontent.com` | github |
+| `"npm"` or `"npm.registry"` | `https://registry.npmjs.org` | registry |
 | Any full URL | Used directly | Detected from URL |
 
 The resolution algorithm has several distinct paths depending on what kind of import it encounters. The rest of this section walks through each one with real examples, explaining the relevant spec background first and then showing how bundlejs implements (or intentionally deviates from) it.
@@ -1569,6 +1614,13 @@ interface BuildConfig {
   alias?: Record<string, string>;        // Package aliases: { "fs": "memfs" }
   polyfill?: boolean;                    // Default: false
 
+  // Registry configuration (for scoped registries / .npmrc support)
+  registry?: string | RegistryConfig;    // Default: undefined (npm public registry)
+  // Accepts:
+  // - A URL string: "https://npm.jsr.io"
+  // - Raw .npmrc content: "@jsr:registry=https://npm.jsr.io"
+  // - A RegistryConfig object: { registry?: string, scopedRegistries?: Record<string, string> }
+
   // esbuild options (passed through directly)
   esbuild?: {
     target?: string[];                   // Default: ["esnext"]
@@ -1605,7 +1657,7 @@ interface BuildConfig {
 }
 ```
 
-The `cdn` option accepts **short names** (`"unpkg"`, `"esm.sh"`, `"esm"`, `"jsr"`, `"skypack"`, `"jsdelivr"`, `"deno"`, `"github"`) or full URLs.
+The `cdn` option accepts **short names** (`"unpkg"`, `"esm.sh"`, `"esm"`, `"jsr"`, `"jsr.registry"`, `"skypack"`, `"jsdelivr"`, `"deno"`, `"github"`, `"npm"`, `"npm.registry"`) or full URLs. The `"npm"` and `"npm.registry"` schemes activate **registry tarball mode** — see [Registry Tarball Mode](#registry-tarball-mode) for details.
 
 **Export condition resolution** supports 10+ runtime profiles:
 
@@ -1720,6 +1772,9 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 | **Tarball decompression** | Only gzip and uncompressed tars are extracted; zstd/xz/bzip2/lz4 are detected but produce errors. | npm tarballs are 100% gzip. The detection layer is intentionally broader than the extraction layer, making future format support straightforward. |
 | **`"module"` condition is non-standard** | bundlejs (via esbuild) injects `"module"` as a condition, which Node.js does not recognize. | Matches webpack, Rollup, and esbuild behavior. Without it, many ESM-exporting packages would not resolve correctly. |
 | **Env vars for full functionality** | `UPSTASH_URL`/`UPSTASH_TOKEN` (Redis), `GITHUB_AUTH_TOKEN` (gist links). | Without them, the API works but features degrade gracefully — no persistent cache, no gist support. |
+| **Registry mode downloads full tarballs** | `cdn: "npm"` downloads the entire package `.tgz` for every dependency — even if only one file is needed. | The tarball is cached (content-addressed SHA-256) so each package is only fetched once per build. For packages with many internal imports (lodash-es, @aws-sdk/*), this is actually *faster* than hundreds of individual CDN requests. |
+| **Scoped package `%2f` encoding** | npm’s registry API requires `@scope%2fname` encoding in URL paths for scoped packages. Some HTTP infrastructure (proxies, CDNs) decodes `%2f` before routing, breaking version-specific endpoints. | `getPackageOfVersion()` uses a full-packument fallback when the version endpoint fails for scoped packages. The CdnPlugin’s NPM_CDN branch uses CDN-native URLs instead of registry API URLs for scoped package manifest fetches. |
+| **`.npmrc` parsing is registry-only** | Only `registry=` and `@scope:registry=` directives are extracted. Auth tokens, proxy settings, and other npm config are intentionally ignored. | Security boundary — auth tokens should never be exposed in a web-facing bundler. The `.npmrc` format is only used for registry routing, not authentication. |
 
 
 ## What to Do Next
@@ -1742,5 +1797,9 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 
 9. **Test tarball resolution.** Use `pkg.pr.new` to get a tarball URL for a real package, or try an npm registry tarball URL (`https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz`), or place a `.tgz` file in the VFS — all three paths are handled by the TarballPlugin.
 
-10. **Read the esbuild docs.** bundlejs inherits all of esbuild's configuration options. Understanding `target`, `format`, `platform`, `external`, and `conditions` will help you understand what bundlejs passes through vs. what it intercepts.
+10. **Try registry mode.** Compare CDN mode vs registry mode: `/?q=lodash-es&config={"cdn":"unpkg"}` vs `/?q=lodash-es&config={"cdn":"npm.registry"}`. Registry mode downloads the tarball in one shot instead of fetching individual files.
+
+11. **Try scoped registries.** Configure `.npmrc`-style scoped registries: `/?q=@jsr/std__path&config={"cdn":"npm.registry","registry":{"scopedRegistries":{"@jsr":"https://npm.jsr.io"}}}` routes `@jsr` packages through JSR while everything else goes through the default npm registry.
+
+12. **Read the esbuild docs.** bundlejs inherits all of esbuild's configuration options. Understanding `target`, `format`, `platform`, `external`, and `conditions` will help you understand what bundlejs passes through vs. what it intercepts.
 
