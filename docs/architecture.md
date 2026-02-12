@@ -410,11 +410,12 @@ Handles tarball-based package sources. Currently routes URLs from **[pkg.pr.new]
 
 > **Source:** [core/plugins/http.ts](../core/plugins/http.ts)
 
-The workhorse for all HTTP/HTTPS resolution and loading. Serves **three roles**:
+The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles**:
 
 1. **Direct URL imports** — handles `import "https://esm.sh/react"` directly
 2. **Relative import resolution** — resolves paths like `"./jsx-runtime.js"` inside CDN-fetched modules against the **final URL** after redirects (critical because CDNs redirect `react@latest` → `react@19.0.0`)
-3. **Extension probing** — when a relative import has no extension, tries **18 combinations**:
+3. **Manifest field remapping** — applies platform-specific path rewrites from top-level `package.json` fields (`"browser"`, `"react-native"`, `"electron"`) to relative imports *within* a package, using the `packageBaseUrl` passed from the CdnPlugin
+4. **Extension probing** — when a relative import has no extension, tries **18 combinations**:
 
 ```
   2 path variants ("", "/index")
@@ -646,6 +647,8 @@ Here, `browser` replaces the entry entirely — no remapping, just a different f
 
 If *all* legacy fields are missing, bundlejs applies a last-resort chain: check `unpkg` field → check `bin` field → try `./index.js`. This handles more packages than the spec strictly requires.
 
+Note that the `browser` field (object form) is just one of several **manifest remapping fields** — `"react-native"` and `"electron"` follow the same pattern. Legacy resolution only applies remappings at entry point resolution time; *internal* relative imports go through a separate remapping pass in the [HttpPlugin](#5-httpplugin--fetch-and-resolve-httphttps-urls). See [Manifest Field Remapping for Relative Imports](#manifest-field-remapping-for-relative-imports) for the full story.
+
 
 ### Side Effects and Tree-Shaking
 
@@ -835,6 +838,49 @@ resolvedPath = urlJoin(args.pluginData?.url, "../", argPath);
 When a relative import has **no file extension** (e.g., `import "./utils"`), the HttpPlugin tries up to 18 URL combinations — 2 path variants (`""`, `"/index"`) × 9 extensions (`.js`, `.mjs`, `.ts`, `.tsx`, `.cjs`, `.jsx`, `.mts`, `.cts`, `""`). Failed probes are cached in `failedExtensionChecks` to avoid repeating HEAD requests for the same URLs.
 
 > **Why 18 probes?** Node.js does not probe for extensions — if you write `import "./utils"`, Node.js expects a file literally named `utils` (no extension) or relies on `exports` to resolve it. But CDN-served packages were often built for bundlers like webpack that *do* probe. bundlejs inherits this behavior from esbuild's loader system: each probed extension maps to a loader (`.ts` → TypeScript, `.json` → JSON, etc.). This is a pragmatic deviation from Node.js strict resolution — without it, many CDN-fetched packages would fail to resolve their internal imports.
+
+#### Manifest Field Remapping for Relative Imports
+
+After URL resolution — but *before* extension probing — the HttpPlugin checks whether the resolved relative path should be **remapped** to a platform-specific alternative. This handles packages that ship different implementations for different runtimes via top-level `package.json` fields.
+
+> **Convention background:** The `"browser"` field was the original remapping mechanism, [defined by the bundler community](https://github.com/nicolo-ribaudo/tc39-proposal-pkgjson-exports/blob/main/PRIOR-ART.md#browser) (Browserify, webpack). Other ecosystems adopted the same pattern with different field names:
+>
+> | Field | Convention | Activated by condition |
+> |:------|:-----------|:----------------------|
+> | `"browser"` | Browserify / webpack / esbuild | `"browser"` |
+> | `"react-native"` | Metro bundler (React Native) | `"react-native"` |
+> | `"electron"` | Electron apps (less common) | `"electron"` |
+>
+> Structurally, all three work identically — an object mapping source paths to replacement paths (or `false` to exclude).
+
+Consider `@exodus/bytes`, which ships both browser and React Native variants:
+
+```json
+{
+  "browser": {
+    "./fallback/platform.js": "./fallback/platform.browser.js",
+    "./fallback/utf8.auto.js": "./fallback/utf8.auto.browser.js"
+  },
+  "react-native": {
+    "./fallback/platform.js": "./fallback/platform.native.js",
+    "./fallback/utf8.auto.js": "./fallback/utf8.auto.native.js"
+  }
+}
+```
+
+When `utf8.js` internally imports `"./fallback/platform.js"`, the HttpPlugin:
+
+1. Joins the relative path against the parent URL → `https://unpkg.com/@exodus/bytes@1.13.0/fallback/platform.js`
+2. Strips the `packageBaseUrl` to get the package-relative path → `"./fallback/platform.js"`
+3. Iterates over remapping fields in priority order (`react-native` → `electron` → `browser`), checking which ones match the active conditions
+4. Applies the **first matching** remapping — e.g., with browser conditions, rewrites to `"./fallback/platform.browser.js"`; with React Native conditions, rewrites to `"./fallback/platform.native.js"`
+5. Reconstructs the full URL → `https://unpkg.com/@exodus/bytes@1.13.0/fallback/platform.browser.js`
+
+If a remapping maps to `false`, the HttpPlugin returns an esbuild error (module excluded for the current environment) rather than silently fetching a file that does not exist or is wrong for the platform.
+
+The implementation lives in `applyManifestRemappings()` in [core/utils/cdn-resolution.ts](../core/utils/cdn-resolution.ts). The `REMAPPING_FIELDS` constant defines the field-to-condition mapping and their priority order.
+
+> **Why does priority order matter?** When both `"browser"` and `"react-native"` conditions are active (which can happen with custom condition sets), the more-specific field (`"react-native"`) should win. The priority order mirrors how `exports` conditions work — first match takes precedence.
 
 
 ### Node.js Builtins — Polyfill or Exclude
