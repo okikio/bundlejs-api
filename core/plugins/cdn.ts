@@ -330,8 +330,40 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
     // ========================================================================
 
     if (isBareImport(argPath)) {
+      // ── Registry tarball propagation ─────────────────────────────────
+      // When a bare import originates from within a registry-extracted
+      // tarball (the source URL is stored in pluginData.tarballUrl by the
+      // TarballPlugin), propagate registry mode to transitive deps.
+      //
+      // Without this, importing from a registry tarball URL like
+      //   https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz
+      // would correctly extract that top-level package, but its bare-import
+      // dependencies ("react", "expo-asset", etc.) would fall back to the
+      // default CDN (unpkg.com) instead of also resolving through the
+      // registry. pluginData flows through the VFS → onLoad → onResolve
+      // chain, so this propagation is self-sustaining across the entire
+      // transitive dependency tree.
+      let effectiveCdn = cdn;
+      let propagatedRegistry: string | undefined;
+      const _tarballUrl = args.pluginData?.tarballUrl;
+      if (
+        _tarballUrl &&
+        typeof _tarballUrl === "string" &&
+        /^https?:\/\//.test(_tarballUrl)
+      ) {
+        try {
+          const tarballOrigin = new URL(_tarballUrl).origin;
+          if (getCDNStyle(tarballOrigin) === "registry") {
+            effectiveCdn = tarballOrigin;
+            propagatedRegistry = tarballOrigin;
+          }
+        } catch {
+          // Malformed URL — ignore, keep current cdn
+        }
+      }
+
       // Support a different default CDN + allow for custom CDN url schemes
-      const { path: _argPath, origin } = getCDNUrl(argPath, cdn);
+      const { path: _argPath, origin } = getCDNUrl(argPath, effectiveCdn);
 
       // npm standard CDNs, e.g. unpkg, skypack, esm.sh, etc...
       const NPM_CDN = getCDNStyle(origin) === "npm";
@@ -371,7 +403,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       // Resolve the appropriate registry for this package's scope, e.g.:
       //   @jsr/std__path  → https://npm.jsr.io   (if configured via .npmrc)
       //   react           → https://registry.npmjs.org   (default)
-      const registry = getRegistryForPackage(effectiveName, registryConfig);
+      // When propagating registry mode from a parent tarball, use that
+      // tarball's origin as the fallback so API calls (version resolution,
+      // manifest fetch) go through the same registry.
+      const registry = getRegistryForPackage(effectiveName, registryConfig, propagatedRegistry);
 
       // ======================================================================
       // URL-based dependencies - route through build.resolve()
@@ -684,9 +719,9 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             let text: string;
             let detail: string;
             
-            if (reason === "browser" || reason === "browser-remapping") {
-              text = `Package "${effectiveName}" is excluded for browser environment`;
-              detail = "The package's browser field explicitly excludes this module.";
+            if (reason === "field-remapping" || reason === "browser" || reason === "browser-remapping") {
+              text = `Package "${effectiveName}" is excluded for the current environment`;
+              detail = "A path remapping field (browser, react-native, or electron) explicitly excludes this module.";
             } else if (reason === "no-entry-point") {
               text = `Could not find entry point for package "${effectiveName}"`;
               detail = `The package.json does not define 'main', 'module', 'exports', or other entry point fields. Subpath: "${combinedSubpath || "."}".`;

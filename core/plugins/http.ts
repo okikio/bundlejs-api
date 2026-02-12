@@ -44,8 +44,22 @@ import { isBareImport, isAbsolute } from "@bundle/utils/path";
 import { toURLPath, urlJoin } from "@bundle/utils/url";
 import { looksLikeJSRSpec } from "@bundle/utils/jsr-spec";
 
+import { EMPTY_EXPORT } from "./external.ts";
+
 /** HTTP Plugin Namespace */
 export const HTTP_NAMESPACE = "http-url";
+
+/**
+ * Namespace for modules excluded by per-module path remappings (e.g.,
+ * `browser: { "./some-module.js": false }`). These get served an empty
+ * module stub instead of triggering a build error.
+ *
+ * Per the Node.js spec, when a per-module remapping resolves to `false`,
+ * the module should be replaced with an empty object — NOT treated as a
+ * hard build failure. Package-level `browser: false` (the string form)
+ * is still an error, handled by CdnPlugin.
+ */
+export const EXCLUDED_MODULE_NAMESPACE = "excluded-module";
 
 export interface HttpResolutionState<T> extends LocalState<T> {
   build: ESBUILD.PluginBuild
@@ -375,11 +389,19 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
       );
 
       if (excluded) {
+        // Per-module remap to false → stub empty module (spec-compliant).
+        // This is NOT a build error. The package.json says "this module
+        // doesn't exist for this platform", so we provide an empty export.
+        // Package-level `browser: false` (whole-package exclusion) is
+        // handled by CdnPlugin and DOES produce an error.
+        dispatchEvent(LOGGER_INFO, `Stubbing excluded module "${packageRelPath}" (${matchedField} field) in "${manifest.name ?? "unknown"}"`);
         return {
-          errors: [{
-            text: `Module "${packageRelPath}" excluded by "${matchedField}" field`,
-            detail: `Package "${manifest.name ?? "unknown"}" maps this path to false for the current environment.`,
-          }],
+          path: `${manifest.name ?? "unknown"}/${packageRelPath}`,
+          namespace: EXCLUDED_MODULE_NAMESPACE,
+          pluginData: Object.assign({}, args.pluginData, {
+            excludedBy: matchedField,
+            originalPath: packageRelPath,
+          }),
         };
       }
 
@@ -437,6 +459,27 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
 
       // Route all imports within HTTP namespace through HttpResolution
       build.onResolve({ filter: /.*/, namespace: HTTP_NAMESPACE }, HttpResolution(ctx));
+
+      // ====================================================================
+      // Excluded module stubs
+      //
+      // When a per-module path remapping (browser, react-native, etc.)
+      // maps a file to `false`, we serve an empty export stub. This is
+      // spec-compliant: the module "doesn't exist" on this platform, so
+      // consumers get `{}` at runtime — exactly like webpack/rollup.
+      // ====================================================================
+      build.onLoad({ filter: /.*/, namespace: EXCLUDED_MODULE_NAMESPACE }, (args) => {
+        const field = args.pluginData?.excludedBy ?? "unknown";
+        const originalPath = args.pluginData?.originalPath ?? args.path;
+        return {
+          contents: EMPTY_EXPORT,
+          loader: "js",
+          warnings: [{
+            text: `Module "${originalPath}" stubbed (empty export)`,
+            detail: `Excluded by "${field}" field in package.json. The module is replaced with an empty object for the current platform.`,
+          }],
+        };
+      });
 
       // Whether esbuild has source maps enabled — when true we ask
       // maybeStripFlow to embed an inline source map so esbuild can

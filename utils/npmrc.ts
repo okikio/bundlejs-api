@@ -56,8 +56,9 @@
 /**
  * Parsed registry configuration from .npmrc.
  *
- * Only registry-related settings are extracted. Auth tokens and other
- * npm config are intentionally excluded for security.
+ * Only registry-related settings are extracted by default. Auth tokens
+ * are opt-in via `parseNpmrc(..., { extractAuth: true })` and stored
+ * separately for clear security boundaries.
  */
 export interface RegistryConfig {
   /**
@@ -85,6 +86,26 @@ export interface RegistryConfig {
    * ```
    */
   scopedRegistries?: Record<string, string>;
+
+  /**
+   * Registry-scoped auth tokens. Only populated when `parseNpmrc()` is
+   * called with `{ extractAuth: true }`.
+   *
+   * Keys are registry hostnames/paths (the part after `//` in .npmrc),
+   * values are the auth token strings.
+   *
+   * **Security note**: These tokens grant access to private packages.
+   * Never log, serialize, or expose them in user-facing output.
+   *
+   * @example
+   * ```ts
+   * // From: //npm.mycompany.com/:_authToken=abc123
+   * {
+   *   "npm.mycompany.com/": "abc123"
+   * }
+   * ```
+   */
+  authTokens?: Record<string, string>;
 }
 
 // =============================================================================
@@ -151,8 +172,9 @@ export const NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org";
  * // { registry: "https://my-registry.com/", scopedRegistries: { "@myorg": "https://npm.myorg.com/" } }
  * ```
  */
-export function parseNpmrc(content: string): RegistryConfig {
+export function parseNpmrc(content: string, options?: { extractAuth?: boolean }): RegistryConfig {
   const config: RegistryConfig = {};
+  const extractAuth = options?.extractAuth ?? false;
   const lines = content.split(/\r?\n/);
 
   for (const rawLine of lines) {
@@ -160,9 +182,24 @@ export function parseNpmrc(content: string): RegistryConfig {
     const line = rawLine.replace(/^\s*[#;].*$/, "").trim();
     if (!line) continue;
 
-    // Skip auth/token lines (security boundary — never expose these)
-    // Format: //registry.example.com/:_authToken=...
-    if (line.startsWith("//")) continue;
+    // ── Auth token lines ────────────────────────────────────────────────
+    // Format: //registry.example.com/:_authToken=<token>
+    // Only parsed when opt-in via extractAuth flag.
+    if (line.startsWith("//")) {
+      if (extractAuth) {
+        const authMatch = /^\/\/([^:]+\/?):_authToken\s*=\s*(.+)$/.exec(line);
+        if (authMatch) {
+          const registryKey = authMatch[1]; // e.g., "npm.mycompany.com/"
+          const token = interpolateEnvVars(authMatch[2].trim());
+          // Only store non-empty tokens (env vars may resolve to empty)
+          if (token) {
+            if (!config.authTokens) config.authTokens = {};
+            config.authTokens[registryKey] = token;
+          }
+        }
+      }
+      continue;
+    }
 
     // ── Default registry ──────────────────────────────────────────────
     // Format: registry=<url>
@@ -315,4 +352,73 @@ export function normalizeRegistryConfig(
 
   // Already a RegistryConfig object
   return input;
+}
+
+// =============================================================================
+// Auth Headers
+// =============================================================================
+
+/**
+ * Get Authorization headers for a registry URL, if auth tokens are configured.
+ *
+ * Matches the registry URL's host+path against configured auth tokens.
+ * Uses prefix matching: a token for `npm.mycompany.com/` applies to
+ * `https://npm.mycompany.com/any/path`.
+ *
+ * Returns `undefined` when no token matches — callers should only
+ * attach the header when a value is returned.
+ *
+ * **Security**: The returned header value is a Bearer token. Never log
+ * or serialize it in user-facing output.
+ *
+ * @param registryUrl The full registry URL to authenticate against
+ * @param config      Parsed registry config (must include authTokens)
+ * @returns Authorization header value (e.g., `"Bearer abc123"`), or undefined
+ *
+ * @example
+ * ```ts
+ * const config = parseNpmrc(
+ *   `//npm.mycompany.com/:_authToken=abc123`,
+ *   { extractAuth: true },
+ * );
+ *
+ * getAuthHeaderForRegistry("https://npm.mycompany.com/@scope/pkg", config)
+ * // "Bearer abc123"
+ *
+ * getAuthHeaderForRegistry("https://registry.npmjs.org/react", config)
+ * // undefined (no matching token)
+ * ```
+ */
+export function getAuthHeaderForRegistry(
+  registryUrl: string,
+  config: RegistryConfig | null | undefined,
+): string | undefined {
+  if (!config?.authTokens) return undefined;
+
+  let url: URL;
+  try {
+    url = new URL(registryUrl);
+  } catch {
+    return undefined;
+  }
+
+  // Build the key to match against: host + pathname (with trailing slash)
+  // Example: "npm.mycompany.com/" or "npm.mycompany.com/custom-path/"
+  const hostPath = url.host + url.pathname.replace(/\/?$/, "/");
+
+  // Try exact prefix match, longest-match-wins
+  let bestMatch = "";
+  let bestToken: string | undefined;
+
+  for (const [key, token] of Object.entries(config.authTokens)) {
+    // Normalize the key to ensure consistent matching
+    const normalizedKey = key.replace(/\/?$/, "/");
+
+    if (hostPath.startsWith(normalizedKey) && normalizedKey.length > bestMatch.length) {
+      bestMatch = normalizedKey;
+      bestToken = token;
+    }
+  }
+
+  return bestToken ? `Bearer ${bestToken}` : undefined;
 }

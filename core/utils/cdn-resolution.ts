@@ -89,18 +89,32 @@ export interface ModernResolutionResult {
   error?: Error;
 }
 
-/** Reasons for exclusion via browser field */
-export type ExclusionReason = "browser" | "browser-remapping" | "no-entry-point";
+/**
+ * Reasons a module was excluded during resolution.
+ *
+ * Path remapping fields (browser, react-native, electron) can all
+ * remap a module to `false`, meaning "this module doesn't exist for
+ * this platform". The reason describes which field or mechanism caused it:
+ *
+ * - `"field-remapping"` — a remapping field (browser/react-native/electron)
+ *   excluded the module (either string `false` or object `{ ... : false }`)
+ * - `"no-entry-point"` — no entry point was found in the manifest at all
+ *
+ * @deprecated The old values "browser" and "browser-remapping" are still
+ *             accepted for backwards compatibility but new code should use
+ *             "field-remapping".
+ */
+export type ExclusionReason = "field-remapping" | "no-entry-point" | "browser" | "browser-remapping";
 
 /** Result from legacy field resolution */
 export interface LegacyResolutionResult {
-  /** Resolved entry point (from main/module, NOT browser object keys) */
+  /** Resolved entry point (from main/module, NOT remapping object keys) */
   entryPoint: string | null;
-  /** Browser remappings to apply (if browser field was object) */
+  /** Path remappings to apply from remapping fields (browser, react-native, etc.) */
   pathRemappings: PathRemappings | null;
-  /** Whether module is excluded (browser: false) */
+  /** Whether module is excluded by a path remapping field (browser, react-native, electron) */
   excluded: boolean;
-  /** Why the module was excluded - helps generate accurate error messages */
+  /** Which mechanism caused the exclusion — helps generate accurate error messages */
   exclusionReason?: ExclusionReason;
   error?: Error;
 }
@@ -111,9 +125,9 @@ export interface PackageResolutionResult {
   path: string | null;
   /** Whether modern exports was used */
   usedModern: boolean;
-  /** Whether browser remapping was applied */
+  /** Whether a path remapping field (browser, react-native, electron) was applied */
   appliedPathRemapping: boolean;
-  /** Browser remappings (for child resolution) */
+  /** Path remappings collected from manifest fields (for child resolution) */
   pathRemappings: PathRemappings | null;
   /** Whether module is excluded */
   excluded: boolean;
@@ -273,7 +287,7 @@ export function resolveLegacy(
     // so we must detect this exclusion before calling legacy()
     if (conditions.browser && manifest.browser === false) {
       result.excluded = true;
-      result.exclusionReason = "browser";
+      result.exclusionReason = "field-remapping";
       return result;
     }
 
@@ -293,7 +307,7 @@ export function resolveLegacy(
         const hasBrowserField = "browser" in manifest && manifest.browser !== undefined;
         if (hasBrowserField) {
           result.excluded = true;
-          result.exclusionReason = "browser";
+          result.exclusionReason = "field-remapping";
           return result;
         }
         // No browser field in manifest → fall through to Step 2
@@ -321,7 +335,7 @@ export function resolveLegacy(
         if (allFalse) {
           // Package has no browser support
           result.excluded = true;
-          result.exclusionReason = "browser";
+          result.exclusionReason = "field-remapping";
           return result;
         }
 
@@ -547,14 +561,14 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
   if (isRootOrEmpty) {
     const legacyResult = resolveLegacy(manifest, { browser: conditions.browser }, legacyFields);
 
-    // Check if excluded by browser field
+    // Check if excluded by a path remapping field
     if (legacyResult.excluded) {
       const reason = legacyResult.exclusionReason;
       
-      if (reason === "browser" && conditions.browser) {
-        // Genuine browser exclusion (browser field is false or all-false object)
+      if ((reason === "field-remapping" || reason === "browser" || reason === "browser-remapping") && conditions.browser) {
+      // Genuine platform exclusion (remapping field is false or all-false object)
         result.excluded = true;
-        result.error = new Error("Module excluded by browser field");
+        result.error = new Error("Module excluded by path remapping field");
         (result as { exclusionReason?: string }).exclusionReason = reason;
         return result;
       }

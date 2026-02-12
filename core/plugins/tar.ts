@@ -23,17 +23,21 @@ import type { Context } from "../context/context.ts";
 import { fromContext, toContext } from "../context/context.ts";
 
 import { UntarStream } from "@bundle/utils/tar";
-import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 
 import { normalize, join, resolve as resolvePath } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 
-import { VIRTUAL_FILESYSTEM_NAMESPACE } from "./fs.ts";
+import { VIRTUAL_FILESYSTEM_NAMESPACE, resolveVfsPath } from "./fs.ts";
 import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../configs/events.ts";
 
-import { getResolverConditions } from "../../utils/resolve-conditions.ts";
+import { getResolverConditions, getLegacyMainFields } from "../../utils/resolve-conditions.ts";
 import { setFile, getFile } from "../utils/filesystem.ts";
 import { getCDNStyle } from "../utils/cdn-format.ts";
+import { RESOLVE_EXTENSIONS } from "../utils/loader.ts";
+import {
+  resolvePackageEntry as resolvePackageEntryShared,
+  normalizeResolvedPath,
+} from "../utils/cdn-resolution.ts";
 
 import {
 	detectArchiveFromResponse,
@@ -176,21 +180,34 @@ export function isTarballUrl(url: URL): boolean {
 }
 
 /**
- * Generate a stable, content-addressed key for a tarball URL
+ * Generate a stable, content-addressed key for a tarball source.
+ *
+ * Accepts both HTTP URLs and VFS paths:
+ * - HTTP URLs are normalized (sorted params, stripped hash) for stable keys
+ * - VFS paths (e.g., `/packages/my-lib.tgz`) are hashed directly
  */
-async function getTarballKey(url: string): Promise<string> {
-	// Normalize the URL for stable keys
-	const normalized = new URL(url);
-	normalized.hash = "";
-	
-	// Sort search params for consistency
-	const params = Array.from(normalized.searchParams.entries()).sort(([a], [b]) => a.localeCompare(b));
-	normalized.search = "";
-	for (const [k, v] of params) {
-		normalized.searchParams.append(k, v);
-	}
-	
-	const bytes = new TextEncoder().encode(normalized.toString());
+async function getTarballKey(source: string): Promise<string> {
+  let keyInput: string;
+
+  if (/^https?:\/\//.test(source)) {
+    // HTTP URL: normalize for stable keys
+    const normalized = new URL(source);
+    normalized.hash = "";
+
+    // Sort search params for consistency
+    const params = Array.from(normalized.searchParams.entries()).sort(([a], [b]) => a.localeCompare(b));
+    normalized.search = "";
+    for (const [k, v] of params) {
+      normalized.searchParams.append(k, v);
+    }
+
+    keyInput = normalized.toString();
+  } else {
+    // VFS path: use the absolute path directly as key material
+    keyInput = resolvePath(source);
+  }
+
+  const bytes = new TextEncoder().encode(keyInput);
 	const digest = await crypto.subtle.digest("SHA-256", bytes);
 	const hashArray = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0"));
   return hashArray.join("").slice(0, 16);
@@ -675,85 +692,116 @@ export async function fetchAndExtractTarball<T>(
 }
 
 /**
- * Resolve the package entry point using exports or legacy fields
+ * Resolve the package entry point using the shared resolution algorithm.
+ *
+ * Delegates to `resolvePackageEntryShared` from `cdn-resolution.ts` which handles:
+ * - Modern `exports` field (with ESM+CJS fallback)
+ * - Legacy `main`/`module`/`browser` fields
+ * - Path remappings (browser, react-native, electron)
+ * - `./index.js` last-resort fallback
+ *
+ * Returns a VFS-relative path (starts with `/`).
+ *
+ * @param manifest  The tarball's package.json
+ * @param subpath   URL subpath after the tarball (e.g., "/expo-sqlite/migrator")
+ * @param conditions  Active resolver conditions
+ * @param args      Optional esbuild args for computing legacy main fields
  */
 export function resolvePackageEntry(
 	manifest: PackageJson,
 	subpath: string,
-	conditions: ReturnType<typeof getResolverConditions>
-): string {
-	// Normalize subpath for exports resolution
-	const exportSubpath = subpath ? `.${subpath}` : ".";
-	
-	// Try modern exports resolution first
-	try {
-		const resolved = resolve(manifest, exportSubpath, {
-			browser: conditions.browser,
-			conditions: conditions.conditions,
-			require: conditions.require
-		});
-		
-		if (resolved) {
-			const result = Array.isArray(resolved) ? resolved[0] : resolved;
-			if (typeof result === "string") {
-				return result.replace(/^\.\//, "/").replace(/^\./, "/");
-			}
-		}
-	} catch {
-		// Fall through to legacy resolution
+  conditions: ReturnType<typeof getResolverConditions>,
+  args?: { kind: ESBUILD.ImportKind },
+): { entryPath: string; pathRemappings: Record<string, string | false> | null; excluded: boolean; error?: Error } {
+  // Compute legacy fields from the manifest + conditions
+  const legacyFields = getLegacyMainFields(
+    manifest,
+    args ?? { kind: "import-statement" },
+    { platform: conditions.browser ? "browser" : "neutral" },
+  );
+
+  // Normalize subpath: "/expo-sqlite/migrator" → "./expo-sqlite/migrator"
+  const normalizedSubpath = subpath
+    ? subpath.replace(/^\//, "./").replace(/^(?!\.)/, "./")
+    : ".";
+
+  const result = resolvePackageEntryShared({
+    manifest,
+    subpath: normalizedSubpath === "./" ? "." : normalizedSubpath,
+    conditions,
+    legacyFields,
+    allowLiteralSubpath: normalizedSubpath !== "." && normalizedSubpath !== "./",
+  });
+
+  if (result.excluded) {
+    return {
+      entryPath: subpath || "/index.js",
+      pathRemappings: result.pathRemappings,
+      excluded: true,
+      error: result.error,
+    };
 	}
-	
-	// Try with require fallback if we're in import context
-	if (!conditions.require) {
-		try {
-			const resolved = resolve(manifest, exportSubpath, {
-				browser: conditions.browser,
-				conditions: ["require", ...conditions.conditions],
-				require: true
-			});
-			
-			if (resolved) {
-				const result = Array.isArray(resolved) ? resolved[0] : resolved;
-				if (typeof result === "string") {
-					return result.replace(/^\.\//, "/").replace(/^\./, "/");
-				}
-			}
-		} catch {
-			// Fall through to legacy resolution
-		}
+
+  // Convert the resolved path to VFS-relative format (leading `/`)
+  const entryPath = result.path
+    ? normalizeResolvedPath(result.path)
+    : (subpath && subpath !== "/" ? subpath : "/index.js");
+
+  return {
+    entryPath,
+    pathRemappings: result.pathRemappings,
+    excluded: false,
+  };
+}
+
+/**
+ * Resolve entry point and probe VFS for correct extension.
+ *
+ * After `resolvePackageEntry` determines the logical path, this function
+ * verifies the file exists in VFS and handles extensionless imports
+ * (e.g., `./Expo.fx` might need to become `./Expo.fx.js`).
+ *
+ * @param manifest      The tarball's package.json
+ * @param subpath       URL subpath after the tarball
+ * @param conditions    Active resolver conditions
+ * @param packageRoot   VFS root for this tarball mount
+ * @param FileSystem    VFS instance for probing
+ * @param args          Optional esbuild args for legacy field computation
+ */
+export async function resolveAndProbeEntry<T>(
+  manifest: PackageJson,
+  subpath: string,
+  conditions: ReturnType<typeof getResolverConditions>,
+  packageRoot: string,
+  FileSystem: import("../utils/filesystem.ts").IFileSystem<T>,
+  args?: { kind: ESBUILD.ImportKind },
+): Promise<{ resolvedPath: string; pathRemappings: Record<string, string | false> | null; excluded: boolean; error?: Error }> {
+  const resolution = resolvePackageEntry(manifest, subpath, conditions, args);
+
+  if (resolution.excluded) {
+    return {
+      resolvedPath: join(packageRoot, resolution.entryPath),
+      pathRemappings: resolution.pathRemappings,
+      excluded: true,
+      error: resolution.error,
+    };
 	}
-	
-	// For root import without subpath, try legacy resolution
-	if (!subpath || subpath === "/") {
-		try {
-			const legacyResult = legacy(manifest, { browser: conditions.browser }) ||
-				legacy(manifest, { fields: ["module", "main"] }) ||
-				legacy(manifest, { fields: ["unpkg", "bin"] });
-			
-			if (legacyResult) {
-				if (typeof legacyResult === "string") {
-					return legacyResult.replace(/^\.\//, "/").replace(/^\./, "/");
-				}
-				if (Array.isArray(legacyResult) && legacyResult[0]) {
-					return String(legacyResult[0]).replace(/^\.\//, "/").replace(/^\./, "/");
-				}
-				if (typeof legacyResult === "object") {
-					const values = Object.values(legacyResult).filter(v => v && typeof v === "string");
-					if (values.length > 0) {
-						return String(values[0]).replace(/^\.\//, "/").replace(/^\./, "/");
-					}
-				}
-			}
-		} catch {
-			// Fall through to default
-		}
-	}
-	
-	// If we have a subpath, use it directly
-	if (subpath && subpath !== "/") return subpath;
-	
-	// Last resort: try common entry points
-	return "/index.js";
+
+  const candidatePath = join(packageRoot, resolution.entryPath);
+
+  // Probe VFS: exact match → extension probing → index.* fallback
+  const probed = await resolveVfsPath(
+    FileSystem,
+    candidatePath,
+    RESOLVE_EXTENSIONS,
+    true, // enableIndexFallback
+  );
+
+  return {
+    resolvedPath: probed ?? candidatePath,
+    pathRemappings: resolution.pathRemappings,
+    excluded: false,
+  };
 }
 
 /**
@@ -842,7 +890,10 @@ export function findMountForPath<T>(
 export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 	const LocalConfig = fromContext("config", StateContext)!;
 	const esbuildOpts = LocalConfig.esbuild ?? {};
-	
+  const resolveOpts = LocalConfig.resolve ?? {};
+  const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
+  const FileSystem = fromContext("filesystem", StateContext)!;
+
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     // ─── Branch 1: HTTP tarball URLs ───────────────────────────────────────
     if (/^https?:\/\//.test(args.path)) {
@@ -871,12 +922,22 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
         packageUrl = parsed.tarballUrl;
       }
 
-			const conditions = getResolverConditions(args, esbuildOpts);
+      const conditions = getResolverConditions(args, effectiveResolveOpts);
 
 			try {
 				const mount = await getOrCreateMount(packageUrl.toString(), StateContext);
-				const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
-        const resolvedPath = join(mount.packageRoot, entryPath);
+        const { resolvedPath, pathRemappings, excluded, error } = await resolveAndProbeEntry(
+          mount.manifest, subpath, conditions, mount.packageRoot, FileSystem, args,
+        );
+
+        if (excluded) {
+          return {
+            errors: [{
+              text: `Package "${mount.manifest.name}" is excluded for the current environment`,
+              detail: error?.message ?? "Excluded by path remapping field",
+            }],
+          };
+        }
 
 				return {
 					path: resolvedPath,
@@ -885,6 +946,7 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 						manifest: mount.manifest,
 						packageRoot: mount.packageRoot,
 						tarballUrl: packageUrl.toString(),
+            pathRemappings,
 					})
         };
 			} catch (e) {
@@ -917,12 +979,22 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
         const split = findTarballSplitInPathname(candidatePath);
 
         if (split) {
-          const conditions = getResolverConditions(args, esbuildOpts);
+          const conditions = getResolverConditions(args, effectiveResolveOpts);
 
           try {
             const mount = await getOrCreateMount(split.tarballPath, StateContext);
-            const entryPath = resolvePackageEntry(mount.manifest, split.subpath, conditions);
-            const resolvedPath = join(mount.packageRoot, entryPath);
+            const { resolvedPath, pathRemappings, excluded, error } = await resolveAndProbeEntry(
+              mount.manifest, split.subpath, conditions, mount.packageRoot, FileSystem, args,
+            );
+
+            if (excluded) {
+              return {
+                errors: [{
+                  text: `Package "${mount.manifest.name}" is excluded for the current environment`,
+                  detail: error?.message ?? "Excluded by path remapping field",
+                }],
+              };
+            }
 
             return {
               path: resolvedPath,
@@ -931,6 +1003,7 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
                 manifest: mount.manifest,
                 packageRoot: mount.packageRoot,
                 tarballUrl: split.tarballPath,
+                pathRemappings,
               })
             };
           } catch (e) {
@@ -956,10 +1029,20 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 						? "" 
 						: importPath.slice(mount.manifest.name.length);
 					
-					const conditions = getResolverConditions(args, esbuildOpts);
-					const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
-					const resolvedPath = join(mount.packageRoot, entryPath);
-					
+          const conditions = getResolverConditions(args, effectiveResolveOpts);
+          const { resolvedPath, pathRemappings, excluded, error } = await resolveAndProbeEntry(
+            mount.manifest, subpath, conditions, mount.packageRoot, FileSystem, args,
+          );
+
+          if (excluded) {
+            return {
+              errors: [{
+                text: `Self-reference "${importPath}" excluded for the current environment`,
+                detail: error?.message ?? "Excluded by path remapping field",
+              }],
+            };
+          }
+
 					return {
 						path: resolvedPath,
 						namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
@@ -967,6 +1050,7 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 							manifest: mount.manifest,
 							packageRoot: mount.packageRoot,
 							tarballUrl: mount.sourceUrl,
+              pathRemappings,
 						})
 					};
 				}
