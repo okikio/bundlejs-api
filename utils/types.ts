@@ -283,6 +283,20 @@ export interface FullPackageVersion {
   _hasShrinkwrap: boolean;
 }
 
+/**
+ * Recursive type for the `exports` / `imports` condition tree.
+ *
+ * A leaf is a string (resolved path) or `null` (explicit exclusion).
+ * A branch is an object mapping condition keys to nested entries,
+ * or an array of entries (fallback list).
+ *
+ * @see https://nodejs.org/api/packages.html#conditional-exports
+ */
+export type PackageExportEntry =
+  | string
+  | null
+  | PackageExportEntry[]
+  | { [condition: string]: PackageExportEntry };
 
 export interface PackageJson {
   /**
@@ -417,19 +431,28 @@ export interface PackageJson {
    *
    * When using `{type: "module"}`, any ESM module file MUST end with `.mjs` extension.
    *
-   * Docs:
-   * - https://nodejs.org/docs/latest-v14.x/api/esm.html#esm_exports_sugar
+   * The `exports` field supports arbitrary nesting of condition keys,
+   * array fallbacks, and `null` to explicitly exclude subpaths.
    *
-   * @default 'commonjs'
+   * Docs:
+   * - https://nodejs.org/docs/latest-v14.x/api/packages.html#exports
+   *
+   * @since Node.js v12.7 (unflagged v14)
+   */
+  exports?: PackageExportEntry;
+  /**
+   * Package-internal import mappings (`#` imports).
+   *
+   * Allows a package to define private resolution aliases that are
+   * only importable from within the package itself. Supports the same
+   * condition nesting as `exports`.
+   *
+   * Docs:
+   * - https://nodejs.org/docs/latest-v14.x/api/packages.html#imports
+   *
    * @since Node.js v14
    */
-  exports?: string | Record<
-    "import" | "require" | "." | "node" | "browser" | AutoCompleteIndicator,
-    Record<
-      "import" | "require" | AutoCompleteIndicator,
-      string
-    > | string
-  >;
+  imports?: Record<string, PackageExportEntry>;
   workspaces?: string[];
-  [key: string]: any;
+  [key: string]: any; // deno-lint-ignore no-explicit-any
 }
