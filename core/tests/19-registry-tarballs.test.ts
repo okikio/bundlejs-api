@@ -52,6 +52,7 @@ import {
   normalizeRegistryConfig,
   NPM_PUBLIC_REGISTRY,
 } from "@bundle/utils/npmrc";
+import type { PackageJson } from "@bundle/utils/types";
 
 // =============================================================================
 // 19.1 — isTarballUrl detection
@@ -397,6 +398,18 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
     expect(result.excluded).toBe(false);
     // module is preferred for browser context
     expect(result.entryPath).toMatch(/\.mjs|\.js/);
+  });
+
+  test("root import with directory-like entry '.' falls back to /index.js", () => {
+    const manifest: Partial<PackageJson> = {
+      name: "dir-entry",
+      version: "1.0.0",
+      main: ".",
+    };
+
+    const result = resolvePackageEntry(manifest, "", defaultConditions);
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/index.js");
   });
 });
 

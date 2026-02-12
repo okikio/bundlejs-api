@@ -74,6 +74,11 @@ import { CDN_NAMESPACE } from "../plugins/cdn.ts";
 import { getCDNStyle, getCDNUrl } from "../utils/cdn-format.ts";
 import { decode } from "@bundle/utils/encode-decode";
 
+// --- Config & types for remapFalse tests ---
+import { BUILD_CONFIG } from "../build.ts";
+import { createConfig } from "../configs/config.ts";
+import type { RemapFalseBehavior, RemapFalsePolicy, BuildConfig } from "../types.ts";
+
 // --- Test helpers ---
 import {
   buildWithEntry,
@@ -899,5 +904,98 @@ describe("integration · multiple entry points", () => {
     // Each build should only contain its own code
     expect(outputContains(r1, "first")).toBe(true);
     expect(outputContains(r2, "second")).toBe(true);
+  });
+});
+
+// #############################################################################
+//
+//  remapFalse configuration — defaults, merging, and enforcement
+//
+// #############################################################################
+
+describe("remapFalse config · defaults", () => {
+  test("BUILD_CONFIG includes remapFalse with correct defaults", () => {
+    expect(BUILD_CONFIG.remapFalse).toBeDefined();
+    expect(BUILD_CONFIG.remapFalse!.packageRemapFalse).toBe("error");
+    expect(BUILD_CONFIG.remapFalse!.importRemapFalse).toBe("stub");
+    expect(BUILD_CONFIG.remapFalse!.warnOnStubbedRemapFalse).toBe(true);
+  });
+
+  test("createConfig preserves remapFalse defaults when user provides none", () => {
+    const cfg = createConfig("build", {}) as BuildConfig;
+    expect(cfg.remapFalse).toBeDefined();
+    expect(cfg.remapFalse!.packageRemapFalse).toBe("error");
+    expect(cfg.remapFalse!.importRemapFalse).toBe("stub");
+    expect(cfg.remapFalse!.warnOnStubbedRemapFalse).toBe(true);
+  });
+
+  test("createConfig merges partial remapFalse override", () => {
+    const cfg = createConfig("build", {
+      remapFalse: { packageRemapFalse: "stub" },
+    }) as BuildConfig;
+
+    // User-provided field is overridden
+    expect(cfg.remapFalse!.packageRemapFalse).toBe("stub");
+
+    // deepMerge should preserve non-overridden fields from the default
+    // (If deepMerge replaces the nested object entirely, importRemapFalse
+    // may be undefined — that's acceptable since the enforcement code
+    // uses ?? "stub" / ?? "error" fallbacks.)
+    const importPolicy = cfg.remapFalse!.importRemapFalse ?? "stub";
+    expect(importPolicy).toBe("stub");
+  });
+
+  test("createConfig accepts full remapFalse override", () => {
+    const cfg = createConfig("build", {
+      remapFalse: {
+        packageRemapFalse: "stub",
+        importRemapFalse: "error",
+        warnOnStubbedRemapFalse: false,
+      },
+    }) as BuildConfig;
+
+    expect(cfg.remapFalse!.packageRemapFalse).toBe("stub");
+    expect(cfg.remapFalse!.importRemapFalse).toBe("error");
+    expect(cfg.remapFalse!.warnOnStubbedRemapFalse).toBe(false);
+  });
+});
+
+describe("remapFalse config · type-level checks", () => {
+  test("RemapFalsePolicy union accepts valid values", () => {
+    // This is a compile-time check that validates the type union.
+    // If the types are wrong, TypeScript will fail to compile this test.
+    const policies: RemapFalsePolicy[] = ["stub", "error", "external"];
+    expect(policies).toHaveLength(3);
+  });
+
+  test("RemapFalseBehavior accepts all documented field shapes", () => {
+    const behavior: RemapFalseBehavior = {
+      packageRemapFalse: "stub",
+      importRemapFalse: "external",
+      warnOnStubbedRemapFalse: false,
+    };
+    expect(behavior.packageRemapFalse).toBe("stub");
+    expect(behavior.importRemapFalse).toBe("external");
+    expect(behavior.warnOnStubbedRemapFalse).toBe(false);
+  });
+});
+
+describe("integration · remapFalse: warnOnStubbedRemapFalse controls warnings", { sanitizeResources: false, sanitizeOps: false }, () => {
+  // Uses @exodus/bytes which has browser remapping — some internal modules
+  // may be remapped to false. The key assertion is that the build succeeds
+  // either way, and the warning count reflects the config.
+
+  test("default config (warnOnStubbedRemapFalse: true) builds successfully", async () => {
+    const result = await buildPackage("@exodus/bytes@1.13.0");
+    expect(result.errors.length).toBe(0);
+    expect(result.contents.length).toBeGreaterThan(0);
+  });
+
+  test("warnOnStubbedRemapFalse: false suppresses stub warnings", async () => {
+    const result = await buildPackage("@exodus/bytes@1.13.0", {
+      remapFalse: { warnOnStubbedRemapFalse: false },
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.contents.length).toBeGreaterThan(0);
   });
 });

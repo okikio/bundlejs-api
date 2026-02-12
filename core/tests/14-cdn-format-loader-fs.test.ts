@@ -739,6 +739,10 @@ describe("cdn-resolution: normalizeResolvedPath", () => {
   test("already absolute → unchanged", () => {
     expect(normalizeResolvedPath("/dist/index.js")).toBe("/dist/index.js");
   });
+
+  test("dot path normalizes to root-dot (caller decides fallback)", () => {
+    expect(normalizeResolvedPath(".")).toBe("/.");
+  });
 });
 
 describe("cdn-resolution: joinSubpaths", () => {
@@ -1204,6 +1208,27 @@ describe("plugins/fs: resolveVfsPath", () => {
     // RESOLVE_EXTENSIONS is [".tsx", ".ts", ...], so .tsx should win
     const result = await resolveVfsPath(fs, "/comp", RESOLVE_EXTENSIONS);
     expect(result).toBe("/comp.tsx");
+  });
+
+  test("suffix-style import probing: /Expo.fx -> /Expo.fx.ts", async () => {
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/Expo.fx.ts", "export const Expo = 1;");
+    const result = await resolveVfsPath(fs, "/Expo.fx", RESOLVE_EXTENSIONS);
+    expect(result).toBe("/Expo.fx.ts");
+  });
+
+  test("suffix-style import probing: /uuid.types -> /uuid.types.ts", async () => {
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/uuid.types.ts", "export type UUID = string;");
+    const result = await resolveVfsPath(fs, "/uuid.types", RESOLVE_EXTENSIONS);
+    expect(result).toBe("/uuid.types.ts");
+  });
+
+  test("known extension still resolves exact path only", async () => {
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/lib.ts", "export const lib = 1;");
+    const result = await resolveVfsPath(fs, "/lib.ts", RESOLVE_EXTENSIONS);
+    expect(result).toBe("/lib.ts");
   });
 });
 
