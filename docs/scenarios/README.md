@@ -266,6 +266,27 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 19.7 | Edge cases (case-insensitive, multi-ext, archive-detect) | `plugins/tar.ts`, `archive-detect.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
 | 19.8 | VFS tarball path detection (isTarballPath) | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
 
+### Flow Type Stripping
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 20.1 | `@flow` pragma triggers detection | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.2 | `import typeof` triggers detection (no pragma) | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.3 | `opaque type` triggers detection | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.4 | Flow utility types (`$Exact`, `$Diff`, etc.) | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.5 | Known-package fast path (`react-native`) | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.6 | URL heuristic detects react-native in CDN paths | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.7 | Non-Flow `.js` file is not detected | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.8 | TypeScript `import type` is not misidentified | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.9 | Full stripping via `flow-remove-types` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.10 | Regex fallback handles `import typeof` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.11 | `maybeStripFlow` conditional processing | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.12 | HttpPlugin strips Flow from CDN content | `plugins/http.ts`, `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.13 | VFS plugin strips Flow from tarball-extracted content | `plugins/fs.ts`, `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.14 | Lazy loading of `flow-remove-types` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.15 | Block comment `@flow` pragma | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.16 | Flow + JSX co-occurrence | `flow-strip.ts`, `loader.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+
 
 ## Coverage Map
 
@@ -308,6 +329,10 @@ This table maps each scenario to the source file and function it exercises:
 | Tarball entry resolution | `tar.ts` | `resolvePackageEntry()` (tar) | 15.6 |
 | Plugin namespace isolation | all plugins | namespace constants | 15.10 |
 | Full pipeline integration | all plugins | `buildWithEntry()` | 15.11 |
+| Flow detection | `flow-strip.ts` | `containsFlow()` | 20.1–20.8, 20.15 |
+| Flow stripping | `flow-strip.ts` | `stripFlowTypes()`, `maybeStripFlow()` | 20.9–20.13, 20.16 |
+| Flow lazy loading | `flow-strip.ts` | `loadFlowRemoveTypes()` | 20.14 |
+| Flow regex fallback | `flow-strip.ts` | `regexStripFlow()` | 20.10 |
 
 ## What Would Have Caught the Browser Remapping Bug
 

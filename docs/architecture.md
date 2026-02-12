@@ -419,6 +419,8 @@ The plugin registers three `onResolve` handlers with carefully scoped filters:
 - Resolution follows esbuild's filesystem pattern: *exact path match* → *extension probing* (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`) → `/index.*` fallback
 - **TarballPlugin runs first**, so tarball paths (e.g., `/packages/my-lib.tgz`) are intercepted and extracted before VFS sees them
 
+**Content pre-processing:** The VFS `onLoad` handler also runs **Flow type stripping** on loaded content — tarball-extracted packages (especially from the React Native ecosystem) may contain Flow annotations that esbuild cannot parse. The same `maybeStripFlow()` function used by HttpPlugin is applied here. See [Scenario 20 — Flow Type Stripping](scenarios/20-flow-type-stripping.md).
+
 ---
 
 ### 5. HttpPlugin — *Fetch and resolve HTTP/HTTPS URLs*
@@ -439,6 +441,10 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles**:
 ```
 
 Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers** that need fetching alongside the module.
+
+**Content pre-processing:** Before returning fetched content to esbuild, the `onLoad` handler runs two content-aware transformations:
+- **Flow type stripping** — detects and removes Flow type annotations (e.g., `import typeof`, `opaque type`) from React Native ecosystem packages. Uses `flow-remove-types` with a regex fallback. See [Scenario 20 — Flow Type Stripping](scenarios/20-flow-type-stripping.md).
+- **JSX loader upgrade** — detects JSX syntax in `.js` files and upgrades the esbuild loader from `ts` to `tsx`. See [Scenario 18 — JSX in `.js` Files](scenarios/18-jsx-in-js-files.md).
 
 ---
 
