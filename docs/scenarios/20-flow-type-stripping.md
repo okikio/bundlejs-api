@@ -484,6 +484,65 @@ Expected: Flow stripping removes type annotations. The cleaned content still con
 **Regression signal:** If Flow stripping or JSX detection order is wrong, either Flow annotations break parsing or JSX is missed.
 
 
+### 20.17 — Source map generated when sourcemaps enabled
+
+**What it tests:** When `build.initialOptions.sourcemap` is truthy, `maybeStripFlow()` produces an inline `//# sourceMappingURL=data:...` comment in the returned contents that maps the stripped code back to the original Flow source.
+
+```js
+// @flow
+import typeof ActionSheetIOS from './ActionSheetIOS';
+function greet(name: string): string { return name; }
+```
+
+Expected: When `sourceMap: true` is passed, the returned `.contents` string ends with `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,<payload>`. Decoding the payload yields a v3 source map with `version: 3`, `sources` containing the original URL, `sourcesContent` containing the original (pre-strip) source text, and non-empty `mappings`.
+
+**Regression signal:** If the inline source map comment is missing or malformed, esbuild will not fold the Flow transformation map into the final bundle map, and devtools will show the stripped intermediate instead of the original Flow source.
+
+
+### 20.18 — No source map when sourcemaps disabled
+
+**What it tests:** When `build.initialOptions.sourcemap` is falsy (the default: `false`), `maybeStripFlow()` does **not** generate or embed a source map — zero additional overhead.
+
+```js
+// @flow
+opaque type Token = string;
+export const TOKEN: Token = 'abc';
+```
+
+Expected: When `sourceMap: false` (or omitted), the returned `.contents` string does **not** contain `//# sourceMappingURL`. The output is stripped code only.
+
+**Regression signal:** An unconditional source map generation would add latency to every Flow-containing file even when the build doesn't produce maps.
+
+
+### 20.19 — Regex fallback produces no source map
+
+**What it tests:** When `flow-remove-types` is unavailable and the regex fallback is used, no source map is generated regardless of the `sourceMap` option.
+
+```js
+// @flow
+import typeof Foo from './Foo';
+```
+
+Expected: If `flow-remove-types` throws (simulated), the regex fallback strips `typeof` and pragma. The returned result has no `sourceMap` field, and the `.contents` string has no `//# sourceMappingURL` comment.
+
+**Regression signal:** Attempting to generate a source map from the regex fallback would be incorrect (no offset tracking) and would add complexity to what is meant to be a lightweight safety net.
+
+
+### 20.20 — Source map contains original source content
+
+**What it tests:** The generated source map includes `sourcesContent` with the original (pre-strip) Flow source and `sources` with the original file URL, so devtools can display the original code without fetching it.
+
+```js
+// @flow
+import typeof Foo from './Foo';
+type Props = $Exact<{ name: string }>;
+```
+
+Expected: The embedded map's `sourcesContent[0]` is the exact original source text (including Flow annotations). `sources[0]` is the URL/path passed as `sourceFileName` (e.g., `https://esm.sh/react-native@0.74.0/Libraries/ActionSheetIOS.js`).
+
+**Regression signal:** If `sourcesContent` is missing, devtools may fail to show the original source. If `sources` has a generic name like `"source.js"`, devtools won't associate the map with the correct file.
+
+
 ## Reference
 
 ### Flow Language Specification

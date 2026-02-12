@@ -286,6 +286,10 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 20.14 | Lazy loading of `flow-remove-types` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.15 | Block comment `@flow` pragma | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.16 | Flow + JSX co-occurrence | `flow-strip.ts`, `loader.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.17 | Source map generated when sourcemaps enabled | `flow-strip.ts`, `plugins/http.ts`, `plugins/fs.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.18 | No source map when sourcemaps disabled | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.19 | Regex fallback produces no source map | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.20 | Source map contains original source content | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 
 
 ## Coverage Map
@@ -331,6 +335,7 @@ This table maps each scenario to the source file and function it exercises:
 | Full pipeline integration | all plugins | `buildWithEntry()` | 15.11 |
 | Flow detection | `flow-strip.ts` | `containsFlow()` | 20.1–20.8, 20.15 |
 | Flow stripping | `flow-strip.ts` | `stripFlowTypes()`, `maybeStripFlow()` | 20.9–20.13, 20.16 |
+| Flow source maps | `flow-strip.ts` | `sourceMapToDataUrl()`, `appendInlineSourceMap()` | 20.17–20.20 |
 | Flow lazy loading | `flow-strip.ts` | `loadFlowRemoveTypes()` | 20.14 |
 | Flow regex fallback | `flow-strip.ts` | `regexStripFlow()` | 20.10 |
 

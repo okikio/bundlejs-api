@@ -1156,7 +1156,12 @@ The implementation has three layers, ordered from cheapest to most expensive:
   │  removal. Replaces all annotations with whitespace,           │
   │  preserving source positions (line/column numbers stable).    │
   │                                                               │
-  │  → success? Return cleaned source.                            │
+  │  When source maps are enabled: generates a v3 source map      │
+  │  via .generateMap() and embeds it inline as a                 │
+  │  //# sourceMappingURL=data:... comment for esbuild to fold    │
+  │  into the final bundle map.                                   │
+  │                                                               │
+  │  → success? Return cleaned source (+ inline map if enabled).  │
   │  → parse error or unavailable? Fall through to Layer 3.       │
   └───────────────────────────┬───────────────────────────────────┘
                               │ fallback
@@ -1207,7 +1212,7 @@ When `containsFlow()` returns `true`, the `stripFlowTypes()` function invokes `f
 import flowRemoveTypes from "flow-remove-types";
 
 const result = flowRemoveTypes(sourceText, { pretty: true, all: true });
-return result.toString();
+const code = result.toString();
 ```
 
 - **`pretty: true`** — removes extra whitespace left by type erasure, producing cleaner output
@@ -1216,6 +1221,43 @@ return result.toString();
 The `flow-remove-types` package replaces type annotations with whitespace by default (spaces and newlines), which **preserves source positions** — line numbers and column offsets in the output match the original. This is important for error messages and source maps referencing the original file.
 
 If `flow-remove-types` throws (e.g., a parse error on malformed input), the function falls through to the regex fallback.
+
+##### Source Map Generation
+
+`flow-remove-types` can also produce a **v3 source map** that maps the stripped output back to the original Flow source. This is valuable for debugging: when source maps are enabled, browser devtools display the *original* Flow source rather than the stripped intermediate.
+
+The map is generated via `.generateMap()` on the return value:
+
+```typescript
+const map = result.generateMap(); // → { version: 3, sources, names, mappings }
+```
+
+**How it integrates with esbuild:** esbuild's `onLoad` callback has no dedicated `sourceMap` field in its return type. The established convention is to append the map as an **inline `//# sourceMappingURL=data:...` comment** to the `contents` string. esbuild recognises this comment, parses the embedded map, and folds it into the final bundle source map automatically.
+
+```
+  Stripped JS code (from flow-remove-types)
+  + "\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,<payload>"
+       │
+       ▼
+  esbuild onLoad → parses inline map → merges into bundle .map
+       │
+       ▼
+  Browser devtools → shows original Flow source
+```
+
+The implementation patches the raw map before embedding:
+
+1. **`sources`** — set to the original URL/path (e.g., `https://esm.sh/react-native@0.74.0/index.js`) so devtools show the correct filename
+2. **`sourcesContent`** — set to the original (pre-strip) source text, so devtools can display the code even without fetching the original URL
+
+```typescript
+map.sources = [sourceFileName]; // e.g. the CDN URL or VFS path
+map.sourcesContent = [originalText]; // original Flow source
+```
+
+**When source maps are *not* meaningful:** In non-pretty mode (`pretty: false`), `flow-remove-types` preserves positions by replacing annotations with equivalent whitespace. Every line/column in the output already matches the original, so the map would be a trivial identity mapping. Source maps are only useful with `pretty: true` (the default), where whitespace is cleaned up and positions shift.
+
+**Regex fallback does not produce maps.** Layer 3's regex stripper does not generate source maps — tracking every replacement offset would defeat the purpose of a lightweight fallback. This is acceptable because the regex path is a last-resort safety net, and in practice `flow-remove-types` handles all files.
 
 
 #### Layer 3: Regex Fallback — `regexStripFlow()`
@@ -1243,9 +1285,9 @@ Flow stripping hooks into esbuild's **`onLoad`** phase — the moment a plugin r
   CDN fetch → raw bytes (Uint8Array)
        │
        ▼
-  maybeStripFlow(content, { url })
+  maybeStripFlow(content, { url, sourceMap: enableSourceMaps })
        │
-       ├─ Flow detected → strip → return cleaned string to esbuild
+       ├─ Flow detected → strip (+ inline map if enabled) → return to esbuild
        └─ No Flow       → return original bytes to esbuild
 ```
 
@@ -1255,24 +1297,32 @@ Flow stripping hooks into esbuild's **`onLoad`** phase — the moment a plugin r
   VFS getFile() → raw bytes (Uint8Array)
        │
        ▼
-  maybeStripFlow(content, { url: args.path })
+  maybeStripFlow(content, { url: args.path, sourceMap: enableSourceMaps })
        │
-       ├─ Flow detected → strip → return cleaned string to esbuild
+       ├─ Flow detected → strip (+ inline map if enabled) → return to esbuild
        └─ No Flow       → return original bytes to esbuild
 ```
 
 **ExternalPlugin** does **not** need Flow stripping — it returns a static `export default {}` stub.
 
-The entry point for both is `maybeStripFlow()`, which combines detection and stripping in one call:
+The entry point for both is `maybeStripFlow()`, which combines detection, stripping, and optional inline source map embedding in one call:
 
 ```typescript
 // Returns { contents, wasStripped }
 // - No Flow detected → contents = original Uint8Array (zero-copy), wasStripped = false
-// - Flow detected    → contents = stripped string, wasStripped = true
-const { contents, wasStripped } = maybeStripFlow(rawBytes, { url });
+// - Flow detected    → contents = stripped string (with inline map if enabled), wasStripped = true
+const { contents, wasStripped } = maybeStripFlow(rawBytes, { url, sourceMap: enableSourceMaps });
 ```
 
 When `wasStripped` is `true`, the plugin logs an info event for observability.
+
+**Source map activation.** Both plugins read `build.initialOptions.sourcemap` to decide whether to request a source map:
+
+```typescript
+const enableSourceMaps = !!build.initialOptions.sourcemap;
+```
+
+This means Flow source maps are only generated when the user's build configuration has source maps enabled (e.g., `sourcemap: true` or `sourcemap: "inline"`). When source maps are disabled (the default: `sourcemap: false`), the `sourceMap` option is `false` and no map is generated — zero additional overhead.
 
 > **Ordering with JSX detection.** Flow stripping runs *before* loader inference. The stripped content (clean JavaScript) is then passed to `inferLoader()`, which may upgrade the loader from `ts` to `tsx` if JSX is detected. This ordering matters: Flow type annotations could theoretically mask or disrupt JSX pattern detection, so stripping first ensures accurate JSX detection. See [Scenario 18 — JSX in `.js` Files](scenarios/18-jsx-in-js-files.md) for JSX detection details.
 
