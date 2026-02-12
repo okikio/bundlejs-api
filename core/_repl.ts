@@ -90,6 +90,7 @@ console.log("\n");
 await setFile(fs, "/new.tsx", "export * from \"https://pkg.pr.new/@tanstack/react-query@7988\"")
 await setFile(fs, "/new.tsx", "export * from 'iconv-lite';\nexport { default } from 'iconv-lite';")
 await setFile(fs, "/new.tsx", "export { debounce } from 'lodash-es';")
+await setFile(fs, "/new.tsx", "export * from '@floating-ui/dom@1.6.13';\nexport { default } from '@floating-ui/dom@1.6.13';")
 // await setFile(fs, "/new.tsx", "export * from \"jsr:@okikio/sparql\";")
 // await setFile(fs, "/other.tsx", `\
 // export * as Other from "/index.tsx";
@@ -124,7 +125,7 @@ const result = await build(configObj = {
     treeShaking: true,
     splitting: true,
     format: "esm",
-    minify: false
+    // minify: false
   },
   init: {
     // platform: "node",
@@ -150,7 +151,7 @@ const { content: _content, ...size } = await compress(
 console.log({
   // result: result.totalInstallSize,
   size,
-  resultValue
+  // resultValue
   // packageManifests: result.state.packageManifests,
   //   // await compress(
   //   //   result.contents.map((x: any) => x?.contents),
