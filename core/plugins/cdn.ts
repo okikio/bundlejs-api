@@ -86,7 +86,7 @@ import { extname, isBareImport, join } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 import { deepMerge } from "@bundle/utils/deep-object";
 
-import { determineExtension, HTTP_NAMESPACE } from "./http.ts";
+import { determineExtension, HTTP_NAMESPACE, EXCLUDED_MODULE_NAMESPACE } from "./http.ts";
 import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 
 import { getCDNUrl, getCDNStyle, DEFAULT_CDN_HOST } from "../utils/cdn-format.ts";
@@ -713,7 +713,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           });
 
           if (resolutionResult.excluded && conditions.browser) {
-            // Generate accurate error message based on exclusion reason
+            // Generate accurate message based on exclusion reason
             const reason = (resolutionResult as { exclusionReason?: string }).exclusionReason;
             
             let text: string;
@@ -728,6 +728,24 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             } else {
               text = `Package resolution failed for "${effectiveName}"`;
               detail = resolutionResult.error?.message ?? "Unknown resolution error";
+            }
+
+            // ── Respect remapFalse.packageRemapFalse config ──
+            // Default is "error". When set to "stub", produce an empty export
+            // instead of a hard build error.
+            const packagePolicy = LocalConfig.remapFalse?.packageRemapFalse ?? "error";
+
+            if (packagePolicy === "stub") {
+              const warnOnStub = LocalConfig.remapFalse?.warnOnStubbedRemapFalse ?? true;
+              return {
+                path: `${effectiveName}/${combinedSubpath || "."}`,
+                namespace: EXCLUDED_MODULE_NAMESPACE,
+                pluginData: Object.assign({}, args.pluginData, {
+                  excludedBy: reason ?? "field-remapping",
+                  originalPath: combinedSubpath || ".",
+                  suppressWarning: !warnOnStub,
+                }),
+              };
             }
 
             return {
