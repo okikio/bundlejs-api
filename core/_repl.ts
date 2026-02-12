@@ -5,6 +5,7 @@ import { normalize, join } from "@bundle/utils/path";
 import { getFile, setFile, PLATFORM_AUTO, TheFileSystem, build, BuildConfig } from "./mod.ts";
 import { context, cancel, dispose, rebuild, } from "./mod.ts";
 import { compress } from "@bundle/compress";
+import { outdent } from "@bundle/utils/outdent";
 
 const fs = await TheFileSystem;
 
@@ -92,6 +93,11 @@ await setFile(fs, "/new.tsx", "export * from 'iconv-lite';\nexport { default } f
 await setFile(fs, "/new.tsx", "export { debounce } from 'lodash-es';")
 await setFile(fs, "/new.tsx", "export * from '@floating-ui/dom@1.6.13';\nexport { default } from '@floating-ui/dom@1.6.13';")
 await setFile(fs, "/new.tsx", "export * from '@aws-sdk/client-s3';\nexport { default } from '@aws-sdk/client-s3';")
+await setFile(fs, "/new.tsx", outdent`
+  export { useMigrations } from 'drizzle-orm/expo-sqlite/migrator';
+  export { drizzle } from "drizzle-orm/expo-sqlite";
+  export { openDatabaseSync } from "expo-sqlite";
+`)
 // await setFile(fs, "/new.tsx", "export * from \"jsr:@okikio/sparql\";")
 // await setFile(fs, "/other.tsx", `\
 // export * as Other from "/index.tsx";
