@@ -463,7 +463,7 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
 
         return {
           contents: content,
-          loader: inferLoader(url, contentType),
+          loader: inferLoader(url, contentType, content),
           // CRITICAL: Pass the final URL (after redirects) in pluginData
           // This is used as the base URL for resolving relative imports
           pluginData: { ...args.pluginData, url },

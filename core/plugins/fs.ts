@@ -242,7 +242,7 @@ export function VirtualFileSystemPlugin<T = Uint8Array>(
 
         return {
           contents: content,
-          loader: inferLoader(args.path),
+          loader: inferLoader(args.path, undefined, content),
           // This is the correct way to enable relative resolution in custom namespaces.
           resolveDir: dirname(args.path),
           pluginData: Object.assign({}, args.pluginData, {
