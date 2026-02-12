@@ -21,6 +21,7 @@
  * | 19.10 — getNpmTarballUrl construction | Tarball URL construction for scoped/unscoped packages |
  * | 19.11 — getPackageTarballUrl | Manifest dist.tarball preference vs fallback |
  * | 19.12 — npm: and jsr.registry: scheme helpers | Origin, path, URL generation for shorthand schemes |
+ * | 19.16 — Scoped package %2f encoding | Registry URL encoding for scoped packages |
  *
  * @see docs/scenarios/19-registry-tarballs.md
  * @module
@@ -39,9 +40,8 @@ import {
   findTarballSplitInPathname,
 } from "../plugins/tar.ts";
 
-import { getResolverConditions } from "../../utils/resolve-conditions.ts";
 import { getCDNStyle, getCDNOrigin, getPureImportPath, getCDNUrl } from "../utils/cdn-format.ts";
-import { getNpmTarballUrl, getPackageTarballUrl } from "@bundle/utils/npm-search";
+import { getNpmTarballUrl, getPackageTarballUrl, getRegistryURL, escapePackageName } from "@bundle/utils/npm-search";
 import { TAR_MULTI_EXTENSIONS, TAR_SHORT_EXTENSIONS } from "@bundle/utils/archive-detect";
 
 // =============================================================================
@@ -784,5 +784,51 @@ describe("19.12 — npm: and jsr.registry: scheme helpers", () => {
       expect(a.url.href).toBe(b.url.href);
       expect(a.origin).toBe(b.origin);
     });
+  });
+});
+
+// =============================================================================
+// 19.16 — Scoped package %2f encoding in registry URLs
+// =============================================================================
+
+describe("19.16 — Scoped package %2f encoding in registry URLs", () => {
+  test("escapePackageName encodes / as %2f for scoped packages", () => {
+    expect(escapePackageName("@react-native/assets-registry")).toBe("@react-native%2fassets-registry");
+  });
+
+  test("escapePackageName leaves unscoped packages unchanged", () => {
+    expect(escapePackageName("react")).toBe("react");
+  });
+
+  test("getRegistryURL produces %2f-encoded packageURL for scoped packages", () => {
+    const urls = getRegistryURL("@react-native/assets-registry@0.76.8");
+    expect(urls.packageURL).toBe("https://registry.npmjs.com/@react-native%2fassets-registry");
+    expect(urls.name).toBe("@react-native/assets-registry");
+    expect(urls.version).toBe("0.76.8");
+  });
+
+  test("getRegistryURL produces %2f-encoded version URL for scoped packages", () => {
+    const urls = getRegistryURL("@react-native/assets-registry@0.76.8");
+    expect(urls.packageVersionURL).toBe("https://registry.npmjs.com/@react-native%2fassets-registry/0.76.8");
+  });
+
+  test("getRegistryURL works correctly for unscoped packages", () => {
+    const urls = getRegistryURL("react@18.2.0");
+    expect(urls.packageURL).toBe("https://registry.npmjs.com/react");
+    expect(urls.packageVersionURL).toBe("https://registry.npmjs.com/react/18.2.0");
+  });
+
+  test("getRegistryURL respects custom registry parameter", () => {
+    const urls = getRegistryURL("@jsr/std__path@1.0.0", "https://npm.jsr.io");
+    expect(urls.packageURL).toBe("https://npm.jsr.io/@jsr%2fstd__path");
+    expect(urls.packageVersionURL).toBe("https://npm.jsr.io/@jsr%2fstd__path/1.0.0");
+  });
+
+  test("getNpmTarballUrl does NOT use %2f encoding (natural path)", () => {
+    // Tarball URLs use normal / separators for scoped packages
+    const url = getNpmTarballUrl("@react-native/assets-registry", "0.76.8");
+    expect(url).toBe("https://registry.npmjs.com/@react-native/assets-registry/-/assets-registry-0.76.8.tgz");
+    // Verify there's no %2f in the tarball URL
+    expect(url).not.toContain("%2f");
   });
 });

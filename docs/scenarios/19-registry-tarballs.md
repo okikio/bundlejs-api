@@ -237,3 +237,109 @@ import { fn } from "../vendor/my-lib.tgz";
 | `core/plugins/tar.ts` | Removed `ALL_TAR_EXTENSIONS`, `TARBALL_EXT_IN_PATH_RE`, `TARBALL_SPLIT_RE` constants |
 | `core/plugins/tar.ts` | Removed redundant content-type check |
 | `core/build.ts` | Plugin order: TarballPlugin moved before VirtualFileSystemPlugin |
+| `core/utils/cdn-format.ts` | Added `"registry"` CDN style, `"npm"` / `"npm.registry"` / `"jsr.registry"` schemes |
+| `core/plugins/cdn.ts` | REGISTRY_CDN branch for tarball-based bare import resolution |
+| `core/plugins/cdn.ts` | Scoped package manifest fetch uses CDN-native URL (no `%2f` encoding) |
+| `core/plugins/cdn.ts` | Scoped registry support via `getRegistryForPackage()` / `.npmrc` config |
+| `core/plugins/http.ts` | Registry mode propagation — registry host takes priority over CDN-follows-parent |
+| `utils/npm-search.ts` | `getPackageOfVersion()` — scoped package fallback to full packument |
+| `utils/npm-search.ts` | `getNpmTarballUrl()`, `getPackageTarballUrl()` — tarball URL construction |
+| `utils/npmrc.ts` | NEW — `.npmrc` parser, `getRegistryForPackage()`, `normalizeRegistryConfig()` |
+| `core/types.ts` | `BuildConfig.registry` — accepts string or `RegistryConfig` |
+
+## Registry Tarball Mode
+
+### Overview
+
+When `cdn: "npm.registry"` (or `cdn: "npm"`) is set, **all bare imports** are resolved
+by fetching whole-package tarballs from `registry.npmjs.org` instead of individual files
+from a CDN like unpkg.com or esm.sh.
+
+```
+┌───── User code ──────┐          ┌─── Registry ────┐
+│ import "react"       │ ──────▶  │ registry.npmjs  │
+│ import "@scope/pkg"  │          │   .org/react/-  │
+└──────────────────────┘          │  /react-18.tgz  │
+                                  └────────┬────────┘
+                                           │ extract
+                                           ▼
+                                  ┌─── VFS mount ────┐
+                                  │  /__tarballs__/  │
+                                  │    <hash>/...    │
+                                  │  resolve via     │
+                                  │  exports/main    │
+                                  └──────────────────┘
+```
+
+### Why use registry mode?
+
+- **Fewer HTTP requests**: Large packages with many internal imports (lodash-es, @aws-sdk/*)
+  generate hundreds of individual HTTP fetches in CDN mode. Registry mode collapses this
+  into a single tarball download + local VFS resolution.
+- **Exact npm parity**: Uses the exact same files that `npm install` would produce.
+- **No CDN quirks**: Eliminates CDN-specific redirect/resolution differences.
+
+### Transitive dependency propagation
+
+When registry mode is active, **all** bare imports from within extracted tarballs also
+resolve through the registry. The flow:
+
+1. CdnPlugin resolves bare import → REGISTRY_CDN branch → tarball extraction → VFS
+2. esbuild encounters bare imports in extracted files → back to CdnPlugin
+3. CdnPlugin still has the registry origin → REGISTRY_CDN branch again
+
+HttpResolution also respects registry mode: when the configured host is a registry CDN,
+it takes priority over the CDN-follows-parent behavior, ensuring all transitive deps
+flow through the registry.
+
+### Scoped package `%2f` encoding issue
+
+The npm registry API requires scoped package names to encode `/` as `%2f` in URL paths:
+```
+GET /@scope%2fname            ← works (packument)
+GET /@scope%2fname/1.0.0      ← may fail on some registries/proxies
+```
+
+Some HTTP infrastructure (Cloudflare, Nginx, etc.) decodes `%2f` before routing, turning
+the 2-segment path into 3 segments and breaking the registry router.
+
+**Fix**: Two complementary strategies:
+1. **CDN mode** (`NPM_CDN`): For scoped packages, the manifest variant uses the CDN-native
+   URL format (`@scope/name@version/package.json`) instead of the registry API endpoint.
+2. **`getPackageOfVersion()`**: When the version-specific endpoint fails for a scoped
+   package, falls back to fetching the full packument and extracting the version from
+   `pkg.versions[version]`.
+
+## `.npmrc` Support
+
+### Scoped registries
+
+The `registry` config in `BuildConfig` accepts:
+- A string: default registry URL or raw `.npmrc` content
+- A `RegistryConfig` object with optional `scopedRegistries`
+
+```ts
+// Structured config
+{
+  cdn: "npm.registry",
+  registry: {
+    scopedRegistries: {
+      "@jsr": "https://npm.jsr.io",
+      "@mycompany": "https://npm.mycompany.com/"
+    }
+  }
+}
+
+// Or raw .npmrc content
+{
+  cdn: "npm.registry",
+  registry: "@jsr:registry=https://npm.jsr.io\n@mycompany:registry=https://npm.mycompany.com/"
+}
+```
+
+### Resolution order
+
+For each bare import, `getRegistryForPackage()` checks:
+1. Scoped registry override (by `@scope` prefix)
+2. Default registry from config
+3. Fallback to npm public registry (`https://registry.npmjs.org`)
