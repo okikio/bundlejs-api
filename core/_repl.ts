@@ -2,8 +2,9 @@ import type { TarStreamEntry } from "@bundle/utils/tar";
 import { UntarStream } from "@bundle/utils/tar";
 import { normalize, join } from "@bundle/utils/path";
 
-import { getFile, setFile, PLATFORM_AUTO, TheFileSystem, build } from "./mod.ts";
+import { getFile, setFile, PLATFORM_AUTO, TheFileSystem, build, BuildConfig } from "./mod.ts";
 import { context, cancel, dispose, rebuild, } from "./mod.ts";
+import { compress } from "@bundle/compress";
 
 const fs = await TheFileSystem;
 
@@ -88,6 +89,7 @@ console.log("\n");
 // await setFile(fs, "/new.tsx", "export * from \"@okikio/native\";");
 await setFile(fs, "/new.tsx", "export * from \"https://pkg.pr.new/@tanstack/react-query@7988\"")
 await setFile(fs, "/new.tsx", "export * from 'iconv-lite';\nexport { default } from 'iconv-lite';")
+await setFile(fs, "/new.tsx", "export { debounce } from 'lodash-es';")
 // await setFile(fs, "/new.tsx", "export * from \"jsr:@okikio/sparql\";")
 // await setFile(fs, "/other.tsx", `\
 // export * as Other from "/index.tsx";
@@ -114,14 +116,15 @@ console.log(fs)
 // });
 // const result = await rebuild(ctx);
 
-
-const result = await build({
+let configObj: BuildConfig | undefined;
+const result = await build(configObj = {
   // "/index.tsx",
   entryPoints: ["/new.tsx"],
   esbuild: {
     treeShaking: true,
     splitting: true,
-    format: "esm"
+    format: "esm",
+    minify: false
   },
   init: {
     // platform: "node",
@@ -130,37 +133,53 @@ const result = await build({
   }
 });
 
-console.log({
-  result: result.totalInstallSize,
-  // packageManifests: result.state.packageManifests,
-  //   // await compress(
-  //   //   result.contents.map((x: any) => x?.contents),
-  //   //   { type: "gzip" }
-  //   // )
-});
-const result2 = await build({
-  // "/index.tsx",
-  entryPoints: ["/new.tsx"],
-  esbuild: {
-    treeShaking: true,
-    splitting: true,
-    format: "esm"
-  },
-  init: {
-    // platform: "node",
-    // version: "0.17",
-    // wasm
-  }
-});
+
+let resultValue: string = result.contents[0].text;
+const entryPoints = configObj?.entryPoints || ["/index.tsx"];
+const entryPointInputFile = Array.isArray(entryPoints) ? entryPoints[0]
+  : "in" in entryPoints ? entryPoints.in
+    : entryPoints
+const { content: _content, ...size } = await compress(
+  result.contents.map((x: { contents: Uint8Array; path: string; text: string }) => { 
+    if (x.path === entryPointInputFile) resultValue = x.text;
+    return x.contents
+  }),
+  // configObj.compression
+);
 
 console.log({
-  result2: result2.totalInstallSize,
+  // result: result.totalInstallSize,
+  size,
+  resultValue
   // packageManifests: result.state.packageManifests,
   //   // await compress(
   //   //   result.contents.map((x: any) => x?.contents),
   //   //   { type: "gzip" }
   //   // )
 });
+// const result2 = await build({
+//   // "/index.tsx",
+//   entryPoints: ["/new.tsx"],
+//   esbuild: {
+//     treeShaking: true,
+//     splitting: true,
+//     format: "esm"
+//   },
+//   init: {
+//     // platform: "node",
+//     // version: "0.17",
+//     // wasm
+//   }
+// });
+
+// console.log({
+//   result2: result2.totalInstallSize,
+//   // packageManifests: result.state.packageManifests,
+//   //   // await compress(
+//   //   //   result.contents.map((x: any) => x?.contents),
+//   //   //   { type: "gzip" }
+//   //   // )
+// });
 
 
 // await setFile(fs, "/index.tsx", `\
