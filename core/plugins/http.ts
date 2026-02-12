@@ -389,11 +389,31 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
       );
 
       if (excluded) {
-        // Per-module remap to false → stub empty module (spec-compliant).
-        // This is NOT a build error. The package.json says "this module
-        // doesn't exist for this platform", so we provide an empty export.
+        // Per-module remap to false → behavior depends on config.
+        // Default is "stub" (spec-compliant empty export, matching webpack/rollup).
         // Package-level `browser: false` (whole-package exclusion) is
-        // handled by CdnPlugin and DOES produce an error.
+        // handled by CdnPlugin and defaults to "error".
+        const importPolicy = LocalConfig.remapFalse?.importRemapFalse ?? "stub";
+        const warnOnStub = LocalConfig.remapFalse?.warnOnStubbedRemapFalse ?? true;
+
+        if (importPolicy === "error") {
+          return {
+            errors: [{
+              text: `Module "${packageRelPath}" is excluded for the current environment`,
+              detail: `Excluded by "${matchedField}" field in package.json for "${manifest.name ?? "unknown"}".`,
+            }],
+          };
+        }
+
+        if (importPolicy === "external") {
+          dispatchEvent(LOGGER_INFO, `Marking excluded module "${packageRelPath}" (${matchedField} field) as external in "${manifest.name ?? "unknown"}"`);
+          return {
+            path: args.path,
+            external: true,
+          };
+        }
+
+        // Default: "stub"
         dispatchEvent(LOGGER_INFO, `Stubbing excluded module "${packageRelPath}" (${matchedField} field) in "${manifest.name ?? "unknown"}"`);
         return {
           path: `${manifest.name ?? "unknown"}/${packageRelPath}`,
@@ -401,6 +421,7 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
           pluginData: Object.assign({}, args.pluginData, {
             excludedBy: matchedField,
             originalPath: packageRelPath,
+            suppressWarning: !warnOnStub,
           }),
         };
       }
@@ -471,10 +492,12 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
       build.onLoad({ filter: /.*/, namespace: EXCLUDED_MODULE_NAMESPACE }, (args) => {
         const field = args.pluginData?.excludedBy ?? "unknown";
         const originalPath = args.pluginData?.originalPath ?? args.path;
+        const suppressWarning = args.pluginData?.suppressWarning === true;
+
         return {
           contents: EMPTY_EXPORT,
           loader: "js",
-          warnings: [{
+          warnings: suppressWarning ? [] : [{
             text: `Module "${originalPath}" stubbed (empty export)`,
             detail: `Excluded by "${field}" field in package.json. The module is replaced with an empty object for the current platform.`,
           }],
