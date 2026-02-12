@@ -33,6 +33,7 @@
     "./resolve-conditions": "./resolve-conditions.ts",
     "./resolve-import-map": "./resolve-import-map.ts",
     "./runtime-builtins": "./runtime-builtins.ts",
+    "./validate-package-name": "./validate-package-name.ts",
     "./path": "./path.ts",
     "./semver": "./semver.ts",
     "./types": "./types.ts",
