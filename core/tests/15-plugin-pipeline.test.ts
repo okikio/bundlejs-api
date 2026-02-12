@@ -342,7 +342,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
       },
     };
     const result = tarResolvePackageEntry(manifest, "", conditions);
-    expect(result).toBe("/dist/index.mjs");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/dist/index.mjs");
   });
 
   test("falls back to legacy main field", () => {
@@ -352,7 +353,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
       main: "./lib/index.js",
     };
     const result = tarResolvePackageEntry(manifest, "", conditions);
-    expect(result).toBe("/lib/index.js");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/lib/index.js");
   });
 
   test("falls back to module field before main", () => {
@@ -364,7 +366,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
     };
     const result = tarResolvePackageEntry(manifest, "", conditions);
     // legacy() with browser: true checks browser → module → main
-    expect(result).toBe("/dist/esm.js");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/dist/esm.js");
   });
 
   test("returns /index.js when no fields present", () => {
@@ -373,7 +376,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
       version: "1.0.0",
     };
     const result = tarResolvePackageEntry(manifest, "", conditions);
-    expect(result).toBe("/index.js");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/index.js");
   });
 
   test("subpath used directly when exports don't match", () => {
@@ -384,7 +388,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
     };
     // Subpath "/custom/file.js" doesn't match any export key
     const result = tarResolvePackageEntry(manifest, "/custom/file.js", conditions);
-    expect(result).toBe("/custom/file.js");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/custom/file.js");
   });
 
   test("exports subpath resolution: ./utils", () => {
@@ -398,7 +403,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
     };
     const result = tarResolvePackageEntry(manifest, "/utils", conditions);
     // Subpath "/utils" → exports key "./utils" → "./dist/utils.js"
-    expect(result).toBe("/dist/utils.js");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/dist/utils.js");
   });
 
   test("require fallback when import doesn't match", () => {
@@ -411,7 +417,8 @@ describe("tar: resolvePackageEntry (tar.ts)", () => {
     };
     // With import conditions, no "import" key → falls through to require fallback
     const result = tarResolvePackageEntry(manifest, "", conditions);
-    expect(result).toBe("/dist/index.cjs");
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/dist/index.cjs");
   });
 });
 

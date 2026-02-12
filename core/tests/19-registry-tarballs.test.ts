@@ -336,8 +336,9 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
       },
     };
 
-    const entry = resolvePackageEntry(manifest, "", defaultConditions);
-    expect(entry).toBe("/dist/index.js");
+    const result = resolvePackageEntry(manifest, "", defaultConditions);
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/dist/index.js");
   });
 
   test("subpath import resolves via exports[\"./expo-sqlite\"]", () => {
@@ -351,8 +352,9 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
       },
     };
 
-    const entry = resolvePackageEntry(manifest, "/expo-sqlite", defaultConditions);
-    expect(entry).toBe("/expo-sqlite/index.js");
+    const result = resolvePackageEntry(manifest, "/expo-sqlite", defaultConditions);
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/expo-sqlite/index.js");
   });
 
   test("deep subpath import resolves via exports[\"./expo-sqlite/migrator\"]", () => {
@@ -366,8 +368,9 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
       },
     };
 
-    const entry = resolvePackageEntry(manifest, "/expo-sqlite/migrator", defaultConditions);
-    expect(entry).toBe("/expo-sqlite/migrator.js");
+    const result = resolvePackageEntry(manifest, "/expo-sqlite/migrator", defaultConditions);
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/expo-sqlite/migrator.js");
   });
 
   test("root import falls back to main when no exports", () => {
@@ -377,8 +380,9 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
       main: "./lib/index.js",
     };
 
-    const entry = resolvePackageEntry(manifest, "", defaultConditions);
-    expect(entry).toBe("/lib/index.js");
+    const result = resolvePackageEntry(manifest, "", defaultConditions);
+    expect(result.excluded).toBe(false);
+    expect(result.entryPath).toBe("/lib/index.js");
   });
 
   test("root import falls back to module over main", () => {
@@ -389,9 +393,10 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
       module: "./lib/index.mjs",
     };
 
-    const entry = resolvePackageEntry(manifest, "", defaultConditions);
+    const result = resolvePackageEntry(manifest, "", defaultConditions);
+    expect(result.excluded).toBe(false);
     // module is preferred for browser context
-    expect(entry).toMatch(/\.mjs|\.js/);
+    expect(result.entryPath).toMatch(/\.mjs|\.js/);
   });
 });
 
