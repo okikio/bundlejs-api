@@ -80,6 +80,23 @@ describe("18 · JSX in .js Files", () => {
       const source = `const re = /</ ;`;
       expect(containsJSX(source)).toBe(false);
     });
+
+    test("detects </tag> inside a line comment (harmless false positive)", () => {
+      // `// renders </div>` has `</d` which matches — this is a false positive
+      // but harmless because the tsx loader is a safe superset of ts for .js files
+      const source = `// renders </div> at the end\nexport const x = 42;`;
+      expect(containsJSX(source)).toBe(true);
+    });
+
+    test("detects </tag> inside a block comment (harmless false positive)", () => {
+      const source = `/* TODO: fix </Component> rendering */\nexport default 42;`;
+      expect(containsJSX(source)).toBe(true);
+    });
+
+    test("returns false for comment without JSX-like content", () => {
+      const source = `// this is a normal comment\n/* nothing special here */\nexport const y = 1;`;
+      expect(containsJSX(source)).toBe(false);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -226,6 +243,22 @@ describe("18 · JSX in .js Files", () => {
 
     test(".wasm → file (unaffected by content)", () => {
       expect(inferLoader("module.wasm")).toBe("file");
+    });
+
+    // -------------------------------------------------------------------------
+    // Comments containing JSX-like patterns (harmless false positives)
+    // -------------------------------------------------------------------------
+    test(".js with </tag> only in comment → tsx (harmless upgrade)", () => {
+      // The file has no real JSX, only a comment mentioning </div>.
+      // containsJSX triggers, but tsx loader parses the file correctly
+      // since esbuild ignores comment contents.
+      const content = `// See </div> for layout info\nexport const layout = "flex";`;
+      expect(inferLoader("layout.js", null, content)).toBe("tsx");
+    });
+
+    test(".js with block comment mentioning JSX → tsx (harmless upgrade)", () => {
+      const content = `/* Renders </Component> internally */\nmodule.exports = {};`;
+      expect(inferLoader("mod.js", null, content)).toBe("tsx");
     });
   });
 

@@ -150,6 +150,29 @@ export default html;
 Expected: `containsJSX(content)` → `true` (false positive), `inferLoader` → `"tsx"`. But the file parses correctly because esbuild doesn't interpret strings as JSX.
 
 
+### 18.8a — Content with `</` in comments does not cause harm
+
+**What it tests:** False positive from `</tag>` inside a JS comment (line or block). The `tsx` loader still parses correctly because esbuild ignores comment contents.
+
+The same logic as 18.8 applies: `containsJSX` does not distinguish between code, strings, and comments. Any occurrence of `</[A-Za-z>]` triggers detection. This is by design — stripping comments before scanning would add parsing complexity for zero practical benefit.
+
+```js
+// layout.js — only comments mention JSX
+// See </div> for layout info
+export const layout = "flex";
+```
+
+```js
+// mod.js — block comment with closing tag
+/* Renders </Component> internally */
+module.exports = {};
+```
+
+Expected: `containsJSX(content)` → `true` (false positive), `inferLoader` → `"tsx"`. File parses correctly under the `tsx` loader.
+
+**Why not strip comments first?** Stripping comments requires a partial parse — essentially what we're trying to avoid. The cost of the false positive (using `tsx` instead of `ts` loader) is zero because `tsx` is a strict superset of `ts` for `.js` files (no TypeScript generics ambiguity).
+
+
 ### 18.9 — Uint8Array content detection
 
 **What it tests:** `containsJSX` works on raw `Uint8Array` input (byte-level scan without string decoding).
