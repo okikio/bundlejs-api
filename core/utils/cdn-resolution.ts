@@ -185,35 +185,45 @@ export function resolveModern(
         `./${subpath.replace(/^\//, "")}`
   );
 
+  // Primary resolution with specified conditions.
+  // Wrapped in its own try/catch so a throw (e.g. "No known conditions")
+  // doesn't short-circuit the CJS fallback below.
+  let resolved: string[] | void;
   try {
-    // Primary resolution with specified conditions
-    let resolved = resolve(manifest, exportSubpath, {
+    resolved = resolve(manifest, exportSubpath, {
       browser: conditions.browser,
       conditions: conditions.conditions,
       require: conditions.require,
       unsafe: true, // Allow resolution even without explicit exports conditions
     });
+  } catch {
+    // Primary resolution failed — fall through to CJS fallback
+    resolved = undefined;
+  }
 
-    // Compatibility fallback: try require if ESM failed
-    if (!resolved && !conditions.require) {
+  // Compatibility fallback: try require if ESM failed
+  if (!resolved && !conditions.require) {
+    try {
       resolved = resolve(manifest, exportSubpath, {
         browser: conditions.browser,
         conditions: ["require", ...conditions.conditions],
         require: true,
+        unsafe: true, // Suppress throws for missing conditions
       });
+    } catch {
+      // CJS fallback also failed
+      resolved = undefined;
     }
-
-    if (resolved) {
-      const path = Array.isArray(resolved) ? resolved[0] : resolved;
-      if (typeof path === "string") {
-        return { path, success: true };
-      }
-    }
-
-    return { path: null, success: false };
-  } catch (e) {
-    return { path: null, success: false, error: e as Error };
   }
+
+  if (resolved) {
+    const path = Array.isArray(resolved) ? resolved[0] : resolved;
+    if (typeof path === "string") {
+      return { path, success: true };
+    }
+  }
+
+  return { path: null, success: false };
 }
 
 // =============================================================================
