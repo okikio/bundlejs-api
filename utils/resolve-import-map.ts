@@ -406,7 +406,9 @@ function resolveFromMappings(
     if (specifier.startsWith(key)) {
       const suffix = specifier.slice(key.length);
       const value = mappings[key];
-      // Value should also end with / for proper subpath handling
+      // Per WHATWG spec, value should also end with / for prefix keys.
+      // We do lenient concatenation here since bundler contexts often
+      // have values without trailing / (e.g., CDN URLs).
       return value.endsWith("/") ? value + suffix : value + "/" + suffix;
     }
   }

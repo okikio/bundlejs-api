@@ -468,14 +468,23 @@ function isValidDistTag(tag: string): boolean {
 }
 
 /**
- * Check if a string is a valid semver version.
+ * Check if a string looks like a semver version or range.
  *
- * Simplified check - full validation happens in semver module.
+ * Uses a first-character heuristic: semver versions/ranges always start with
+ * a digit (1.0.0), v/V prefix (v1.0.0), range operator (~^<>=), or wildcard (*xX).
+ *
+ * Previous approach (character class whitelist) missed pre-release versions
+ * like "1.0.0-rc.1" and ranges like ">=1.0.0-beta.1" because those contain
+ * lowercase letters. The first-character check is both simpler and more correct.
+ *
+ * Known edge case: dist-tags starting with a digit (e.g., "1fix") would be
+ * misclassified as semver. This is extremely rare in practice.
  */
 function looksLikeSemver(spec: string): boolean {
-  // Simple heuristic: contains digits and common semver chars
-  // The parseRange call in main parser does the real validation
-  return /^[0-9vV*xX~^<>=|&\s.-]+$/.test(spec) || spec === "*" || spec === "";
+  if (spec === "*" || spec === "") return true;
+  // If first character is semver-indicative, treat the whole string as semver.
+  // The exact-version vs range distinction happens in parseRegistrySpec().
+  return /^[0-9vV*xX~^<>=]/.test(spec);
 }
 
 // =============================================================================

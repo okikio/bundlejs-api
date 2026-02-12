@@ -592,6 +592,8 @@ export function normalizeContentEncodingToken(token: string): ArchiveCompression
       return "deflate";
     case "deflate-raw":
       return "deflate-raw";
+    case "zstd":
+      return "zstd";
     default:
       return "unknown";
   }

@@ -58,7 +58,7 @@
  */
 
 import { fetchWithCache } from "./fetch-and-cache.ts";
-import { maxSatisfying, parse, parseRange, format } from "./semver.ts";
+import { compare, maxSatisfying, parse, parseRange, format } from "./semver.ts";
 
 // =============================================================================
 // Types
@@ -853,11 +853,12 @@ export async function resolveJSRVersion(
 
     if (parsed.length === 0) return versions[0] ?? null;
 
-    parsed.sort((a, b) => {
-      const aStr = format(a.semver);
-      const bStr = format(b.semver);
-      return bStr.localeCompare(aStr, undefined, { numeric: true });
-    });
+    // Sort descending by semver (highest first).
+    // Using @std/semver's compare() instead of localeCompare() because
+    // localeCompare gets pre-release ordering wrong:
+    //   localeCompare: "1.0.0" < "1.0.0-alpha" (longer string)
+    //   semver spec:   "1.0.0-alpha" < "1.0.0"  (pre-release is lower)
+    parsed.sort((a, b) => compare(b.semver, a.semver));
 
     return parsed[0]?.original ?? null;
   }
