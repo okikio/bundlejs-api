@@ -37,14 +37,64 @@ import { getCDNStyle } from "../utils/cdn-format.ts";
 
 import {
 	detectArchiveFromResponse,
-	type ArchiveDetection,
-	type ArchiveDiagnostic
+  detectArchiveFromPathHint,
 } from "@bundle/utils/archive-detect";
 
 import { parsePackageName } from "@bundle/utils/parse-package-name";
 
 /** Tarball Plugin Namespace */
 export const TARBALL_NAMESPACE = "tarball-url";
+
+/**
+ * Walk URL pathname segments to locate the tarball filename.
+ *
+ * Delegates per-segment detection to `detectArchiveFromPathHint()` from
+ * archive-detect, which handles:
+ * - Multi-extension priority (`.tar.gz` before `.tar`)
+ * - Short conventions (`.tgz`, `.txz`, `.tzst`)
+ * - Ambiguous cases (`.gz` alone → `isTarballLike: false`)
+ * - Confidence and container/compression classification
+ *
+ * Returns the split point: everything up to and including the tarball
+ * segment is the fetch URL; everything after is a subpath.
+ *
+ * This avoids re-inventing archive-detect's extension matching with custom
+ * regex — the detection function is the single source of truth for "is this
+ * filename a tarball?" and the tar plugin should not duplicate that logic.
+ *
+ * @returns The tarball pathname and remaining subpath, or null if no segment is tarball-like.
+ *
+ * @example
+ * findTarballSplitInPathname("/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite/migrator")
+ * // { tarballPath: "/drizzle-orm/-/drizzle-orm-0.45.1.tgz", subpath: "/expo-sqlite/migrator" }
+ *
+ * @example
+ * findTarballSplitInPathname("/path/to/package.tar.gz")
+ * // { tarballPath: "/path/to/package.tar.gz", subpath: "" }
+ */
+export function findTarballSplitInPathname(
+  pathname: string,
+): { tarballPath: string; subpath: string } | null {
+  const segments = pathname.split("/");
+
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (!segment) continue;
+
+    const hint = detectArchiveFromPathHint(segment);
+    if (hint.isTarballLike) {
+      // Reconstruct the tarball path preserving leading slash and all segments up to here.
+      const tarballPath = segments.slice(0, i + 1).join("/");
+      const rest = segments.slice(i + 1).filter(Boolean);
+      return {
+        tarballPath,
+        subpath: rest.length > 0 ? `/${rest.join("/")}` : "",
+      };
+    }
+  }
+
+  return null;
+}
 
 /** Root directory for extracted tarballs in VFS */
 const TARBALL_ROOT = "/__tarballs__";
@@ -74,10 +124,42 @@ export interface TarballState {
 }
 
 /**
- * Check if a URL points to a tarball-style CDN (like pkg.pr.new)
+ * Check if a URL points to a tarball source.
+ *
+ * Two categories:
+ * 1. CDN-style tarball providers (e.g., pkg.pr.new)
+ * 2. Direct tarball URLs (*.tgz, *.tar.gz) from any origin
+ *    — npm registry, GitHub release assets, custom servers, etc.
+ *
+ * @example CDN-style
+ * ```ts
+ * isTarballUrl(new URL("https://pkg.pr.new/@tanstack/react-query@7988"))  // true
+ * ```
+ *
+ * @example Registry tarball
+ * ```ts
+ * isTarballUrl(new URL("https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz"))  // true
+ * ```
+ *
+ * @example With subpath (still a tarball)
+ * ```ts
+ * isTarballUrl(new URL("https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite/migrator"))  // true
+ * ```
  */
-function isTarballUrl(url: URL): boolean {
-	return getCDNStyle(url.origin) === "tarball";
+export function isTarballUrl(url: URL): boolean {
+  // CDN-style tarball providers (pkg.pr.new, etc.)
+  if (getCDNStyle(url.origin) === "tarball") return true;
+
+  // Direct tarball URLs: walk pathname segments and delegate detection
+  // to archive-detect's `detectArchiveFromPathHint()` which is the
+  // single source of truth for "does this filename look like a tarball?".
+  //
+  // We walk segments (not the full pathname) because tarballs may be
+  // followed by subpath segments:
+  //   https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite/migrator
+  //   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ tarball
+  //                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^ subpath
+  return findTarballSplitInPathname(url.pathname) !== null;
 }
 
 /**
@@ -100,6 +182,73 @@ async function getTarballKey(url: string): Promise<string> {
 	const hashArray = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0"));
   return hashArray.join("").slice(0, 16);
 }
+
+// =============================================================================
+// Generic tarball URL parsing (registry tarballs, GitHub releases, etc.)
+// =============================================================================
+
+export interface ParseGenericTarballUrlResult {
+  /** The tarball URL (for fetching) — everything up to and including .tgz/.tar.gz */
+  tarballUrl: URL;
+  /** Any path segments after the archive extension, e.g. "/expo-sqlite/migrator" */
+  subpath: string;
+}
+
+/**
+ * Parse a generic tarball URL by splitting at the archive extension.
+ *
+ * Works for any URL with .tgz or .tar.gz in the pathname, including:
+ * - npm registry: `https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz`
+ * - With subpath:  `https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite`
+ * - GitHub release: `https://github.com/user/repo/releases/download/v1.0.0/package.tar.gz`
+ * - Generic:       `https://example.com/path/to/package.tgz/lib/index.js`
+ *
+ * Algorithm:
+ * 1. Find the first `.tgz` or `.tar.gz` in the pathname
+ * 2. Everything up to (and including) that extension → tarball fetch URL
+ * 3. Everything after → subpath for entry point resolution
+ *
+ * @example No subpath
+ * ```ts
+ * const r = parseGenericTarballUrl(new URL("https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz"));
+ * // r.tarballUrl.href -> "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz"
+ * // r.subpath         -> ""
+ * ```
+ *
+ * @example With subpath
+ * ```ts
+ * const r = parseGenericTarballUrl(
+ *   new URL("https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite/migrator")
+ * );
+ * // r.tarballUrl.href -> "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz"
+ * // r.subpath         -> "/expo-sqlite/migrator"
+ * ```
+ */
+export function parseGenericTarballUrl(url: URL): ParseGenericTarballUrlResult {
+  // Delegate to findTarballSplitInPathname which walks path segments
+  // and uses detectArchiveFromPathHint() per segment.
+  const split = findTarballSplitInPathname(url.pathname);
+
+  if (!split) {
+    // Not a tarball URL by extension — return as-is with no subpath.
+    // This shouldn't happen if callers check isTarballUrl() first.
+    return {
+      tarballUrl: new URL(url.toString()),
+      subpath: "",
+    };
+  }
+
+  const tarballUrl = new URL(url.toString());
+  tarballUrl.pathname = split.tarballPath;
+  tarballUrl.search = "";
+  tarballUrl.hash = "";
+
+  return { tarballUrl, subpath: split.subpath };
+}
+
+// =============================================================================
+// pkg.pr.new URL parsing
+// =============================================================================
 
 export interface ParseTarballUrlResult {
   /**
@@ -379,12 +528,13 @@ export async function fetchAndExtractTarball<T>(
     );
   }
 	
-	const contentType = response.headers.get("content-type")?.trim().toLowerCase();
-	
-	// pkg.pr.new returns application/tar+gzip
-	if (contentType !== "application/tar+gzip" && !url.endsWith(".tgz") && !url.endsWith(".tar.gz")) {
-		throw new Error(`Unexpected content type for tarball: ${contentType}`);
-	}
+  // NOTE: The content-type check that was here has been removed.
+  // The detectArchiveFromResponse() call above already validated that:
+  //   1. detection.isTarballLike === true
+  //   2. detection.container === "tar"
+  // That's authoritative (magic-byte based). A content-type check was redundant
+  // and blocked legitimate tarballs from registries that return
+  // "application/octet-stream" instead of "application/tar+gzip".
 	
   // Build the tar entry stream based on detected wrapper.
   //
@@ -661,10 +811,28 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
       const url = URL.parse(args.path);
 			if (!url) return;
 			
-      // Not a tarball CDN, let HTTP/CDN plugins handle
-			if (!isTarballUrl(url)) return; 
-			
-			const { subpath, packageUrl } = parseTarballUrl(url);
+      // Not a tarball URL, let HTTP/CDN plugins handle
+      if (!isTarballUrl(url)) return;
+
+      // Route to the right parser based on tarball source.
+      //
+      // pkg.pr.new uses a custom URL scheme: /@scope/name@version/subpath
+      // Registry/generic tarballs use file extensions: /path/to/pkg.tgz/subpath
+      let subpath: string;
+      let packageUrl: URL;
+
+      if (getCDNStyle(url.origin) === "tarball") {
+        // pkg.pr.new style — dedicated parser
+        const parsed = parseTarballUrl(url);
+        subpath = parsed.subpath;
+        packageUrl = parsed.packageUrl;
+      } else {
+        // Generic tarball URL (.tgz / .tar.gz) — split at extension
+        const parsed = parseGenericTarballUrl(url);
+        subpath = parsed.subpath;
+        packageUrl = parsed.tarballUrl;
+      }
+
 			const conditions = getResolverConditions(args, esbuildOpts);
 			
 			try {
