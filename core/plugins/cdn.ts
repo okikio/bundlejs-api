@@ -69,6 +69,7 @@ import { Context, fromContext, withContext } from "../context/context.ts";
 
 import { parsePackageName } from "@bundle/utils/parse-package-name";
 import { getPackageOfVersion, getPackageTarballUrl, getRegistryURL, resolveVersion } from "@bundle/utils/npm-search";
+import { normalizeRegistryConfig, getRegistryForPackage } from "@bundle/utils/npmrc";
 
 import {
   isUrlSpec,
@@ -144,14 +145,16 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const sideEffectsMatchersCache = fromContext("sideEffectsMatchersCache", StateContext)
     ?? new Map<string, SideEffectsMatchers>();
 
+  // ── Registry configuration (for scoped registries / .npmrc support) ────
+  // Normalize the registry config once at plugin init time.
+  // This enables routing different scopes to different registries, e.g.:
+  //   @jsr → https://npm.jsr.io
+  //   @mycompany → https://npm.mycompany.com
+  const registryConfig = normalizeRegistryConfig(LocalConfig.registry);
+
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     const conditions = getResolverConditions(args, effectiveResolveOpts);
     let argPath = args.path;
-
-    console.log({
-      argPath,
-      conditions
-    })
 
     // ========================================================================
     // Build initial manifest from config + inherited pluginData
@@ -365,6 +368,11 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         effectiveExtraSubpath = spec.target.path;
       }
 
+      // Resolve the appropriate registry for this package's scope, e.g.:
+      //   @jsr/std__path  → https://npm.jsr.io   (if configured via .npmrc)
+      //   react           → https://registry.npmjs.org   (default)
+      const registry = getRegistryForPackage(effectiveName, registryConfig);
+
       // ======================================================================
       // URL-based dependencies - route through build.resolve()
       // This allows TarballPlugin or HttpPlugin to handle them
@@ -459,7 +467,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
         try {
           // Step 1: Resolve version range to exact version
-          const identifiedVersion = await resolveVersion(`${nameToResolve}@${versionToResolve}`);
+          const identifiedVersion = await resolveVersion(`${nameToResolve}@${versionToResolve}`, registry);
           if (identifiedVersion) effectiveAssumedVersion = identifiedVersion;
         } catch (e) {
           dispatchEvent(LOGGER_WARN, `[registry] Version resolution failed for ${nameToResolve}@${versionToResolve}, falling back to assumed version.`);
@@ -472,7 +480,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         try {
           resolvedManifest = packageManifestsMap.get(packageId) ?? null;
           if (!resolvedManifest) {
-            resolvedManifest = await getPackageOfVersion(packageId);
+            resolvedManifest = await getPackageOfVersion(packageId, registry);
             if (resolvedManifest) {
               packageManifestsMap.set(packageId, resolvedManifest);
             }
@@ -487,6 +495,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           resolvedManifest as FullPackageVersion | null,
           effectiveName,
           effectiveAssumedVersion,
+          registry,
         );
 
         const combinedSubpath = joinSubpath(effectiveExtraSubpath, parsedSubpath);
@@ -551,6 +560,12 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       let resolvedManifest = structuredClone(initialManifest);
       let resultSubpath = parsedSubpath;
 
+      // Track whether we successfully fetched the package's own manifest
+      // from the CDN. When false, resolvedManifest still holds the parent's
+      // version (from initialManifest), so we must prefer
+      // effectiveAssumedVersion for the final URL construction.
+      let manifestFetched = false;
+
       // If the CDN supports package.json and some other npm stuff, it counts as an npm CDN
       if (NPM_CDN) {
         // For npm aliases, we need to resolve the aliased package name
@@ -558,7 +573,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         const versionToResolve = effectiveAssumedVersion;
 
         try {
-          const identifiedVersion = await resolveVersion(`${nameToResolve}@${versionToResolve}`)
+          const identifiedVersion = await resolveVersion(`${nameToResolve}@${versionToResolve}`, registry)
           if (identifiedVersion) effectiveAssumedVersion = identifiedVersion;
         } catch (e) {
           dispatchEvent(LOGGER_WARN, `Couldn't identify the correct npm version based on the semver (${versionToResolve}) for package (${nameToResolve}). Be cautious this is an unusual situation, the bundle may silently break in odd ways.`);
@@ -573,8 +588,18 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
           // If the subpath is a directory check to see if that subpath has a `package.json`,
           // after which check if the parent directory has a `package.json`
+          //
+          // NOTE: We fetch the version-specific manifest from the registry API
+          // (e.g. registry.npmjs.org/pkgname/1.0.0) only for unscoped packages.
+          // For scoped packages, the registry's version endpoint uses `%2f`
+          // encoding (@scope%2fname/version) which breaks on some HTTP infra
+          // that decodes `%2f` before routing. Instead, for scoped packages
+          // we use the CDN-native path to fetch package.json directly.
+          const useRegistryEndpoint = !effectiveName.includes("/");
           const manifestVariants = [
-            { path: getRegistryURL(`${effectiveName}@${effectiveAssumedVersion}`).packageVersionURL },
+            useRegistryEndpoint
+              ? { path: getRegistryURL(`${effectiveName}@${effectiveAssumedVersion}`, registry).packageVersionURL }
+              : { path: `${effectiveName}@${effectiveAssumedVersion}/package.json` },
             // { path: `${effectiveName}@${effectiveAssumedVersion}/package.json` },
             isDirectory ? {
               path: `${effectiveName}@${effectiveAssumedVersion}${parsedSubpath}/package.json`,
@@ -597,6 +622,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
               if (!res.ok) throw new Error(await res.text());
 
               resolvedManifest = await res.json();
+              manifestFetched = true;
               isSubpathDirectoryPackage = isDirectory ?? false;
 
               // If the package.json is not a sub-directory package, then we should cache it as such
@@ -678,7 +704,16 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
       // If the CDN is npm based then it should add the parsed version to the URL
       // e.g. https://unpkg.com/spring-easing@v1.0.0/
-      const knownVersion = resolvedManifest?.version || effectiveAssumedVersion;
+      //
+      // When we successfully fetched this package's own manifest, its
+      // `version` field is authoritative. Otherwise resolvedManifest is
+      // still a clone of the *parent's* manifest, whose version would be
+      // wrong (e.g. jsonfile getting fs-extra's "11.2.0").  In that case
+      // fall back to effectiveAssumedVersion which was resolved from the
+      // npm registry and is correct.
+      const knownVersion = manifestFetched
+        ? (resolvedManifest?.version || effectiveAssumedVersion)
+        : effectiveAssumedVersion;
       const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
       const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
@@ -691,7 +726,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       const packageId = `${effectiveName}@${knownVersion}`;
       if (!packageManifestsMap.get(packageId)) {
         try {
-          const _manifest = await getPackageOfVersion(packageId);
+          const _manifest = await getPackageOfVersion(packageId, registry);
           if (_manifest) packageManifestsMap.set(packageId, _manifest);
         } catch (e) {
           dispatchEvent(LOGGER_WARN, "Could not store the package.json manifests of the dependencies we fetched.");

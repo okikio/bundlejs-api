@@ -21,6 +21,9 @@
  * | 19.10 — getNpmTarballUrl construction | Tarball URL construction for scoped/unscoped packages |
  * | 19.11 — getPackageTarballUrl | Manifest dist.tarball preference vs fallback |
  * | 19.12 — npm: and jsr.registry: scheme helpers | Origin, path, URL generation for shorthand schemes |
+ * | 19.13 — parseNpmrc | .npmrc content parsing |
+ * | 19.14 — getRegistryForPackage | Registry lookup by scope |
+ * | 19.15 — normalizeRegistryConfig | Config normalization from various inputs |
  * | 19.16 — Scoped package %2f encoding | Registry URL encoding for scoped packages |
  *
  * @see docs/scenarios/19-registry-tarballs.md
@@ -43,6 +46,12 @@ import {
 import { getCDNStyle, getCDNOrigin, getPureImportPath, getCDNUrl } from "../utils/cdn-format.ts";
 import { getNpmTarballUrl, getPackageTarballUrl, getRegistryURL, escapePackageName } from "@bundle/utils/npm-search";
 import { TAR_MULTI_EXTENSIONS, TAR_SHORT_EXTENSIONS } from "@bundle/utils/archive-detect";
+import {
+  parseNpmrc,
+  getRegistryForPackage,
+  normalizeRegistryConfig,
+  NPM_PUBLIC_REGISTRY,
+} from "@bundle/utils/npmrc";
 
 // =============================================================================
 // 19.1 — isTarballUrl detection
@@ -830,5 +839,188 @@ describe("19.16 — Scoped package %2f encoding in registry URLs", () => {
     expect(url).toBe("https://registry.npmjs.com/@react-native/assets-registry/-/assets-registry-0.76.8.tgz");
     // Verify there's no %2f in the tarball URL
     expect(url).not.toContain("%2f");
+  });
+});
+
+// =============================================================================
+// 19.13 — parseNpmrc
+// =============================================================================
+
+describe("19.13 — parseNpmrc", () => {
+  test("parses default registry", () => {
+    const config = parseNpmrc("registry=https://registry.npmjs.org/");
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+    expect(config.scopedRegistries).toBeUndefined();
+  });
+
+  test("parses scoped registries", () => {
+    const config = parseNpmrc(`
+      @jsr:registry=https://npm.jsr.io
+      @mycompany:registry=https://npm.mycompany.com/
+    `);
+    expect(config.scopedRegistries).toEqual({
+      "@jsr": "https://npm.jsr.io",
+      "@mycompany": "https://npm.mycompany.com/",
+    });
+  });
+
+  test("parses both default and scoped registries", () => {
+    const config = parseNpmrc(`
+      registry=https://my-registry.com/
+      @jsr:registry=https://npm.jsr.io
+    `);
+    expect(config.registry).toBe("https://my-registry.com/");
+    expect(config.scopedRegistries).toEqual({
+      "@jsr": "https://npm.jsr.io",
+    });
+  });
+
+  test("ignores comments (# and ;)", () => {
+    const config = parseNpmrc(`
+      # This is a comment
+      ; This is also a comment
+      registry=https://registry.npmjs.org/
+      # @ignored:registry=https://should-not-appear.com
+    `);
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+    expect(config.scopedRegistries).toBeUndefined();
+  });
+
+  test("ignores auth token lines", () => {
+    const config = parseNpmrc(`
+      registry=https://registry.npmjs.org/
+      //registry.npmjs.org/:_authToken=some-secret-token
+      //npm.jsr.io/:_authToken=another-token
+    `);
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+    // Auth tokens should NOT appear in the config
+    expect(config.scopedRegistries).toBeUndefined();
+  });
+
+  test("strips environment variable references", () => {
+    const config = parseNpmrc("registry=https://registry.npmjs.org/${NPM_TOKEN}");
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+  });
+
+  test("handles whitespace around =", () => {
+    const config = parseNpmrc("registry = https://registry.npmjs.org/");
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+  });
+
+  test("handles empty input", () => {
+    const config = parseNpmrc("");
+    expect(config.registry).toBeUndefined();
+    expect(config.scopedRegistries).toBeUndefined();
+  });
+
+  test("handles Windows line endings", () => {
+    const config = parseNpmrc("registry=https://registry.npmjs.org/\r\n@jsr:registry=https://npm.jsr.io\r\n");
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+    expect(config.scopedRegistries).toEqual({
+      "@jsr": "https://npm.jsr.io",
+    });
+  });
+
+  test("scoped names are lowercased", () => {
+    const config = parseNpmrc("@JSR:registry=https://npm.jsr.io");
+    expect(config.scopedRegistries).toEqual({
+      "@jsr": "https://npm.jsr.io",
+    });
+  });
+
+  test("ignores unknown directives", () => {
+    const config = parseNpmrc(`
+      strict-ssl=true
+      cache=/tmp/npm-cache
+      registry=https://registry.npmjs.org/
+      proxy=http://proxy.example.com
+    `);
+    expect(config.registry).toBe("https://registry.npmjs.org/");
+    expect(config.scopedRegistries).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// 19.14 — getRegistryForPackage
+// =============================================================================
+
+describe("19.14 — getRegistryForPackage", () => {
+  const config = {
+    registry: "https://my-default-registry.com",
+    scopedRegistries: {
+      "@jsr": "https://npm.jsr.io",
+      "@mycompany": "https://npm.mycompany.com/",
+    },
+  };
+
+  test("returns scoped registry for matching scope", () => {
+    expect(getRegistryForPackage("@jsr/std__path", config)).toBe("https://npm.jsr.io");
+  });
+
+  test("returns scoped registry for different scope", () => {
+    expect(getRegistryForPackage("@mycompany/sdk", config)).toBe("https://npm.mycompany.com/");
+  });
+
+  test("returns default registry for unscoped packages", () => {
+    expect(getRegistryForPackage("react", config)).toBe("https://my-default-registry.com");
+  });
+
+  test("returns default registry for unknown scopes", () => {
+    expect(getRegistryForPackage("@unknown/pkg", config)).toBe("https://my-default-registry.com");
+  });
+
+  test("returns fallback when no config", () => {
+    expect(getRegistryForPackage("react", null)).toBe(NPM_PUBLIC_REGISTRY);
+  });
+
+  test("returns fallback when config has no registries", () => {
+    expect(getRegistryForPackage("react", {})).toBe(NPM_PUBLIC_REGISTRY);
+  });
+
+  test("uses custom fallback", () => {
+    expect(getRegistryForPackage("react", null, "https://custom-fallback.com")).toBe("https://custom-fallback.com");
+  });
+
+  test("scope matching is case-sensitive (scopes should be lowercase)", () => {
+    // @JSR was lowercased during parsing, so @JSR won't match the stored @jsr
+    expect(getRegistryForPackage("@JSR/something", config)).toBe("https://my-default-registry.com");
+  });
+});
+
+// =============================================================================
+// 19.15 — normalizeRegistryConfig
+// =============================================================================
+
+describe("19.15 — normalizeRegistryConfig", () => {
+  test("returns undefined for null/undefined input", () => {
+    expect(normalizeRegistryConfig(null)).toBeUndefined();
+    expect(normalizeRegistryConfig(undefined)).toBeUndefined();
+  });
+
+  test("treats plain URL string as default registry", () => {
+    const config = normalizeRegistryConfig("https://npm.jsr.io");
+    expect(config).toEqual({ registry: "https://npm.jsr.io" });
+  });
+
+  test("parses string with = as .npmrc content", () => {
+    const config = normalizeRegistryConfig("@jsr:registry=https://npm.jsr.io");
+    expect(config?.scopedRegistries).toEqual({
+      "@jsr": "https://npm.jsr.io",
+    });
+  });
+
+  test("parses multi-line string as .npmrc content", () => {
+    const config = normalizeRegistryConfig(
+      "registry=https://my-reg.com\n@jsr:registry=https://npm.jsr.io"
+    );
+    expect(config?.registry).toBe("https://my-reg.com");
+    expect(config?.scopedRegistries).toEqual({
+      "@jsr": "https://npm.jsr.io",
+    });
+  });
+
+  test("passes through RegistryConfig object as-is", () => {
+    const input = { registry: "https://my-reg.com", scopedRegistries: { "@foo": "https://foo.com" } };
+    expect(normalizeRegistryConfig(input)).toBe(input);
   });
 });
