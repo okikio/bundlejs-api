@@ -222,6 +222,22 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 13.17 | URL utilities (join, encode, path) | `utils/url.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
 | 13.18 | Bare import detection | `utils/path.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
 
+### Plugin Pipeline Correctness
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 15.1 | Extension probing (`AllEndingVariants`) | `plugins/http.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.2 | Polyfill map shape & completeness | `plugins/external.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.3 | External package detection edge cases | `plugins/external.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.4 | Alias guard conditions | `plugins/alias.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.5 | VFS namespace scoping | `plugins/fs.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.6 | Tarball entry resolution fallback chain | `plugins/tar.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.7 | Alias + External interaction (ordering) | `plugins/alias.ts`, `plugins/external.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.8 | CDN style → plugin routing | `utils/cdn-format.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.9 | `pluginData` contract (url, manifest, packageBaseUrl) | `plugins/http.ts`, `plugins/cdn.ts` | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.10 | Plugin namespace uniqueness | all plugins | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+| 15.11 | Integration: VFS→CDN, alias, external, polyfill, format | full pipeline | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
+
 
 ## Coverage Map
 
@@ -253,6 +269,11 @@ This table maps each scenario to the source file and function it exercises:
 | Tarball parsing | `tar.ts` | `parseTarballUrl()` | 13.16 |
 | URL utilities | `url.ts` | `encodeWhitespace()`, `urlJoin()` | 13.17 |
 | Bare import detection | `path.ts` | `isBareImport()` | 13.18 |
+| Extension probing variants | `http.ts` | `AllEndingVariants` | 15.1 |
+| Polyfill map | `external.ts` | `PolyfillMap` | 15.2 |
+| Tarball entry resolution | `tar.ts` | `resolvePackageEntry()` (tar) | 15.6 |
+| Plugin namespace isolation | all plugins | namespace constants | 15.10 |
+| Full pipeline integration | all plugins | `buildWithEntry()` | 15.11 |
 
 ## What Would Have Caught the Browser Remapping Bug
 
