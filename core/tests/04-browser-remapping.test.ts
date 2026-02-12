@@ -17,15 +17,11 @@ import {
   resolveLegacy,
   applyPathRemapping,
   applyManifestRemappings,
-  resolvePackageEntry,
   getResolverConditions,
-  getLegacyMainFields,
   manifest,
   importArgs,
   resolveOpts,
   buildPackage,
-  getOutputText,
-  NETWORK_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================

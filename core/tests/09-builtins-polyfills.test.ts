@@ -14,11 +14,9 @@ import { expect } from "@std/expect";
 
 import {
   buildPackage,
-  buildWithEntry,
   getOutputText,
   outputContains,
   outputMatches,
-  NETWORK_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================

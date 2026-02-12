@@ -20,7 +20,6 @@ import {
   importArgs,
   resolveOpts,
   buildPackage,
-  NETWORK_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================
@@ -36,7 +35,7 @@ describe("03 · Legacy Field Resolution", () => {
       const result = resolveLegacy(pkg, { browser: true }, fields);
 
       expect(result.excluded).toBe(false);
-      expect(result.entryPoint).toBe("index.js");
+      expect(result.entryPoint).toBe("./index.js");
     });
 
     test("node build resolves to main", () => {
@@ -44,7 +43,7 @@ describe("03 · Legacy Field Resolution", () => {
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
       expect(result.excluded).toBe(false);
-      expect(result.entryPoint).toBe("index.js");
+      expect(result.entryPoint).toBe("./index.js");
     });
   });
 
@@ -62,7 +61,7 @@ describe("03 · Legacy Field Resolution", () => {
 
       // No browser field → falls to module
       expect(result.excluded).toBe(false);
-      expect(result.entryPoint).toBe("lodash.js");
+      expect(result.entryPoint).toBe("./lodash.js");
     });
   });
 
@@ -125,7 +124,7 @@ describe("03 · Legacy Field Resolution", () => {
     const pkg = manifest({
       main: "./moment.js",
       "jsnext:main": "./dist/moment.js",
-    } as any);
+    });
 
     test("resolveLegacy ignores jsnext:main, picks main", () => {
       const fields = ["module", "main"];

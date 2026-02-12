@@ -14,8 +14,6 @@ import { expect } from "@std/expect";
 import {
   buildPackage,
   buildWithEntry,
-  getOutputText,
-  NETWORK_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================

@@ -13,16 +13,11 @@ import { expect } from "@std/expect";
 
 import {
   resolveModern,
-  resolvePackageEntry,
   getResolverConditions,
-  getLegacyMainFields,
   manifest,
   importArgs,
   resolveOpts,
   buildPackage,
-  getOutputText,
-  NETWORK_TIMEOUT,
-  UNIT_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================
@@ -224,7 +219,7 @@ describe("01 · Conditional Exports", () => {
   describe("1.5 — Single-string exports (chalk-like)", () => {
     const pkg = manifest({
       type: "module",
-      exports: "./source/index.js" as any,
+      exports: "./source/index.js",
     });
 
     test("resolves the string directly", () => {
@@ -270,7 +265,7 @@ describe("01 · Conditional Exports", () => {
     const pkg = manifest({
       exports: {
         ".": "./index.js",
-        "./internal": null as any,
+        "./internal": null,
       },
     });
 

@@ -22,9 +22,6 @@ import {
   importArgs,
   resolveOpts,
   buildPackage,
-  getOutputText,
-  NETWORK_TIMEOUT,
-  UNIT_TIMEOUT,
 } from "./helpers.ts";
 
 import type { ResolveRuntime } from "./helpers.ts";

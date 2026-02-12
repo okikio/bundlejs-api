@@ -14,7 +14,6 @@ import { expect } from "@std/expect";
 import {
   resolveModern,
   getResolverConditions,
-  computePeerDependencies,
   manifest,
   importArgs,
   resolveOpts,
@@ -22,8 +21,6 @@ import {
   buildWithEntry,
   getOutputText,
   outputContains,
-  NETWORK_TIMEOUT,
-  UNIT_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================

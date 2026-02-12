@@ -14,7 +14,7 @@ import type { PackageJson } from "@bundle/utils/types";
 import type { ResolverConditionInputs } from "@bundle/utils/resolve-conditions";
 
 import { build, TheFileSystem } from "../build.ts";
-import { getFile, setFile } from "../utils/filesystem.ts";
+import { setFile } from "../utils/filesystem.ts";
 
 // Re-export resolution functions for unit testing
 export {
@@ -121,7 +121,7 @@ export async function buildWithEntry(
  *
  * Generates `export * from "<specifier>";` as the entry code.
  */
-export async function buildPackage(
+export function buildPackage(
   specifier: string,
   config: BuildConfig = {},
 ): Promise<BuildResult> {

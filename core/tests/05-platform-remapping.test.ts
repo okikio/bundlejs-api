@@ -40,7 +40,7 @@ describe("05 · Platform-Specific Remapping", () => {
         "./fallback/platform.js": "./fallback/platform.native.js",
         "./fallback/utf8.auto.js": "./fallback/utf8.auto.native.js",
       },
-    } as any);
+    });
 
     test("react-native runtime → remaps to .native.js", () => {
       const conds = getResolverConditions(
@@ -66,7 +66,7 @@ describe("05 · Platform-Specific Remapping", () => {
     const pkg = manifest({
       browser: { "./lib/impl.js": "./lib/impl.browser.js" },
       "react-native": { "./lib/impl.js": "./lib/impl.native.js" },
-    } as any);
+    });
 
     test("react-native wins over browser", () => {
       // Simulate both conditions being active
@@ -85,7 +85,7 @@ describe("05 · Platform-Specific Remapping", () => {
     const pkg = manifest({
       browser: { "./lib/crypto.js": "./lib/crypto.browser.js" },
       electron: { "./lib/crypto.js": "./lib/crypto.electron.js" },
-    } as any);
+    });
 
     test("electron-renderer: electron field wins over browser", () => {
       const conds = getResolverConditions(
@@ -122,7 +122,7 @@ describe("05 · Platform-Specific Remapping", () => {
     const pkg = manifest({
       browser: { "./fallback/platform.js": "./fallback/platform.browser.js" },
       "react-native": { "./fallback/platform.js": "./fallback/platform.native.js" },
-    } as any);
+    });
 
     test("deno runtime: no condition matches → pass-through", () => {
       const conds = getResolverConditions(
@@ -142,7 +142,7 @@ describe("05 · Platform-Specific Remapping", () => {
         "./lib/dom-impl.js": false,
         "./lib/platform.js": "./lib/platform.native.js",
       },
-    } as any);
+    });
 
     test("react-native build: false excludes the module", () => {
       const conds = getResolverConditions(

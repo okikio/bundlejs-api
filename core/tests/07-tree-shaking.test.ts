@@ -13,16 +13,11 @@ import { expect } from "@std/expect";
 
 import {
   computeEsbuildSideEffects,
-  compileSideEffectsMatchers,
-  normalizeSideEffectsPattern,
   normalizePkgRelPath,
   isJsLikePath,
   manifest,
   buildPackage,
   buildWithEntry,
-  getOutputText,
-  NETWORK_TIMEOUT,
-  UNIT_TIMEOUT,
 } from "./helpers.ts";
 
 // =============================================================================
