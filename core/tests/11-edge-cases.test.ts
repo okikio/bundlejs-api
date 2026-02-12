@@ -93,7 +93,7 @@ describe("11 · Edge Cases and Errors", () => {
       const result = await buildWithEntry(
         `export { useState } from "react";`,
         {
-          alias: { react: "preact/compat" },
+          alias: { react: "preact@10.25.4/compat" },
         },
       );
 

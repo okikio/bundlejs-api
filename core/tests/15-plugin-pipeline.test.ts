@@ -650,8 +650,9 @@ describe("pluginData contract", () => {
 describe("integration · VFS → CDN handoff", () => {
   test("VFS entry that imports bare package routes to CDN", async () => {
     // Entry in VFS (/index.tsx) imports "preact" (bare) → CDN resolves it
+    // Pin version to avoid CDN resolution picking up wrong versions
     const result = await buildWithEntry(
-      `export { h } from "preact";`,
+      `export { h } from "preact@10.25.4";`,
       { esbuild: { treeShaking: true, format: "esm" } },
     );
 
@@ -715,7 +716,9 @@ describe("integration · AliasPlugin", () => {
   test("alias rewrites package before CDN resolution", async () => {
     const result = await buildWithEntry(
       `export { h } from "react";`,
-      { alias: { react: "preact" } },
+      {
+        alias: { react: "preact@10.25.4" },
+      },
     );
 
     expect(result.errors.length).toBe(0);
@@ -726,7 +729,7 @@ describe("integration · AliasPlugin", () => {
     const result = await buildWithEntry(
       `export { useState } from "react";`,
       {
-        alias: { react: "preact/compat" },
+        alias: { react: "preact@10.25.4/compat" },
         esbuild: { treeShaking: true },
       },
     );
