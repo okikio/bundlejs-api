@@ -3,7 +3,7 @@
  *
  * Tests the correctness of the 6-plugin esbuild pipeline:
  *
- *   AliasPlugin → ExternalPlugin → VFSPlugin → TarballPlugin → HttpPlugin → CdnPlugin
+ *   AliasPlugin → ExternalPlugin → TarballPlugin → VFSPlugin → HttpPlugin → CdnPlugin
  *
  * Three layers of coverage:
  *

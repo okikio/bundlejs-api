@@ -238,6 +238,34 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 15.10 | Plugin namespace uniqueness | all plugins | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
 | 15.11 | Integration: VFS→CDN, alias, external, polyfill, format | full pipeline | [15-plugin-pipeline.md](15-plugin-pipeline.md) |
 
+### GitHub Issue Regression
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 16 | Regression tests for specific GitHub issues | various | [16-github-issue-regression.md](16-github-issue-regression.md) |
+
+### JSX in `.js` Files
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 18.1 | JSX in `.js` file gets `tsx` loader | `loader.ts` | [18-jsx-in-js-files.md](18-jsx-in-js-files.md) |
+| 18.2 | Non-JSX `.js` file stays `ts` loader | `loader.ts` | [18-jsx-in-js-files.md](18-jsx-in-js-files.md) |
+| 18.3 | `.ts` files never upgraded | `loader.ts` | [18-jsx-in-js-files.md](18-jsx-in-js-files.md) |
+| 18.4 | `containsJSX` byte-level detection | `loader.ts` | [18-jsx-in-js-files.md](18-jsx-in-js-files.md) |
+
+### Registry Tarballs & VFS Tarballs
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 19.1 | isTarballUrl detection (CDN + extension) | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.2 | parseGenericTarballUrl (split URL/subpath) | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.3 | parseTarballUrl (pkg.pr.new) unchanged | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.4 | TarResolution routing (pkg.pr.new vs registry) | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.5 | resolvePackageEntry with subpaths | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.6 | stripPackagePrefix | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.7 | Edge cases (case-insensitive, multi-ext, archive-detect) | `plugins/tar.ts`, `archive-detect.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+| 19.8 | VFS tarball path detection (isTarballPath) | `plugins/tar.ts` | [19-registry-tarballs.md](19-registry-tarballs.md) |
+
 
 ## Coverage Map
 
@@ -266,7 +294,13 @@ This table maps each scenario to the source file and function it exercises:
 | Loader inference | `loader.ts` | `inferLoader()` | 13.7 |
 | CDN style detection | `cdn-format.ts` | `getCDNStyle()` | 13.1 |
 | JSR specifiers | `cdn-format.ts` | `parseJSRSpecifier()` | 13.5–13.6 |
-| Tarball parsing | `tar.ts` | `parseTarballUrl()` | 13.16 |
+| Tarball parsing | `tar.ts` | `parseTarballUrl()` | 13.16, 19.3 |
+| Tarball URL detection | `tar.ts` | `isTarballUrl()`, `isTarballPath()` | 19.1, 19.7, 19.8 |
+| Tarball URL splitting | `tar.ts` | `findTarballSplitInPathname()` | 19.2, 19.7, 19.8 |
+| Tarball subpath resolution | `tar.ts` | `resolvePackageEntry()` (tar) | 19.5 |
+| VFS tarball detection | `tar.ts` | `isTarballPath()` | 19.8 |
+| JSX content detection | `loader.ts` | `containsJSX()` | 18.1–18.4 |
+| Loader upgrade (JSX in JS) | `loader.ts` | `inferLoader()` | 18.1–18.3 |
 | URL utilities | `url.ts` | `encodeWhitespace()`, `urlJoin()` | 13.17 |
 | Bare import detection | `path.ts` | `isBareImport()` | 13.18 |
 | Extension probing variants | `http.ts` | `AllEndingVariants` | 15.1 |

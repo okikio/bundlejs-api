@@ -5,7 +5,7 @@
 The bundlejs esbuild pipeline registers **six plugins in a fixed order**:
 
 ```
-AliasPlugin → ExternalPlugin → VFSPlugin → TarballPlugin → HttpPlugin → CdnPlugin
+AliasPlugin → ExternalPlugin → TarballPlugin → VFSPlugin → HttpPlugin → CdnPlugin
 ```
 
 Registration order is load-bearing: esbuild calls `onResolve` / `onLoad` handlers
@@ -18,8 +18,8 @@ document explains the key invariants each plugin must uphold and how they intera
 |---|---|---|
 | **AliasPlugin** | `alias-globals` | Rewrites import paths before any other resolution. Strips `node:` prefix, checks `isAlias()`. |
 | **ExternalPlugin** | `external-globals` | Marks Node.js builtins as external (empty export) or redirects to polyfills when `polyfill: true`. |
+| **TarballPlugin** | `tarball-url` | Detects and extracts tarball archives (HTTP URLs, VFS paths) via `archive-detect` delegation. Handles pkg.pr.new, registry tarballs, GitHub releases, and VFS `.tgz` files. Must run before VFS. |
 | **VFSPlugin** | `virtual-filesystem` | Serves in-memory files (entry points, user code). Scoped handlers prevent accidental VFS intercepts of HTTP-relative imports. |
-| **TarballPlugin** | `tarball-url` | Fetches and extracts `.tgz` archives (pkg.pr.new). Handles self-reference imports inside extracted packages. |
 | **HttpPlugin** | `http-url` | Fetches HTTP URLs, probes extensions, applies browser-field / manifest remapping on relative imports. |
 | **CdnPlugin** | `cdn-url` | Catch-all for bare npm imports. Resolves versions, fetches package.json, computes entry point, and hands off to HttpPlugin. |
 

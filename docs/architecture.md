@@ -760,9 +760,13 @@ When bundlejs encounters `import "react"`, the AliasPlugin (or CdnPlugin's depen
 
 bundlejs supports tarball extraction through a **two-layer architecture**:
 
-1. **Routing layer** — `getCDNStyle()` in [core/utils/cdn-format.ts](../core/utils/cdn-format.ts) classifies URL origins. Currently, `pkg.pr.new` is the only origin routed as `"tarball"` by default. This is the *narrow gate* — it determines which URLs the TarballPlugin intercepts.
+1. **Routing layer** — Two detection methods work together:
+   - `getCDNStyle()` in [core/utils/cdn-format.ts](../core/utils/cdn-format.ts) classifies CDN-style origins (e.g., `pkg.pr.new` → `"tarball"`)
+   - `isTarballUrl()` and `isTarballPath()` delegate to `archive-detect`'s `detectArchiveFromPathHint()` to recognize any URL or VFS path containing a tarball extension (`.tgz`, `.tar.gz`, `.tar.zst`, etc.)
 
-2. **Detection and extraction layer** — the [utils/archive-detect.ts](../utils/archive-detect.ts) module is *far* more capable than the routing layer implies. It uses a multi-signal pipeline to identify archives from any source:
+   Together, these catch tarballs from *any* origin — npm registry, GitHub releases, custom servers, local VFS — without per-origin configuration.
+
+2. **Detection and extraction layer** — the [utils/archive-detect.ts](../utils/archive-detect.ts) module uses a multi-signal pipeline to identify archives from any source:
 
    | Signal | Source | Examples detected |
    |:-------|:-------|:-----------------|
@@ -823,7 +827,7 @@ The TarballPlugin also handles **self-reference imports**. If code *inside* the 
 
 > **Current extraction limits:** While the detection layer recognizes *many* compression formats, the extraction path currently supports only **gzip-compressed** tars (`.tgz`, `.tar.gz`) and **uncompressed** tars (`.tar`). Other formats (zstd, xz, bzip2, lz4) are detected and produce a clear error with a suggestion to add the corresponding decompressor. This is a reasonable trade-off — npm tarballs are *always* gzip-compressed (`application/tar+gzip`), so every real npm dependency works. The detection infrastructure is intentionally over-capable to make adding new formats straightforward when the need arises.
 >
-> **Routing limits:** Only `pkg.pr.new` URLs are routed to the TarballPlugin by default. Arbitrary `.tgz` URLs from other hosts (e.g., GitHub release assets, private registries) are *not* auto-detected — they pass through to the HttpPlugin, which treats them as regular HTTP fetches. Expanding this is a matter of adding origin patterns to `getCDNStyle()`, not architectural change.
+> **VFS tarballs:** The TarballPlugin also handles tarballs stored directly in the VFS (e.g., `/packages/my-lib.tgz`). `fetchAndExtractTarball()` reads the raw bytes via `getFile()` and wraps them in a `new Response()`, feeding into the same detection → decompress → untar pipeline as HTTP tarballs. This is why TarballPlugin must be registered before VFSPlugin — see [Plugin Pipeline](#the-plugin-pipeline).
 
 ```
 /?q=@tanstack/react-query&config={"package.json":{"dependencies":{"@tanstack/react-query":"https://pkg.pr.new/@tanstack/react-query@7988"}}}
@@ -983,7 +987,7 @@ The unsupported types all require local filesystem access or git operations — 
 > import entry from "/index.tsx";                  // Absolute paths resolve against VFS too
 > ```
 >
-> These schemes are handled by the VirtualFileSystemPlugin (see [Plugin 3](#3-virtualfilesystemplugin--in-memory-file-layer) above). You can pre-populate the VFS at build time with `setFile()`, making `vfs:` a practical alternative to `file:` for injecting local content into a build. The prefixes are configurable via `opts.prefixes` — the defaults are `["vfs:", "virtual:"]`.
+> These schemes are handled by the VirtualFileSystemPlugin (see [Plugin 4](#4-virtualfilesystemplugin--in-memory-file-layer) above). You can pre-populate the VFS at build time with `setFile()`, making `vfs:` a practical alternative to `file:` for injecting local content into a build. The prefixes are configurable via `opts.prefixes` — the defaults are `["vfs:", "virtual:"]`.
 
 That covers the full resolution picture — from bare npm imports through JSR, tarballs, aliases, and builtins. What makes all of this work *across* plugins is a shared data layer that every plugin reads and writes during a build.
 
@@ -1329,7 +1333,7 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 | **WASM esbuild is slower** | ~2–5× slower than native Go binary. | Acceptable for infrequent size checks; too slow for build-on-save workflows. The portability trade-off (runs everywhere JS runs) is the core design choice. |
 | **CDN dependency** | If unpkg.com goes down, resolution fails. | Configurable CDN origin mitigates this (`cdn: "esm.sh"`), but there is *no automatic failover* between CDNs. |
 | **Extension probing = many HTTP requests** | Up to 18 URL probes per extensionless import. | HTTP/2 multiplexing and `failedExtensionChecks` caching help. This is a necessary deviation from Node.js (which does not probe) because many CDN-served packages were built for bundlers that do. |
-| **No git/workspace/link deps** | `git+https://`, `workspace:*`, `link:../path` all produce explicit errors. | These require local filesystem or git — neither exists in a CDN/edge environment. `file:` specs can use `vfs:`/`virtual:` equivalents instead (see [VFS plugin](#3-virtualfilesystemplugin--in-memory-file-layer)). |
+| **No git/workspace/link deps** | `git+https://`, `workspace:*`, `link:../path` all produce explicit errors. | These require local filesystem or git — neither exists in a CDN/edge environment. `file:` specs can use `vfs:`/`virtual:` equivalents instead (see [VFS plugin](#4-virtualfilesystemplugin--in-memory-file-layer)). |
 | **Browser field inconsistency** | The dual-form `browser` field is one of npm's most inconsistent conventions. | bundlejs follows the Node.js spec and esbuild's behavior — some packages that "work" in webpack may resolve differently. The [Legacy Resolution](#legacy-resolution--packages-without-exports) section details the exact semantics. |
 | **No dynamic import resolution** | Static `import("react")` works (esbuild handles code splitting), but `import(someVariable)` cannot be resolved. | This is an esbuild limitation, not bundlejs-specific. No bundler can resolve truly dynamic specifiers at build time. |
 | **Tarball routing is extension-based** | The TarballPlugin intercepts any URL or VFS path whose pathname contains a tarball extension (`.tgz`, `.tar.gz`, `.tar.zst`, etc.), plus CDN-style origins like `pkg.pr.new`. Detection is delegated to `archive-detect`'s `detectArchiveFromPathHint()`. | This means any tarball from any origin is automatically recognized — npm registry, GitHub releases, custom servers, local VFS paths. No per-origin configuration needed. |
