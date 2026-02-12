@@ -525,8 +525,19 @@ export async function fetchAndExtractTarball<T>(
   if (/^https?:\/\//.test(source)) {
     // HTTP: fetch from network / shared cache.
     dispatchEvent(LOGGER_INFO, `Fetching tarball candidate: ${source}`);
-    const cached = await fetchWithCache(source);
-    response = cached.response;
+    const result = await fetchWithCache(source);
+    response = result.response;
+    
+    // Build descriptive log message
+    const flags = [
+      result.fromCache && 'cached',
+      result.redirected && 'redirected',
+    ].filter(Boolean).join(', ');
+    
+    const flagStr = flags ? ` (${flags})` : '';
+    const redirectStr = result.redirected ? ` → ${result.url}` : '';
+    
+    dispatchEvent(LOGGER_INFO, `Fetch${flagStr} ${source}${redirectStr}`);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch tarball: ${response.status} ${response.statusText}`);
