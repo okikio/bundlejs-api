@@ -198,8 +198,11 @@ export function getCDNStyle(urlStr: string): CDNStyle {
   }
 
   // npm-style CDNs (unpkg, esm.sh, jsdelivr/npm, skypack)
+  // NOTE: The scheme regex REQUIRES a colon after the scheme name.
+  // Without it, "jsdelivr" would greedily match "jsdelivr.gh:..." before
+  // the more-specific GitHub check below can run.
   if (
-    /^(skypack|esm|esm\.sh|unpkg|jsdelivr|esm\.run)\:?/.test(urlStr) ||
+    /^(skypack|esm|esm\.sh|unpkg|jsdelivr|esm\.run)\:/.test(urlStr) ||
     /^https?:\/\/(cdn\.skypack\.dev|cdn\.esm\.sh|esm\.sh|cdn\.jsdelivr\.net\/npm|unpkg\.com)/.test(urlStr)
   ) {
     return "npm";
