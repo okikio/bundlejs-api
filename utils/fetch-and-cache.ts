@@ -299,9 +299,15 @@ export async function fetchWithCache(
         await backgroundRefresh(url, finalUrl, init, retries, cacheApi);
       }
       
+      const returnResponse = clone ? cached.clone() : cached;
+      // Cancel the original cached response body if we cloned it
+      if (clone) {
+        try { await cached.body?.cancel(); } catch { /* ignore */ }
+      }
+
       return {
         url: finalUrl,
-        response: clone ? cached.clone() : cached,
+        response: returnResponse,
         fromCache: true,
         redirected: url !== finalUrl,
       };
