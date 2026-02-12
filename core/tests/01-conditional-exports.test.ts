@@ -292,7 +292,7 @@ describe("01 · Conditional Exports", () => {
   // ===========================================================================
 
   describe("integration: real packages", () => {
-    test("preact@10.25.4 builds successfully for browser", { }, async () => {
+    test("preact@10.25.4 builds successfully for browser", async () => {
       const result = await buildPackage("preact@10.25.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
