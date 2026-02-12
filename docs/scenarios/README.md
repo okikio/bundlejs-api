@@ -198,6 +198,31 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 12.12 | Conditions flow to HttpPlugin | `@exodus/bytes@1.13.0` | [12-runtime-conditions.md](12-runtime-conditions.md) |
 
 
+### Utility Correctness (Pure Functions)
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 13.1 | CDN style detection | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.1a | `jsdelivr.gh:` regex fix | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.2 | CDN origin resolution | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.3 | Pure import path stripping | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.4 | CDN URL construction | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.5 | JSR specifier parsing | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.6 | JSR URL helpers | `cdn-format.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.7 | Loader inference (JS→TS) | `loader.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.8 | Side effects computation | `side-effects.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.9 | Path normalization & joining | `cdn-resolution.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.10 | Package entry resolution | `cdn-resolution.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.11 | Peer dependency merging | `cdn-resolution.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.12 | Virtual filesystem CRUD | `filesystem.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.13 | VFS path resolution & probing | `plugins/fs.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.14 | Alias detection (`#` passthrough) | `plugins/alias.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.15 | External/builtin detection | `plugins/external.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.16 | Tarball URL parsing | `plugins/tar.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.17 | URL utilities (join, encode, path) | `utils/url.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+| 13.18 | Bare import detection | `utils/path.ts` | [13-utility-correctness.md](13-utility-correctness.md) |
+
+
 ## Coverage Map
 
 This table maps each scenario to the source file and function it exercises:
@@ -220,8 +245,14 @@ This table maps each scenario to the source file and function it exercises:
 | Side effects | `side-effects.ts` | `computeEsbuildSideEffects()` | 7.1–7.7 |
 | Alias rewriting | `alias.ts` | AliasPlugin | 11.4–11.6 |
 | Peer dependencies | `cdn-resolution.ts` | `computePeerDependencies()` | 11.7–11.8 |
-| CDN URL construction | `cdn-format.ts` | `getCDNUrl()` | 11.15 |
-| VFS resolution | `fs.ts` | VirtualFileSystemPlugin | 11.16–11.17 |
+| CDN URL construction | `cdn-format.ts` | `getCDNUrl()` | 11.15, 13.1–13.6 |
+| VFS resolution | `fs.ts` | VirtualFileSystemPlugin | 11.16–11.17, 13.12–13.13 |
+| Loader inference | `loader.ts` | `inferLoader()` | 13.7 |
+| CDN style detection | `cdn-format.ts` | `getCDNStyle()` | 13.1 |
+| JSR specifiers | `cdn-format.ts` | `parseJSRSpecifier()` | 13.5–13.6 |
+| Tarball parsing | `tar.ts` | `parseTarballUrl()` | 13.16 |
+| URL utilities | `url.ts` | `encodeWhitespace()`, `urlJoin()` | 13.17 |
+| Bare import detection | `path.ts` | `isBareImport()` | 13.18 |
 
 ## What Would Have Caught the Browser Remapping Bug
 
