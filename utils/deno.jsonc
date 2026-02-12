@@ -24,6 +24,7 @@
     "./archive-detect": "./archive-detect.ts",
     "./npm-spec": "./npm-spec.ts",
     "./npm-search": "./npm-search.ts",
+    "./npmrc": "./npmrc.ts",
     "./jsr-spec": "./jsr-spec.ts",
     "./lz-string": "./lz-string.ts",
     "./media-types": "./media-types.ts",

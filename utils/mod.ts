@@ -45,3 +45,4 @@ export * as archiveSpec from "./archive-spec.ts";
 
 export * as npmDepsSpec from "./npm-spec.ts";
 export * as validatePackageName from "./validate-package-name.ts";
+export * as npmrc from "./npmrc.ts";

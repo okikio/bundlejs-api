@@ -8,6 +8,7 @@ import type { IFileSystem } from "./utils/filesystem.ts";
 import type { TarballState } from "./plugins/tar.ts";
 import type { ResolverConditionInputs } from "../utils/resolve-conditions.ts";
 import type { SideEffectsMatchers } from "./utils/side-effects.ts";
+import type { RegistryConfig } from "@bundle/utils/npmrc";
 
 export type { ESBUILD, ESBUILD_WASM };
 
@@ -61,6 +62,43 @@ export interface BuildConfig extends CommonConfigOptions {
 
   /** The default CDN to import packages from */
   cdn?: "https://unpkg.com" | "https://esm.run" | "https://esm.sh" | "https://esm.sh/jsr" | "https://cdn.skypack.dev" | "https://cdn.jsdelivr.net/npm" | "https://cdn.jsdelivr.net/gh" | "https://deno.land/x" | "https://raw.githubusercontent.com" | "https://registry.npmjs.org" | "unpkg" | "esm.run" | "esm.sh" | "esm" | "jsr" | "jsr.registry" | "skypack" | "jsdelivr" | "jsdelivr.gh" | "github" | "deno" | "npm" | "npm.registry" | (string & {}),
+
+  /**
+   * Custom npm registry configuration.
+   *
+   * Controls which registries are used for package resolution and tarball
+   * downloads. Supports scoped registries for routing different scopes
+   * to different registries (e.g., JSR packages through npm.jsr.io).
+   *
+   * Accepts:
+   * - `string`: A default registry URL, or raw `.npmrc` content
+   *   (auto-detected by presence of `=` or newlines)
+   * - `RegistryConfig`: Structured config with optional scoped overrides
+   *
+   * @example Default registry
+   * ```ts
+   * { registry: "https://npm.jsr.io" }
+   * ```
+   *
+   * @example Scoped registries
+   * ```ts
+   * {
+   *   registry: {
+   *     registry: "https://registry.npmjs.org",
+   *     scopedRegistries: {
+   *       "@jsr": "https://npm.jsr.io",
+   *       "@mycompany": "https://npm.mycompany.com/"
+   *     }
+   *   }
+   * }
+   * ```
+   *
+   * @example Raw .npmrc content
+   * ```ts
+   * { registry: "@jsr:registry=https://npm.jsr.io\nregistry=https://registry.npmjs.org" }
+   * ```
+   */
+  registry?: string | RegistryConfig,
 
   /** Aliases for replacing packages with different ones, e.g. replace "fs" with "memfs", so, it can work on the web, etc... */
   alias?: Record<string, string>,

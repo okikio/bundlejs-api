@@ -304,7 +304,14 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
       ).origin;
 
       const NPM_CDN = getCDNStyle(pathOrigin) === "npm";
-      const origin = NPM_CDN ? pathOrigin : host;
+
+      // Registry mode takes priority: when the user configures cdn: "npm.registry"
+      // or cdn: "npm", ALL bare imports should resolve through the registry as
+      // tarballs, regardless of which CDN the parent file was loaded from.
+      // Without this, a file loaded from e.g. esm.sh would resolve its deps
+      // through esm.sh (CDN-follows-parent) instead of the configured registry.
+      const REGISTRY_HOST = getCDNStyle(host) === "registry";
+      const origin = REGISTRY_HOST ? host : (NPM_CDN ? pathOrigin : host);
 
       // Bare import (e.g., "lodash") → delegate to CDN resolution
       // Also handle private imports (#internal) and JSR spec imports

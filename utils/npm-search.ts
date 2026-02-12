@@ -327,6 +327,13 @@ export async function getPackage(
  *
  * More efficient than getPackage() when you only need one version.
  *
+ * **Scoped package fallback**: The npm registry's version-specific endpoint
+ * uses `%2f`-encoded package names (`@scope%2fname/version`). Some registries
+ * and HTTP proxies (Cloudflare, Nginx, etc.) decode `%2f` before routing,
+ * breaking the path structure. When the version endpoint fails for a scoped
+ * package, this function falls back to fetching the full packument and
+ * extracting the requested version from `pkg.versions[version]`.
+ *
  * @param input Package name with version (e.g., "@okikio/animate@1.0.0")
  * @param registry Custom registry URL
  * @returns Version-specific metadata
@@ -352,9 +359,28 @@ export async function getPackageOfVersion(
     }
 
     return await response.json() as FullPackageVersion;
-  } catch (e) {
-    console.warn(`[npm-search] Failed to fetch "${name}@${version}":`, e);
-    throw e;
+  } catch (primaryError) {
+    // ── Scoped-package fallback ─────────────────────────────────────────
+    // The version-specific endpoint for scoped packages encodes `/` as
+    // `%2f` in the URL path (e.g. `@scope%2fname/1.0.0`). Some HTTP
+    // infrastructure decodes `%2f` before routing, turning the 2-segment
+    // path into 3 segments and confusing the registry router.
+    //
+    // Fallback: fetch the full packument (which uses a 1-segment path
+    // that works even with `%2f` decoding) and extract the version.
+    if (name.includes("/") && version) {
+      try {
+        const pkg = await getPackage(name, registry);
+        if (pkg.versions?.[version]) {
+          return pkg.versions[version];
+        }
+      } catch {
+        // Full packument also failed — throw the original error
+      }
+    }
+
+    console.warn(`[npm-search] Failed to fetch "${name}@${version}":`, primaryError);
+    throw primaryError;
   }
 }
 
