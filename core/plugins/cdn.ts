@@ -566,6 +566,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       // effectiveAssumedVersion for the final URL construction.
       let manifestFetched = false;
 
+      // Track whether we navigated into a sub-directory package
+      // (e.g., preact/compat has its own package.json)
+      let isSubpathDirectoryPackage = false;
+
       // If the CDN supports package.json and some other npm stuff, it counts as an npm CDN
       if (NPM_CDN) {
         // For npm aliases, we need to resolve the aliased package name
@@ -584,7 +588,6 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           const ext = extname(parsedSubpath);
           const isDirectory = ext.length === 0;
           const subpath = isDirectory ? parsedSubpath : "";
-          let isSubpathDirectoryPackage = false;
 
           // If the subpath is a directory check to see if that subpath has a `package.json`,
           // after which check if the parent directory has a `package.json`
@@ -596,9 +599,15 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           // that decodes `%2f` before routing. Instead, for scoped packages
           // we use the CDN-native path to fetch package.json directly.
           const useRegistryEndpoint = !effectiveName.includes("/");
+          const registryManifestURL = useRegistryEndpoint
+            ? getRegistryURL(`${effectiveName}@${effectiveAssumedVersion}`, registry).packageVersionURL
+            : null;
           const manifestVariants = [
-            useRegistryEndpoint
-              ? { path: getRegistryURL(`${effectiveName}@${effectiveAssumedVersion}`, registry).packageVersionURL }
+            useRegistryEndpoint && registryManifestURL
+              // Registry endpoint: use the full URL directly (not via getCDNUrl)
+              // because registry.npmjs.org URLs have a different format
+              // (package/version) than CDN URLs (package@version)
+              ? { path: registryManifestURL, isRegistryURL: true }
               : { path: `${effectiveName}@${effectiveAssumedVersion}/package.json` },
             // { path: `${effectiveName}@${effectiveAssumedVersion}/package.json` },
             isDirectory ? {
@@ -609,21 +618,24 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
           const manifestVariantsLen = manifestVariants.length;
           for (let i = 0; i < manifestVariantsLen; i++) {
-            const { path, isDirectory } = manifestVariants[i]!;
-            const { url } = getCDNUrl(path, origin);
+            const variant = manifestVariants[i]!;
+            // For registry URLs, use the URL directly; for CDN paths, construct via getCDNUrl
+            const fetchUrl = (variant as { isRegistryURL?: boolean }).isRegistryURL
+              ? variant.path
+              : getCDNUrl(variant.path, origin).url.href;
 
             // If the url was fetched before and failed, skip it and try the next one
-            if (failedManifestUrls?.has?.(url.href) && i < manifestVariantsLen - 1)
+            if (failedManifestUrls?.has?.(fetchUrl) && i < manifestVariantsLen - 1)
               continue;
 
             try {
               // Strongly cache package.json files
-              const { response: res } = await fetchWithCache(url.href, { cacheMode: "reload" });
+              const { response: res } = await fetchWithCache(fetchUrl, { cacheMode: "reload" });
               if (!res.ok) throw new Error(await res.text());
 
               resolvedManifest = await res.json();
               manifestFetched = true;
-              isSubpathDirectoryPackage = isDirectory ?? false;
+              isSubpathDirectoryPackage = (variant as { isDirectory?: boolean }).isDirectory ?? false;
 
               // If the package.json is not a sub-directory package, then we should cache it as such
               if (!isDirectory) {
@@ -634,7 +646,7 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
               }
               break;
             } catch (e) {
-              failedManifestUrls?.add?.(url.href);
+              failedManifestUrls?.add?.(fetchUrl);
 
               // If after checking all the different file extensions none of them are valid
               // Throw the last fetch error encountered, as that is generally the most accurate error
@@ -649,11 +661,17 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           // ================================================================
           // NEW: Use resolvePackageEntry for combined resolution
           // This is the key integration point!
+          //
+          // When we resolved a sub-directory package.json (e.g., preact/compat/package.json),
+          // the manifest is for the SUB-PACKAGE. We should resolve against its root ("")
+          // not the original subpath, because the subpath is prepended later.
           // ================================================================
+
+          const entrySubpath = isSubpathDirectoryPackage ? "" : combinedSubpath;
 
           const resolutionResult = resolvePackageEntry({
             manifest: resolvedManifest,
-            subpath: combinedSubpath,
+            subpath: entrySubpath,
             conditions,
             legacyFields,
             allowLiteralSubpath: !isSubpathDirectoryPackage && combinedSubpath.trim().length > 0,
@@ -711,9 +729,15 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       // wrong (e.g. jsonfile getting fs-extra's "11.2.0").  In that case
       // fall back to effectiveAssumedVersion which was resolved from the
       // npm registry and is correct.
-      const knownVersion = manifestFetched
-        ? (resolvedManifest?.version || effectiveAssumedVersion)
-        : effectiveAssumedVersion;
+      //
+      // When a sub-directory package.json was used (e.g., preact/compat/package.json),
+      // its `version` field is an internal version (e.g., "4.0.0") that doesn't match
+      // the root package version. Always use effectiveAssumedVersion for sub-packages.
+      const knownVersion = isSubpathDirectoryPackage
+        ? effectiveAssumedVersion
+        : (manifestFetched
+          ? (resolvedManifest?.version || effectiveAssumedVersion)
+          : effectiveAssumedVersion);
       const cdnVersionFormat = NPM_CDN ? "@" + knownVersion : "";
       const { url } = getCDNUrl(`${effectiveName}${cdnVersionFormat}${resultSubpath}`, origin);
 
