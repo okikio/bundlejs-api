@@ -53,8 +53,20 @@ export async function resolveVfsPath<T>(
 	if (await fileExists(fs, candidate))
 		return candidate;
 
-	// 2) Extension probing for extensionless imports.
-	if (extname(candidate).length === 0) {
+	// 2) Extension probing.
+	//
+	// Historically this only probed truly extensionless imports (e.g. "./foo"
+	// -> "./foo.ts"). In practice, many packages (Expo / RN ecosystem) also use
+	// suffix-style specifiers such as "./Expo.fx" and "./uuid.types" where the
+	// real files are "./Expo.fx.ts" and "./uuid.types.ts".
+	//
+	// So we probe whenever the current extension is NOT already one of the known
+	// resolve extensions. This preserves normal behavior for "./foo.ts" while
+	// enabling suffix-style resolution.
+	const candidateExt = extname(candidate);
+	const hasKnownResolvableExt = resolveExtensions.includes(candidateExt);
+
+	if (!hasKnownResolvableExt) {
 		for (const ext of resolveExtensions) {
 			const withExt = candidate + ext;
 			if (await fileExists(fs, withExt)) 
