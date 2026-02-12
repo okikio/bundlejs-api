@@ -98,6 +98,13 @@ await setFile(fs, "/new.tsx", outdent`
   export { drizzle } from "drizzle-orm/expo-sqlite";
   export { openDatabaseSync } from "expo-sqlite";
 `)
+await setFile(fs, "/new.tsx", outdent`
+  export { useMigrations } from 'https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz';
+  export { drizzle } from "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz";
+  export { openDatabaseSync } from "https://registry.npmjs.org/expo-sqlite/-/expo-sqlite-16.0.10.tgz";
+`)
+
+// https://registry.npmjs.org/expo-sqlite/-/expo-sqlite-16.0.10.tgz
 // await setFile(fs, "/new.tsx", "export * from \"jsr:@okikio/sparql\";")
 // await setFile(fs, "/other.tsx", `\
 // export * as Other from "/index.tsx";
