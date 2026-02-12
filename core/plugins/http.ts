@@ -466,7 +466,7 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
         // React Native and the Metro/Expo ecosystem ship .js files with raw
         // Flow annotations (e.g. `import typeof`). esbuild can't parse Flow,
         // so we pre-process these files before handing them to the bundler.
-        const { contents: processedContent, wasStripped } = await maybeStripFlow(
+        const { contents: processedContent, wasStripped } = maybeStripFlow(
           content as Uint8Array,
           { url }
         );

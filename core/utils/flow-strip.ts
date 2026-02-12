@@ -31,6 +31,8 @@
  * @module
  */
 
+import flowRemoveTypes from "flow-remove-types"
+
 const textDecoder = new TextDecoder();
 
 /** Decode bytes to string, handling ArrayBufferLike generics */
@@ -53,19 +55,20 @@ function decodeBytes(buf: Uint8Array | ArrayBufferLike): string {
 const FLOW_PRAGMA_PATTERN = /(?:\/\/\s*@flow\b|\/\*[\s\S]*?@flow\b[\s\S]*?\*\/)/;
 
 /**
- * Quick heuristic patterns that indicate Flow-specific syntax.
+ * Heuristic patterns that indicate unambiguous Flow-specific syntax.
  *
  * These catch files that use Flow syntax but lack a pragma
- * (e.g., some React Native internals).
+ * (e.g., some React Native internals). Each pattern is chosen for
+ * near-zero false positives in standard JS or TypeScript:
+ *
+ * - `import typeof` — invalid in both TS and standard JS
+ * - `opaque type`   — Flow-only declaration keyword
+ * - `$Exact`, `$Diff`, etc. — Flow utility type prefixes
  */
-const FLOW_SYNTAX_PATTERNS = [
+const FLOW_SYNTAX_PATTERNS: RegExp[] = [
   /\bimport\s+typeof\b/,       // `import typeof Foo from ...`
-  /\bexport\s+type\s*\{/,      // `export type { Foo }` (also valid TS, but combined with others…)
-  /\bopaque\s+type\b/,         // `opaque type Foo = ...`
-  /\bdeclare\s+opaque\b/,      // `declare opaque type Foo`
-  /\btype\s+\w+\s*=\s*\$(?:Exact|Diff|ObjMap|ObjMapi|KeysWhere|Values|ElementType|Call|ReadOnly|Shape|Supertype|Subtype|Class|Exports)\b/,  // Flow utility types: `$Exact`, `$Diff`, etc.
-  /\$(?:Exact|Diff|ObjMap|ObjMapi|TupleMap|Keys|Values|ElementType|Call|ReadOnly|Shape|Exports|Facebookism)\b/,  // Flow utility types used inline
-  /\bimport\s+type\s*\*\s+as\b/,  // `import type * as Foo` (valid TS too, but rare in combo)
+  /\bopaque\s+type\b/,         // `opaque type Foo = ...` or `declare opaque type`
+  /\$(?:Exact|Diff|ObjMap|ObjMapi|TupleMap|Keys|Values|ElementType|Call|ReadOnly|Shape|Exports)\b/,  // Flow utility types used inline
 ];
 
 /**
@@ -118,71 +121,17 @@ export function containsFlow(
     return true;
   }
 
-  // Check for unambiguous Flow syntax patterns
-  // Only check the most distinctive pattern to avoid false positives
-  // `import typeof` is the strongest signal — it's invalid in TypeScript and standard JS
-  if (/\bimport\s+typeof\b/.test(text)) {
-    return true;
-  }
-
-  // `opaque type` is Flow-only
-  if (/\bopaque\s+type\b/.test(text)) {
-    return true;
-  }
-
-  // Flow utility types like $Exact, $Diff, $ObjMap etc.
-  if (/\$(?:Exact|Diff|ObjMap|ObjMapi|TupleMap|Keys|Values|ElementType|Call|ReadOnly|Shape|Exports)\b/.test(text)) {
-    return true;
+  // Check for unambiguous Flow syntax patterns.
+  // Each pattern is chosen for near-zero false positives in standard JS / TypeScript.
+  for (const pattern of FLOW_SYNTAX_PATTERNS) {
+    if (pattern.test(text)) {
+      return true;
+    }
   }
 
   return false;
 }
 
-// ============================================================================
-// Flow Stripping — Lazy-loaded `flow-remove-types`
-// ============================================================================
-
-/**
- * Cached reference to the `flow-remove-types` module.
- * Lazy-loaded on first use to avoid startup cost when Flow files
- * aren't encountered.
- */
-let _flowRemoveTypes: ((source: string, opts?: { pretty?: boolean; all?: boolean }) => { toString(): string }) | null = null;
-let _flowRemoveTypesLoading: Promise<void> | null = null;
-let _flowRemoveTypesAvailable = true;
-
-/**
- * Attempt to lazy-load `flow-remove-types`.
- *
- * Returns the module function, or null if unavailable.
- * Caches the result so subsequent calls are instant.
- */
-async function loadFlowRemoveTypes(): Promise<typeof _flowRemoveTypes> {
-  if (_flowRemoveTypes) return _flowRemoveTypes;
-  if (!_flowRemoveTypesAvailable) return null;
-
-  // Avoid parallel imports
-  if (_flowRemoveTypesLoading) {
-    await _flowRemoveTypesLoading;
-    return _flowRemoveTypes;
-  }
-
-  _flowRemoveTypesLoading = (async () => {
-    try {
-      // Dynamic import of npm:flow-remove-types (Deno npm compat).
-      // Use a variable to avoid static analysis flagging this as a missing dependency —
-      // the package is optional and the import is wrapped in try/catch.
-      const mod = await import("flow-remove-types");
-      _flowRemoveTypes = mod.default ?? mod;
-    } catch {
-      _flowRemoveTypesAvailable = false;
-    }
-  })();
-
-  await _flowRemoveTypesLoading;
-  _flowRemoveTypesLoading = null;
-  return _flowRemoveTypes;
-}
 
 // ============================================================================
 // Regex-based Fallback Stripper
@@ -252,16 +201,15 @@ function regexStripFlow(source: string): string {
  *   - `all`: Strip all files, not just those with `@flow` pragma (default: true)
  * @returns Transformed source code as a string
  */
-export async function stripFlowTypes(
+export function stripFlowTypes(
   source: string | Uint8Array,
   opts?: { pretty?: boolean; all?: boolean }
-): Promise<string> {
+): string {
   const text = typeof source === "string" ? source : decodeBytes(source);
 
   const { pretty = true, all = true } = opts ?? {};
 
   // Try the full parser-based stripper first
-  const flowRemoveTypes = await loadFlowRemoveTypes();
   if (flowRemoveTypes) {
     try {
       const result = flowRemoveTypes(text, { pretty, all });
@@ -287,15 +235,15 @@ export async function stripFlowTypes(
  * @returns Object with `contents` (string if stripped, original Uint8Array if not)
  *          and `wasStripped` flag
  */
-export async function maybeStripFlow(
+export function maybeStripFlow(
   content: Uint8Array,
   opts?: { packageName?: string; url?: string; pretty?: boolean }
-): Promise<{ contents: string | Uint8Array; wasStripped: boolean }> {
+): { contents: string | Uint8Array; wasStripped: boolean } {
   if (!containsFlow(content, opts)) {
     return { contents: content, wasStripped: false };
   }
 
-  const stripped = await stripFlowTypes(content, {
+  const stripped = stripFlowTypes(content, {
     pretty: opts?.pretty ?? true,
     all: true,
   });

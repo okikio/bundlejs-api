@@ -6,6 +6,8 @@ import type { Context } from "../context/context.ts";
 import { fileExists, getFile } from "../utils/filesystem.ts";
 import { fromContext, withContext } from "../context/context.ts";
 import { inferLoader, RESOLVE_EXTENSIONS } from "../utils/loader.ts";
+import { maybeStripFlow } from "../utils/flow-strip.ts";
+import { dispatchEvent, LOGGER_INFO } from "../configs/events.ts";
 import { dirname, extname, resolve } from "@bundle/utils/path";
 
 export const VIRTUAL_FILESYSTEM_NAMESPACE = "virtual-filesystem";
@@ -240,8 +242,21 @@ export function VirtualFileSystemPlugin<T = Uint8Array>(
         // `getFile` returns null when missing/invalid; empty files are OK.
         if (content === null) return;
 
+        // Strip Flow type annotations from files that use Flow syntax.
+        // Tarball-extracted packages (e.g. react-native from npm registry)
+        // land in VFS and may contain raw Flow annotations that esbuild
+        // can't parse. We pre-process these before handing them to the bundler.
+        const { contents: processedContent, wasStripped } = maybeStripFlow(
+          content as Uint8Array,
+          { url: args.path }
+        );
+
+        if (wasStripped) {
+          dispatchEvent(LOGGER_INFO, `Stripped Flow types from ${args.path}`);
+        }
+
         return {
-          contents: content,
+          contents: processedContent,
           loader: inferLoader(args.path, undefined, content),
           // This is the correct way to enable relative resolution in custom namespaces.
           resolveDir: dirname(args.path),
