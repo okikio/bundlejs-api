@@ -22,13 +22,18 @@ The **tarball extension** (`.tgz` or `.tar.gz`) is the split point:
 - Everything up to and including the extension → fetch URL
 - Everything after → subpath for `exports`/`main` resolution
 
-## Detection: `isTarballUrl()`
+## Detection: `isTarballUrl()` and `isTarballPath()`
 
 Previously: `getCDNStyle(url.origin) === "tarball"` — only matched `pkg.pr.new`.
 
 Now two categories:
 1. **CDN-style** — `getCDNStyle()` returns `"tarball"` (pkg.pr.new)
 2. **Extension-based** — delegated to `archive-detect`'s `detectArchiveFromPathHint()`
+
+`isTarballUrl(url)` checks CDN-style first, then delegates to `isTarballPath(url.pathname)`.
+
+`isTarballPath(path)` is the path-based counterpart — use it for VFS paths or any non-URL
+string. Both ultimately call `findTarballSplitInPathname()`.
 
 ### How it works: `findTarballSplitInPathname()`
 
@@ -62,6 +67,9 @@ New function. Splits the pathname at the archive extension to produce:
 
 ## Resolution Flow in `TarResolution()`
 
+The plugin handles three branches:
+
+### Branch 1: HTTP tarball URLs
 ```
 args.path = "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite/migrator"
                 │
@@ -78,7 +86,7 @@ args.path = "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/exp
        packageUrl: "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz" }
                 │
                 ▼
-     getOrCreateMount(packageUrl) → fetch, extract to VFS
+     getOrCreateMount(packageUrl) → fetchAndExtractTarball() → extract to VFS
                 │
                 ▼
      resolvePackageEntry(manifest, subpath, conditions) → "./expo-sqlite/migrator.js"
@@ -86,6 +94,55 @@ args.path = "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/exp
                 ▼
      Return { path: "/__tarballs__/<hash>/expo-sqlite/migrator.js", namespace: "vfs" }
 ```
+
+### Branch 2: VFS tarball paths
+```
+args.path = "/packages/my-lib.tgz/lib/index"
+                │
+                ▼
+        isTarballPath(args.path) → true
+                │
+                ▼
+     findTarballSplitInPathname(args.path)
+       → { tarballPath: "/packages/my-lib.tgz", subpath: "/lib/index" }
+                │
+                ▼
+     getOrCreateMount(tarballPath) → fetchAndExtractTarball(vfsPath) → read via getFile() → extract to VFS
+                │
+                ▼
+     resolvePackageEntry(manifest, subpath, conditions) → "./lib/index.js"
+                │
+                ▼
+     Return { path: "/__tarballs__/<hash>/lib/index.js", namespace: "vfs" }
+```
+
+### Branch 3: Self-reference imports from within extracted tarballs
+```
+args.path = "drizzle-orm"  (bare import from inside /__tarballs__/<hash>/...)
+                │
+                ▼
+     Importer is inside /__tarballs__/<hash>/ → find mount by hash
+                │
+                ▼
+     Mount manifest.name matches "drizzle-orm" → self-reference
+                │
+                ▼
+     resolvePackageEntry(manifest, "", conditions) → entry point within same mount
+```
+
+### Plugin order requirement
+
+The TarballPlugin **must be registered before VirtualFileSystemPlugin** in [core/build.ts](../../core/build.ts).
+Without this ordering, a VFS path like `/packages/my-lib.tgz` would be claimed by VFS as a raw
+blob before the TarballPlugin could intercept and extract it.
+
+### `fetchAndExtractTarball()` — dual source support
+
+`fetchAndExtractTarball(source, ...)` accepts two kinds of sources:
+- **HTTP URL** (string starting with `http://` or `https://`) — fetched via `fetchWithCache`
+- **VFS path** (anything else) — reads raw bytes via `getFile()`, wraps in `new Response(bytes)`
+
+Both codepaths then feed into the same `detectArchiveFromResponse()` → decompress → untar pipeline.
 
 ## Scenarios
 
@@ -143,13 +200,40 @@ If a URL contains `.tgz` but isn't actually a tarball (extremely rare),
 `detectArchiveFromResponse()` will detect the mismatch and throw with
 a diagnostic explaining what was expected vs. what was found.
 
+### 19.11 — VFS tarball, root import
+```ts
+// Pre-populate VFS with a tarball file, then import from it
+import { helper } from "/packages/my-lib.tgz";
+```
+- Detected via `isTarballPath()` — absolute VFS path with `.tgz` extension
+- `fetchAndExtractTarball()` reads raw bytes via `getFile()` instead of HTTP fetch
+- Extracts to `/__tarballs__/<hash>/`, resolves via `exports["."]` or `main`
+
+### 19.12 — VFS tarball, subpath import
+```ts
+import { migrator } from "/packages/my-lib.tgz/utils/migrator";
+```
+- `findTarballSplitInPathname()` splits at `.tgz` → tarball path + subpath
+- Same extraction and resolution pipeline as HTTP tarballs
+
+### 19.13 — Relative VFS tarball path (from inside VFS)
+```ts
+// Importer is at /src/index.ts in VFS
+import { fn } from "../vendor/my-lib.tgz";
+```
+- TarballPlugin resolves the relative path against the importer's directory
+- Only absolute paths enter the tarball pipeline (relative paths are resolved first)
+
 ## Changes Made
 
 | File | Change |
 |------|--------|
 | `core/plugins/tar.ts` | `findTarballSplitInPathname()` — walks path segments, delegates to `detectArchiveFromPathHint()` |
-| `core/plugins/tar.ts` | `isTarballUrl()` — uses `findTarballSplitInPathname()` instead of custom regex |
+| `core/plugins/tar.ts` | `isTarballPath()` — NEW path-based counterpart to `isTarballUrl()` |
+| `core/plugins/tar.ts` | `isTarballUrl()` — CDN-style check OR delegates to `isTarballPath()` |
 | `core/plugins/tar.ts` | `parseGenericTarballUrl()` — uses `findTarballSplitInPathname()` instead of custom regex |
+| `core/plugins/tar.ts` | `fetchAndExtractTarball()` — generalized to accept both HTTP URLs and VFS paths |
+| `core/plugins/tar.ts` | `TarResolution()` — 3 branches: HTTP URLs, VFS paths, self-references |
 | `core/plugins/tar.ts` | Removed `ALL_TAR_EXTENSIONS`, `TARBALL_EXT_IN_PATH_RE`, `TARBALL_SPLIT_RE` constants |
-| `core/plugins/tar.ts` | `TarResolution()` — routes between parsers based on URL type |
-| `core/plugins/tar.ts` | `fetchAndExtractTarball()` — removed redundant content-type check |
+| `core/plugins/tar.ts` | Removed redundant content-type check |
+| `core/build.ts` | Plugin order: TarballPlugin moved before VirtualFileSystemPlugin |

@@ -2,8 +2,8 @@
  * Scenario 19 — Registry Tarballs & Generic `.tgz` URLs
  *
  * Tests for the extension-based tarball URL detection, generic tarball URL
- * parsing, and the TarResolution routing between pkg.pr.new and generic
- * tarball sources.
+ * parsing, TarResolution routing between pkg.pr.new and generic tarball
+ * sources, and VFS tarball path detection.
  *
  * ## Coverage Map
  *
@@ -11,10 +11,12 @@
  * |---------|----------|
  * | 19.1 — isTarballUrl detection | CDN-style and extension-based detection |
  * | 19.2 — parseGenericTarballUrl | Splitting tarball URL from subpath |
- * | 19.3 — TarResolution routing | pkg.pr.new vs registry dispatch |
- * | 19.4 — Content-type flexibility | Registry returns application/octet-stream |
- * | 19.5 — Subpath resolution | Tarball URL with subpath segments |
- * | 19.6 — Mount deduplication | Same tarball, different subpaths share mount |
+ * | 19.3 — parseTarballUrl (pkg.pr.new) | Compact/non-compact path parsing |
+ * | 19.4 — TarResolution routing | pkg.pr.new vs registry dispatch |
+ * | 19.5 — resolvePackageEntry | Subpath resolution via exports/main |
+ * | 19.6 — stripPackagePrefix | Tarball path prefix stripping |
+ * | 19.7 — Edge cases | Case sensitivity, multi-extension, archive-detect coverage |
+ * | 19.8 — VFS tarball path detection | isTarballPath + findTarballSplitInPathname for VFS paths |
  *
  * @see docs/scenarios/19-registry-tarballs.md
  * @module
