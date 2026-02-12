@@ -125,8 +125,8 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
         plugins: [
           AliasPlugin(StateContext),
           ExternalPlugin(StateContext),
-          VirtualFileSystemPlugin(StateContext),
           TarballPlugin(StateContext),
+          VirtualFileSystemPlugin(StateContext),
           HttpPlugin(StateContext),
           CdnPlugin(withContext({ origin: host }, StateContext)),
         ],

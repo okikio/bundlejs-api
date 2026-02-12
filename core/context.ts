@@ -81,8 +81,8 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
         plugins: [
           AliasPlugin(StateContext),
           ExternalPlugin(StateContext),
-          VirtualFileSystemPlugin(StateContext),
           TarballPlugin(StateContext),
+          VirtualFileSystemPlugin(StateContext),
           HttpPlugin(StateContext),
           CdnPlugin(withContext({ origin: host }, StateContext)),
         ],

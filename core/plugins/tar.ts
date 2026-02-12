@@ -25,7 +25,7 @@ import { fromContext, toContext } from "../context/context.ts";
 import { UntarStream } from "@bundle/utils/tar";
 import { resolve, legacy } from "@bundle/utils/resolve-exports-imports";
 
-import { normalize, join } from "@bundle/utils/path";
+import { normalize, join, resolve as resolvePath } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 
 import { VIRTUAL_FILESYSTEM_NAMESPACE } from "./fs.ts";
@@ -124,6 +124,27 @@ export interface TarballState {
 }
 
 /**
+ * Check if a filesystem path (absolute or relative) looks like a tarball,
+ * possibly with a subpath appended.
+ *
+ * Delegates to `findTarballSplitInPathname()`, which in turn delegates to
+ * `detectArchiveFromPathHint()` from archive-detect.
+ *
+ * This is the path-based counterpart to `isTarballUrl()`. Use it when the
+ * input is a VFS path or any non-URL string.
+ *
+ * @example
+ * ```ts
+ * isTarballPath("/packages/my-lib.tgz")                     // true
+ * isTarballPath("/packages/my-lib.tgz/lib/index")           // true
+ * isTarballPath("/src/index.ts")                             // false
+ * ```
+ */
+export function isTarballPath(path: string): boolean {
+  return findTarballSplitInPathname(path) !== null;
+}
+
+/**
  * Check if a URL points to a tarball source.
  *
  * Two categories:
@@ -150,16 +171,8 @@ export function isTarballUrl(url: URL): boolean {
   // CDN-style tarball providers (pkg.pr.new, etc.)
   if (getCDNStyle(url.origin) === "tarball") return true;
 
-  // Direct tarball URLs: walk pathname segments and delegate detection
-  // to archive-detect's `detectArchiveFromPathHint()` which is the
-  // single source of truth for "does this filename look like a tarball?".
-  //
-  // We walk segments (not the full pathname) because tarballs may be
-  // followed by subpath segments:
-  //   https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.1.tgz/expo-sqlite/migrator
-  //   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ tarball
-  //                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^ subpath
-  return findTarballSplitInPathname(url.pathname) !== null;
+  // Direct tarball URLs: delegates to the path-based check.
+  return isTarballPath(url.pathname);
 }
 
 /**
@@ -473,27 +486,53 @@ export function stripPackagePrefix(path: string): string {
 }
 
 /**
- * Fetch and extract a tarball into the virtual filesystem
+ * Fetch (or read from VFS) and extract a tarball into the virtual filesystem.
+ *
+ * Accepts two kinds of source:
+ * - **HTTP URL** (`https://...`) — fetched via the shared HTTP cache.
+ * - **VFS path** (`/packages/my-lib.tgz`) — read from the in-memory filesystem.
+ *
+ * After obtaining bytes, both paths converge into the same detect → decompress → extract
+ * pipeline via `detectArchiveFromResponse()`.
  */
 export async function fetchAndExtractTarball<T>(
-	url: string,
+  source: string,
 	packageRoot: string,
 	StateContext: Context<LocalState<T>>
 ): Promise<PackageJson> {
 	const FileSystem = fromContext("filesystem", StateContext)!;
 
-  dispatchEvent(LOGGER_INFO, `Fetching tarball candidate: ${url}`);
-	
-	const { response } = await fetchWithCache(url);
-	if (!response.ok) {
-		throw new Error(`Failed to fetch tarball: ${response.status} ${response.statusText}`);
-	}
+  let response: Response;
+
+  if (/^https?:\/\//.test(source)) {
+    // HTTP: fetch from network / shared cache.
+    dispatchEvent(LOGGER_INFO, `Fetching tarball candidate: ${source}`);
+    const cached = await fetchWithCache(source);
+    response = cached.response;
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch tarball: ${response.status} ${response.statusText}`);
+    }
+  } else {
+    // VFS: read bytes from the in-memory filesystem.
+    dispatchEvent(LOGGER_INFO, `Reading VFS tarball: ${source}`);
+    const bytes = await getFile(FileSystem, source, "buffer");
+
+    if (!bytes) {
+      throw new Error(`TarballPlugin: VFS file not found: ${source}`);
+    }
+
+    // Wrap in a Response so the detection pipeline works identically.
+    // The cast is safe: VFS always stores ArrayBuffer-backed Uint8Arrays,
+    // but the generic type widens to ArrayBufferLike for SharedArrayBuffer compat.
+    response = new Response(bytes as Uint8Array<ArrayBuffer>);
+  }
 
   const {
     detection,
     diagnostic,
     bodyForConsumption,
-  } = await detectArchiveFromResponse(url, response, {
+  } = await detectArchiveFromResponse(source, response, {
     peekWireBytes: 1024,
     peekTarBytes: 512,
   });
@@ -805,13 +844,12 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 	const esbuildOpts = LocalConfig.esbuild ?? {};
 	
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
-		// Handle direct tarball URL imports
+    // ─── Branch 1: HTTP tarball URLs ───────────────────────────────────────
     if (/^https?:\/\//.test(args.path)) {
-      // Not a valid URL, let other plugins handle
       const url = URL.parse(args.path);
 			if (!url) return;
-			
-      // Not a tarball URL, let HTTP/CDN plugins handle
+
+      // Not a tarball URL → let HTTP/CDN plugins handle.
       if (!isTarballUrl(url)) return;
 
       // Route to the right parser based on tarball source.
@@ -834,12 +872,12 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
       }
 
 			const conditions = getResolverConditions(args, esbuildOpts);
-			
+
 			try {
 				const mount = await getOrCreateMount(packageUrl.toString(), StateContext);
 				const entryPath = resolvePackageEntry(mount.manifest, subpath, conditions);
         const resolvedPath = join(mount.packageRoot, entryPath);
-				
+
 				return {
 					path: resolvedPath,
 					namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
@@ -854,8 +892,56 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
 				throw e;
 			}
 		}
-		
-		// Handle self-reference imports from within a tarball package
+
+    // ─── Branch 2: VFS tarball paths ──────────────────────────────────────
+    //
+    // A tarball can live in the in-memory VFS just like any other file.
+    // If someone writes:
+    //   import { something } from "/packages/my-lib.tgz/lib/index";
+    // or:
+    //   await setFile(fs, "/vendor/pkg.tar.gz", bytes);
+    //   import utils from "/vendor/pkg.tar.gz";
+    //
+    // The VFS plugin can't resolve the full path (the tarball is a single
+    // blob, not extracted files), so it returns undefined and we get a chance.
+    // We split at the tarball segment, extract to a mount, and resolve.
+    {
+      // For relative paths, resolve against the importer's directory first.
+      const candidatePath = (args.path.startsWith("./") || args.path.startsWith("../"))
+        ? resolvePath(args.resolveDir || "/", args.path)
+        : args.path;
+
+      // Only process absolute paths — bare specifiers ("react", "@scope/pkg")
+      // must not enter this branch.
+      if (candidatePath.startsWith("/")) {
+        const split = findTarballSplitInPathname(candidatePath);
+
+        if (split) {
+          const conditions = getResolverConditions(args, esbuildOpts);
+
+          try {
+            const mount = await getOrCreateMount(split.tarballPath, StateContext);
+            const entryPath = resolvePackageEntry(mount.manifest, split.subpath, conditions);
+            const resolvedPath = join(mount.packageRoot, entryPath);
+
+            return {
+              path: resolvedPath,
+              namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+              pluginData: Object.assign({}, args.pluginData, {
+                manifest: mount.manifest,
+                packageRoot: mount.packageRoot,
+                tarballUrl: split.tarballPath,
+              })
+            };
+          } catch (e) {
+            dispatchEvent(LOGGER_ERROR, e as Error);
+            throw e;
+          }
+        }
+      }
+    }
+
+    // ─── Branch 3: Self-reference imports from within a tarball ─────────
 		// e.g., import { something } from "@tanstack/react-query" from within that package
 		const importer = args.pluginData?.importer ?? args.importer;
 		if (importer && typeof importer === "string") {
@@ -896,17 +982,17 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
  * Esbuild Tarball plugin
  * 
  * Handles tarball-based package sources like pkg.pr.new by:
- * 1. Intercepting tarball URLs before HTTP plugin
+ * 1. Intercepting tarball URLs and VFS tarball paths before HTTP/VFS plugins
  * 2. Extracting packages to VFS
  * 3. Resolving entry points and self-references
  * 
  * @example
  * ```ts
- * // Plugin order (tarball before HTTP):
+ * // Plugin order (tarball before VFS and HTTP):
  * plugins: [
  *   AliasPlugin(StateContext),
  *   ExternalPlugin(StateContext),
- *   TarballPlugin(StateContext),  // <-- Must be before HTTP
+ *   TarballPlugin(StateContext),  // <-- Must be before VFS and HTTP
  *   VirtualFileSystemPlugin(StateContext),
  *   HttpPlugin(StateContext),
  *   CdnPlugin(StateContext),
