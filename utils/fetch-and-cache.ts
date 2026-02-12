@@ -159,14 +159,12 @@ async function storeInCache(
   if (!response.ok) return;
 
   try {
-    const cloned = response.clone();
-    
     if (SUPPORTS_CACHE_API && cacheApi) {
       // Cache API: store under final URL
-      await cacheApi.put(new Request(finalUrl), cloned);
+      await cacheApi.put(new Request(finalUrl), response);
     } else {
       // In-memory fallback: store under final URL
-      responseCache.set(finalUrl, cloned);
+      responseCache.set(finalUrl, response);
     }
     
     // Track redirect mapping if URLs differ
@@ -228,8 +226,6 @@ async function backgroundRefresh(
     const response = await doFetch(originalUrl, init, retries);
     const resolvedUrl = response.url || originalUrl;
     await storeInCache(originalUrl, resolvedUrl, response, cacheApi);
-    // Cancel the original body after storeInCache has cloned it
-    try { await response.body?.cancel(); } catch { /* ignore */ }
   } catch (err) {
     // If original URL failed with 404 and we have a different final URL,
     // try the final URL (handles extension probing case)
@@ -240,8 +236,6 @@ async function backgroundRefresh(
         const response = await doFetch(finalUrl, init, retries);
         const resolvedUrl = response.url || finalUrl;
         await storeInCache(finalUrl, resolvedUrl, response, cacheApi);
-        // Cancel the original body after storeInCache has cloned it
-        try { await response.body?.cancel(); } catch { /* ignore */ }
       } catch (fallbackErr) {
         // Both failed - log but don't throw (background operation)
         console.error(`[cache] Background refresh failed for ${finalUrl}:`, fallbackErr);
@@ -296,14 +290,13 @@ export async function fetchWithCache(
       
       // Stale-while-revalidate: return cached, refresh in background
       if (cacheMode === 'normal') {
-        await backgroundRefresh(url, finalUrl, init, retries, cacheApi);
+        void backgroundRefresh(url, finalUrl, init, retries, cacheApi);
       }
-      
-      const returnResponse = clone ? cached.clone() : cached;
-      // Cancel the original cached response body if we cloned it
-      if (clone) {
-        try { await cached.body?.cancel(); } catch { /* ignore */ }
-      }
+
+      // Clone response if requested (Cache API responses can be reused, but in-memory ones cannot)
+      const isMemory = !cacheApi;
+      const returnResponse =
+        isMemory ? cached.clone() : (clone ? cached.clone() : cached);
 
       return {
         url: finalUrl,
@@ -319,23 +312,17 @@ export async function fetchWithCache(
   const finalUrl = response.url || url;
   const redirected = response.redirected || url !== finalUrl;
   
-  // Store in cache
+  // Make ONE clone for cache (because cache.put consumes the body)
   if (canCache) {
-    await storeInCache(url, finalUrl, response, cacheApi);
+    // Pass the clone into caching, so storeInCache DOES NOT clone again.
+    await storeInCache(url, finalUrl, response.clone(), cacheApi);
   }
 
-  const returnResponse = clone ? response.clone() : response;
-
-  // If we cloned, cancel the original response body to prevent resource leaks.
-  // Both storeInCache and the return clone use their own independent copies,
-  // so the original body is no longer needed.
-  if (clone) {
-    try { await response.body?.cancel(); } catch { /* ignore */ }
-  }
-
+  // Return the original response.
+  // This keeps exactly two branches total: (1) cache clone, (2) original return.
   return {
     url: finalUrl,
-    response: returnResponse,
+    response,
     fromCache: false,
     redirected,
   };
@@ -389,9 +376,6 @@ export async function fetchHeaders(
       cacheMode,
     });
     
-    // Cancel the body if any (shouldn't be one for HEAD, but defensive)
-    try { await response.body?.cancel(); } catch { /* ignore */ }
-    
     const contentType = response.headers.get("content-type");
     
     return { url: finalUrl, contentType, fromCache };
@@ -404,10 +388,11 @@ export async function fetchHeaders(
       cacheMode: 'no-store', // Don't cache partial responses
     });
     
-    // Cancel body immediately - we only wanted headers
-    try { await response.body?.cancel(); } catch { /* ignore */ }
-    
     const contentType = response.headers.get("content-type");
+    
+    // Cancel body immediately - we only wanted headers
+    try { void response.body?.cancel(); } catch { /* ignore */ }
+
     if (contentType && /text\/html/i.test(contentType)) {
       throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
     }
