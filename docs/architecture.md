@@ -301,8 +301,8 @@ The six esbuild plugins are registered in a **specific order** in [core/build.ts
 plugins: [
   AliasPlugin(StateContext),              // 1. Alias rewrites
   ExternalPlugin(StateContext),           // 2. External marking / polyfills
-  VirtualFileSystemPlugin(StateContext),  // 3. In-memory files
-  TarballPlugin(StateContext),            // 4. Tarball URL extraction
+  TarballPlugin(StateContext),            // 3. Tarball URL extraction
+  VirtualFileSystemPlugin(StateContext),  // 4. In-memory files
   HttpPlugin(StateContext),               // 5. HTTP URL resolution and loading
   CdnPlugin(withContext({ origin: host }, StateContext)),  // 6. Bare import → CDN URL
 ]
@@ -320,11 +320,11 @@ AliasPlugin      Is "react" aliased to something else?       ── NO ──▶
 ExternalPlugin   Is "react" a Node.js builtin?               ── NO ──▶ pass
    │
    ▼
+TarballPlugin    Is "react" a tarball URL or VFS tarball?    ── NO ──▶ pass
+   │
+   ▼
 VFSPlugin        Is "react" in the virtual filesystem?        ── NO ──▶ pass
    │                (no "." or "/" prefix — skip bare imports)
-   ▼
-TarballPlugin    Is "react" a tarball URL?                    ── NO ──▶ pass
-   │
    ▼
 HttpPlugin       Is "react" an HTTP URL?                      ── NO ──▶ pass
    │
@@ -367,7 +367,34 @@ Polyfill mappings come from [utils/runtime-builtins.ts](../utils/runtime-builtin
 
 ---
 
-### 3. VirtualFileSystemPlugin — *In-memory file layer*
+### 3. TarballPlugin — *Extract packages from `.tgz` archives (HTTP + VFS)*
+
+> **Source:** [core/plugins/tar.ts](../core/plugins/tar.ts)
+
+Handles tarball-based package sources from **three branches**:
+1. **HTTP tarball URLs** — `pkg.pr.new`, npm registry tarballs (`registry.npmjs.org/…/-/….tgz`), GitHub release tarballs, or any URL whose pathname contains a tarball extension
+2. **VFS tarball paths** — absolute paths in the in-memory filesystem (e.g., `/packages/my-lib.tgz`)
+3. **Self-reference imports** — when code *inside* an extracted tarball imports its own package name, resolves against the tarball's manifest instead of fetching from CDN
+
+**Must be registered before VFS.** Without this ordering, a file like `/packages/my-lib.tgz` would be claimed by the VirtualFileSystemPlugin as a raw blob before the TarballPlugin could intercept and extract it.
+
+**Detection** is fully delegated to `archive-detect`:
+- `findTarballSplitInPathname()` walks pathname segments and calls `detectArchiveFromPathHint()` per segment — the first tarball-like segment is the split point between tarball fetch path and subpath
+- `isTarballUrl()` checks for CDN-style origins (`getCDNStyle() === "tarball"`) *or* delegates to `isTarballPath()` for extension-based detection
+- `isTarballPath()` is the path-based counterpart for VFS paths — both ultimately call `findTarballSplitInPathname()`
+
+The tar plugin has **zero extension-matching logic of its own** — add a new tarball extension to `archive-detect` and it's automatically recognized here.
+
+**Extraction pipeline:**
+- `fetchAndExtractTarball(source, …)` accepts both HTTP URLs (fetched via `fetchWithCache`) and VFS paths (read via `getFile`, wrapped in `new Response()`)
+- Archive format detection uses `detectArchiveFromResponse()` (multi-signal: extension, headers, magic bytes, ustar signature)
+- Extracts into VFS under `/__tarballs__/<sha256-hash>/`
+- **Content-addressed caching** (SHA-256 of the source) ensures the same tarball is fetched only once per build
+- Reads the extracted `package.json` → resolves entry point via `exports` or legacy fields
+
+---
+
+### 4. VirtualFileSystemPlugin — *In-memory file layer*
 
 > **Source:** [core/plugins/fs.ts](../core/plugins/fs.ts)
 
@@ -390,19 +417,7 @@ The plugin registers three `onResolve` handlers with carefully scoped filters:
 - Relative path handling is limited to **VFS-namespace importers** — avoids intercepting relative imports inside HTTP-fetched modules (those belong to HttpPlugin)
 - **Bare imports** (no `.` or `/` prefix) skip this plugin entirely → fall through to CDN
 - Resolution follows esbuild's filesystem pattern: *exact path match* → *extension probing* (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`) → `/index.*` fallback
-
----
-
-### 4. TarballPlugin — *Extract packages from `.tgz` archives*
-
-> **Source:** [core/plugins/tar.ts](../core/plugins/tar.ts)
-
-Handles tarball-based package sources. Currently routes URLs from **[pkg.pr.new](https://pkg.pr.new)** (a service that builds npm packages from pull requests and serves them as tarballs), though the underlying archive detection infrastructure supports many more formats (see [URL Dependencies and Tarball Extraction](#url-dependencies-and-tarball-extraction)).
-
-- Detects tarball URLs via `getCDNStyle()` origin matching → fetches archive → detects format via multi-signal pipeline (extensions, headers, magic bytes) → decompresses → extracts into VFS under `/__tarballs__/<sha256-hash>/`
-- Reads the extracted `package.json` → resolves entry point via `exports` or legacy fields
-- **Content-addressed caching** (SHA-256 hash of the URL) ensures the same tarball is fetched only once per build
-- Handles **self-reference imports** — when code *inside* a tarball imports its own package name, resolves against the tarball's manifest instead of fetching from CDN
+- **TarballPlugin runs first**, so tarball paths (e.g., `/packages/my-lib.tgz`) are intercepted and extracted before VFS sees them
 
 ---
 
@@ -1317,7 +1332,7 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 | **No git/workspace/link deps** | `git+https://`, `workspace:*`, `link:../path` all produce explicit errors. | These require local filesystem or git — neither exists in a CDN/edge environment. `file:` specs can use `vfs:`/`virtual:` equivalents instead (see [VFS plugin](#3-virtualfilesystemplugin--in-memory-file-layer)). |
 | **Browser field inconsistency** | The dual-form `browser` field is one of npm's most inconsistent conventions. | bundlejs follows the Node.js spec and esbuild's behavior — some packages that "work" in webpack may resolve differently. The [Legacy Resolution](#legacy-resolution--packages-without-exports) section details the exact semantics. |
 | **No dynamic import resolution** | Static `import("react")` works (esbuild handles code splitting), but `import(someVariable)` cannot be resolved. | This is an esbuild limitation, not bundlejs-specific. No bundler can resolve truly dynamic specifiers at build time. |
-| **Tarball routing is narrow** | Only `pkg.pr.new` URLs are *routed* to the TarballPlugin by default. | The detection and extraction *infrastructure* supports many archive formats (see [URL Dependencies](#url-dependencies-and-tarball-extraction)). Expanding routing to new origins is a one-line change in `getCDNStyle()`. npm tarballs are always gzip-compressed, so every real npm dependency works. |
+| **Tarball routing is extension-based** | The TarballPlugin intercepts any URL or VFS path whose pathname contains a tarball extension (`.tgz`, `.tar.gz`, `.tar.zst`, etc.), plus CDN-style origins like `pkg.pr.new`. Detection is delegated to `archive-detect`'s `detectArchiveFromPathHint()`. | This means any tarball from any origin is automatically recognized — npm registry, GitHub releases, custom servers, local VFS paths. No per-origin configuration needed. |
 | **Tarball decompression** | Only gzip and uncompressed tars are extracted; zstd/xz/bzip2/lz4 are detected but produce errors. | npm tarballs are 100% gzip. The detection layer is intentionally broader than the extraction layer, making future format support straightforward. |
 | **`"module"` condition is non-standard** | bundlejs (via esbuild) injects `"module"` as a condition, which Node.js does not recognize. | Matches webpack, Rollup, and esbuild behavior. Without it, many ESM-exporting packages would not resolve correctly. |
 | **Env vars for full functionality** | `UPSTASH_URL`/`UPSTASH_TOKEN` (Redis), `GITHUB_AUTH_TOKEN` (gist links). | Without them, the API works but features degrade gracefully — no persistent cache, no gist support. |
@@ -1341,7 +1356,7 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 
 8. **Experiment with compression.** Try different algorithms and quality levels. Compare brotli-11 vs gzip for various packages to understand the size/speed tradeoff.
 
-9. **Test tarball resolution.** Use `pkg.pr.new` to get a tarball URL for a real package, then trace through the TarballPlugin's extraction and mounting.
+9. **Test tarball resolution.** Use `pkg.pr.new` to get a tarball URL for a real package, or try an npm registry tarball URL (`https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz`), or place a `.tgz` file in the VFS — all three paths are handled by the TarballPlugin.
 
 10. **Read the esbuild docs.** bundlejs inherits all of esbuild's configuration options. Understanding `target`, `format`, `platform`, `external`, and `conditions` will help you understand what bundlejs passes through vs. what it intercepts.
 
