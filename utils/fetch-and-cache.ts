@@ -228,6 +228,8 @@ async function backgroundRefresh(
     const response = await doFetch(originalUrl, init, retries);
     const resolvedUrl = response.url || originalUrl;
     await storeInCache(originalUrl, resolvedUrl, response, cacheApi);
+    // Cancel the original body after storeInCache has cloned it
+    try { await response.body?.cancel(); } catch { /* ignore */ }
   } catch (err) {
     // If original URL failed with 404 and we have a different final URL,
     // try the final URL (handles extension probing case)
@@ -238,6 +240,8 @@ async function backgroundRefresh(
         const response = await doFetch(finalUrl, init, retries);
         const resolvedUrl = response.url || finalUrl;
         await storeInCache(finalUrl, resolvedUrl, response, cacheApi);
+        // Cancel the original body after storeInCache has cloned it
+        try { await response.body?.cancel(); } catch { /* ignore */ }
       } catch (fallbackErr) {
         // Both failed - log but don't throw (background operation)
         console.error(`[cache] Background refresh failed for ${finalUrl}:`, fallbackErr);
@@ -314,9 +318,18 @@ export async function fetchWithCache(
     await storeInCache(url, finalUrl, response, cacheApi);
   }
 
+  const returnResponse = clone ? response.clone() : response;
+
+  // If we cloned, cancel the original response body to prevent resource leaks.
+  // Both storeInCache and the return clone use their own independent copies,
+  // so the original body is no longer needed.
+  if (clone) {
+    try { await response.body?.cancel(); } catch { /* ignore */ }
+  }
+
   return {
     url: finalUrl,
-    response: clone ? response.clone() : response,
+    response: returnResponse,
     fromCache: false,
     redirected,
   };
