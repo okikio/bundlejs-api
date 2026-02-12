@@ -10,7 +10,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -42,7 +42,7 @@ describe("04 · Browser Field Remapping", () => {
       },
     });
 
-    it("browser build: entry remapped from index.js → browser.js", () => {
+    test("browser build: entry remapped from index.js → browser.js", () => {
       const fields = ["browser", "module", "main"];
       const result = resolveLegacy(pkg, { browser: true }, fields);
 
@@ -57,7 +57,7 @@ describe("04 · Browser Field Remapping", () => {
       expect(remapped).toBe("./lib/ours/browser.js");
     });
 
-    it("node build: browser field ignored, entry is main", () => {
+    test("node build: browser field ignored, entry is main", () => {
       const fields = ["module", "main"];
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
@@ -68,7 +68,7 @@ describe("04 · Browser Field Remapping", () => {
   });
 
   describe("4.2 — Bare module exclusion (false mapping)", () => {
-    it("applyPathRemapping returns false for excluded modules", () => {
+    test("applyPathRemapping returns false for excluded modules", () => {
       const remappings = {
         "./lib/adapters/http.js": "./lib/helpers/null.js",
         "./lib/platform/node/index.js": "./lib/platform/browser/index.js",
@@ -80,25 +80,25 @@ describe("04 · Browser Field Remapping", () => {
         .toBe("./lib/platform/browser/index.js");
     });
 
-    it("fs → false excludes the module", () => {
+    test("fs → false excludes the module", () => {
       const remappings = { fs: false as const };
       expect(applyPathRemapping("fs", remappings)).toBe(false);
     });
   });
 
   describe("4.3 — Remapping with ./ prefix variants", () => {
-    it("matches with ./ prefix when key is bare", () => {
+    test("matches with ./ prefix when key is bare", () => {
       const remappings = { "lib/node.js": "./lib/browser.js" };
       // applyPathRemapping tries multiple variants
       expect(applyPathRemapping("./lib/node.js", remappings)).toBe("./lib/browser.js");
     });
 
-    it("matches bare import when key has ./ prefix", () => {
+    test("matches bare import when key has ./ prefix", () => {
       const remappings = { "./utils/fs": false as const };
       expect(applyPathRemapping("./utils/fs", remappings)).toBe(false);
     });
 
-    it("path without prefix matches key without prefix", () => {
+    test("path without prefix matches key without prefix", () => {
       const remappings = { "lib/node.js": "./lib/browser.js" };
       expect(applyPathRemapping("lib/node.js", remappings)).toBe("./lib/browser.js");
     });
@@ -113,7 +113,7 @@ describe("04 · Browser Field Remapping", () => {
       },
     });
 
-    it("browser build detects all-false and excludes", () => {
+    test("browser build detects all-false and excludes", () => {
       const fields = ["browser", "module", "main"];
       const result = resolveLegacy(pkg, { browser: true }, fields);
 
@@ -129,7 +129,7 @@ describe("04 · Browser Field Remapping", () => {
       },
     });
 
-    it("node platform does not apply browser remapping", () => {
+    test("node platform does not apply browser remapping", () => {
       const fields = ["module", "main"];
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
@@ -139,7 +139,7 @@ describe("04 · Browser Field Remapping", () => {
   });
 
   describe("4.6 — Edge runtimes: browser condition ≠ browserField", () => {
-    it("workerd: browser condition active, browserField disabled", () => {
+    test("workerd: browser condition active, browserField disabled", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "browser", runtime: "workerd" }),
@@ -151,7 +151,7 @@ describe("04 · Browser Field Remapping", () => {
       expect(conds.browser).toBe(false);
     });
 
-    it("edge-light: both browser condition and browserField active", () => {
+    test("edge-light: both browser condition and browserField active", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "browser", runtime: "edge-light" }),
@@ -173,7 +173,7 @@ describe("04 · Browser Field Remapping", () => {
       },
     });
 
-    it("browser conditions: remaps ./fallback/platform.js → platform.browser.js", () => {
+    test("browser conditions: remaps ./fallback/platform.js → platform.browser.js", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = applyManifestRemappings("./fallback/platform.js", pkg, conds);
 
@@ -182,7 +182,7 @@ describe("04 · Browser Field Remapping", () => {
       expect(result.path).toBe("./fallback/platform.browser.js");
     });
 
-    it("node conditions: no remapping applied", () => {
+    test("node conditions: no remapping applied", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
       const result = applyManifestRemappings("./fallback/platform.js", pkg, conds);
 
@@ -198,7 +198,7 @@ describe("04 · Browser Field Remapping", () => {
       },
     });
 
-    it("browser conditions: excludes the module", () => {
+    test("browser conditions: excludes the module", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = applyManifestRemappings("./lib/native-impl.js", pkg, conds);
 
@@ -212,25 +212,25 @@ describe("04 · Browser Field Remapping", () => {
   // ===========================================================================
 
   describe("integration: real packages", () => {
-    it("@exodus/bytes@1.13.0 builds with browser remapping", async () => {
+    test("@exodus/bytes@1.13.0 builds with browser remapping", async () => {
       const result = await buildPackage("@exodus/bytes@1.13.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("readable-stream@4.7.0 builds for browser", async () => {
+    test("readable-stream@4.7.0 builds for browser", async () => {
       const result = await buildPackage("readable-stream@4.7.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("axios@1.7.9 builds with browser field swaps", async () => {
+    test("axios@1.7.9 builds with browser field swaps", async () => {
       const result = await buildPackage("axios@1.7.9");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 });

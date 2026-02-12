@@ -9,7 +9,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -30,19 +30,19 @@ describe("09 · Builtins and Polyfills", () => {
   // 9.1 — Builtin exclusion (default behaviour, polyfill: false)
   // ---------------------------------------------------------------------------
   describe("9.1 — Builtin exclusion (default)", () => {
-    it("fs-extra@11.2.0 builds successfully without polyfills", async () => {
+    test("fs-extra@11.2.0 builds successfully without polyfills", async () => {
       const result = await buildPackage("fs-extra@11.2.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 
   // ---------------------------------------------------------------------------
   // 9.2 — Builtin polyfill mode
   // ---------------------------------------------------------------------------
   describe("9.2 — Builtin polyfill mode", () => {
-    it("fs-extra@11.2.0 with polyfill produces a larger bundle", async () => {
+    test("fs-extra@11.2.0 with polyfill produces a larger bundle", async () => {
       const without = await buildPackage("fs-extra@11.2.0");
       const withPoly = await buildPackage("fs-extra@11.2.0", {
         polyfill: true,
@@ -54,53 +54,53 @@ describe("09 · Builtins and Polyfills", () => {
       const sizeWith = getOutputText(withPoly).length;
 
       expect(sizeWith).toBeGreaterThan(sizeWithout);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 
   // ---------------------------------------------------------------------------
   // 9.3 — node: prefix stripping
   // ---------------------------------------------------------------------------
   describe("9.3 — node: prefix stripping", () => {
-    it("@noble/hashes@1.7.1 resolves node:crypto as builtin", async () => {
+    test("@noble/hashes@1.7.1 resolves node:crypto as builtin", async () => {
       const result = await buildPackage("@noble/hashes@1.7.1");
 
       // Should build without trying to fetch "node:crypto" from npm
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 
   // ---------------------------------------------------------------------------
   // 9.4 — "fs" and "node:fs" resolve identically
   // ---------------------------------------------------------------------------
   describe("9.4 — fs vs node:fs equivalence", () => {
-    it("events@3.3.0 as npm package builds", async () => {
+    test("events@3.3.0 as npm package builds", async () => {
       const result = await buildPackage("events@3.3.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 
   // ---------------------------------------------------------------------------
   // 9.5 — Builtins inside CDN-fetched modules
   // ---------------------------------------------------------------------------
   describe("9.5 — Builtin inside CDN-fetched module", () => {
-    it("axios@1.7.9 internal `http`/`https` imports are excluded", async () => {
+    test("axios@1.7.9 internal `http`/`https` imports are excluded", async () => {
       const result = await buildPackage("axios@1.7.9");
 
       // axios uses http/https internally; these should be excluded (not
       // fetched from CDN) via the ExternalPlugin.
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 
   // ---------------------------------------------------------------------------
   // 9.6 — Polyfill output format compatibility
   // ---------------------------------------------------------------------------
   describe("9.6 — Polyfill output format", () => {
-    it("CJS format wraps polyfill output in module.exports", async () => {
+    test("CJS format wraps polyfill output in module.exports", async () => {
       const result = await buildPackage("events@3.3.0", {
         esbuild: { format: "cjs" },
       });
@@ -112,9 +112,9 @@ describe("09 · Builtins and Polyfills", () => {
         outputContains(result, "exports.") ||
         outputMatches(result, /require\(/)
       ).toBe(true);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("IIFE format wraps output in a function wrapper", async () => {
+    test("IIFE format wraps output in a function wrapper", async () => {
       const result = await buildPackage("events@3.3.0", {
         esbuild: { format: "iife" },
       });
@@ -122,6 +122,6 @@ describe("09 · Builtins and Polyfills", () => {
       const text = getOutputText(result);
       // IIFE output uses a self-invoking function — typically var or (()=>{})()
       expect(text.length).toBeGreaterThan(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 });

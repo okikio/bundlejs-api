@@ -8,7 +8,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -31,7 +31,7 @@ describe("03 · Legacy Field Resolution", () => {
   describe("3.1 — Only main field (isarray-like)", () => {
     const pkg = manifest({ main: "index.js" });
 
-    it("browser build resolves to main", () => {
+    test("browser build resolves to main", () => {
       const fields = ["browser", "module", "main"];
       const result = resolveLegacy(pkg, { browser: true }, fields);
 
@@ -39,7 +39,7 @@ describe("03 · Legacy Field Resolution", () => {
       expect(result.entryPoint).toBe("index.js");
     });
 
-    it("node build resolves to main", () => {
+    test("node build resolves to main", () => {
       const fields = ["module", "main"];
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
@@ -56,7 +56,7 @@ describe("03 · Legacy Field Resolution", () => {
       sideEffects: false,
     });
 
-    it("browser build picks module field", () => {
+    test("browser build picks module field", () => {
       const fields = ["browser", "module", "main"];
       const result = resolveLegacy(pkg, { browser: true }, fields);
 
@@ -74,7 +74,7 @@ describe("03 · Legacy Field Resolution", () => {
       browser: "./dist/mjs/browser.js",
     });
 
-    it("browser build uses the browser string entry", () => {
+    test("browser build uses the browser string entry", () => {
       const fields = ["browser", "module", "main"];
       const result = resolveLegacy(pkg, { browser: true }, fields);
 
@@ -82,7 +82,7 @@ describe("03 · Legacy Field Resolution", () => {
       expect(result.entryPoint).toBe("./dist/mjs/browser.js");
     });
 
-    it("node build ignores browser → uses module", () => {
+    test("node build ignores browser → uses module", () => {
       const fields = ["module", "main"];
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
@@ -94,7 +94,7 @@ describe("03 · Legacy Field Resolution", () => {
   describe("3.4 — No entry point fields at all", () => {
     const pkg = manifest({});
 
-    it("resolvePackageEntry falls back to ./index.js", () => {
+    test("resolvePackageEntry falls back to ./index.js", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const fields = getLegacyMainFields(pkg, importArgs(), resolveOpts());
       const result = resolvePackageEntry({
@@ -111,7 +111,7 @@ describe("03 · Legacy Field Resolution", () => {
   describe("3.5 — unpkg / jsdelivr CDN fields", () => {
     const pkg = manifest({ unpkg: "dist/global.js" });
 
-    it("falls to unpkg field when main/module are missing", () => {
+    test("falls to unpkg field when main/module are missing", () => {
       const fields = ["module", "main"];
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
@@ -127,7 +127,7 @@ describe("03 · Legacy Field Resolution", () => {
       "jsnext:main": "./dist/moment.js",
     } as any);
 
-    it("resolveLegacy ignores jsnext:main, picks main", () => {
+    test("resolveLegacy ignores jsnext:main, picks main", () => {
       const fields = ["module", "main"];
       const result = resolveLegacy(pkg, { browser: false }, fields);
 
@@ -148,7 +148,7 @@ describe("03 · Legacy Field Resolution", () => {
       },
     });
 
-    it("resolvePackageEntry uses modern resolution (exports) first", () => {
+    test("resolvePackageEntry uses modern resolution (exports) first", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const fields = getLegacyMainFields(pkg, importArgs(), resolveOpts());
       const result = resolvePackageEntry({
@@ -170,25 +170,25 @@ describe("03 · Legacy Field Resolution", () => {
   // ===========================================================================
 
   describe("integration: real packages", () => {
-    it("isarray@2.0.5 builds with only main field", async () => {
+    test("isarray@2.0.5 builds with only main field", async () => {
       const result = await buildPackage("isarray@2.0.5");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("lodash-es@4.17.21 builds with module field", async () => {
+    test("lodash-es@4.17.21 builds with module field", async () => {
       const result = await buildPackage("lodash-es@4.17.21");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("ms@2.1.3 builds with extensionless main", async () => {
+    test("ms@2.1.3 builds with extensionless main", async () => {
       const result = await buildPackage("ms@2.1.3");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 });

@@ -8,7 +8,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -23,7 +23,7 @@ import {
 
 describe("05 · Platform-Specific Remapping", () => {
   describe("REMAPPING_FIELDS ordering", () => {
-    it("is ordered: react-native → electron → browser", () => {
+    test("is ordered: react-native → electron → browser", () => {
       expect(REMAPPING_FIELDS[0].condition).toBe("react-native");
       expect(REMAPPING_FIELDS[1].condition).toBe("electron");
       expect(REMAPPING_FIELDS[2].condition).toBe("browser");
@@ -42,7 +42,7 @@ describe("05 · Platform-Specific Remapping", () => {
       },
     } as any);
 
-    it("react-native runtime → remaps to .native.js", () => {
+    test("react-native runtime → remaps to .native.js", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "node", runtime: "react-native" }),
@@ -53,7 +53,7 @@ describe("05 · Platform-Specific Remapping", () => {
       expect(result.path).toBe("./fallback/platform.native.js");
     });
 
-    it("browser runtime → remaps to .browser.js", () => {
+    test("browser runtime → remaps to .browser.js", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = applyManifestRemappings("./fallback/platform.js", pkg, conds);
 
@@ -68,7 +68,7 @@ describe("05 · Platform-Specific Remapping", () => {
       "react-native": { "./lib/impl.js": "./lib/impl.native.js" },
     } as any);
 
-    it("react-native wins over browser", () => {
+    test("react-native wins over browser", () => {
       // Simulate both conditions being active
       const conds = getResolverConditions(
         importArgs(),
@@ -87,7 +87,7 @@ describe("05 · Platform-Specific Remapping", () => {
       electron: { "./lib/crypto.js": "./lib/crypto.electron.js" },
     } as any);
 
-    it("electron-renderer: electron field wins over browser", () => {
+    test("electron-renderer: electron field wins over browser", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "browser", runtime: "electron-renderer" }),
@@ -98,7 +98,7 @@ describe("05 · Platform-Specific Remapping", () => {
       expect(result.path).toBe("./lib/crypto.electron.js");
     });
 
-    it("electron-main: electron field applies", () => {
+    test("electron-main: electron field applies", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "node", runtime: "electron-main" }),
@@ -109,7 +109,7 @@ describe("05 · Platform-Specific Remapping", () => {
       expect(result.path).toBe("./lib/crypto.electron.js");
     });
 
-    it("default browser build: browser field applies", () => {
+    test("default browser build: browser field applies", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = applyManifestRemappings("./lib/crypto.js", pkg, conds);
 
@@ -124,7 +124,7 @@ describe("05 · Platform-Specific Remapping", () => {
       "react-native": { "./fallback/platform.js": "./fallback/platform.native.js" },
     } as any);
 
-    it("deno runtime: no condition matches → pass-through", () => {
+    test("deno runtime: no condition matches → pass-through", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "node", runtime: "deno" }),
@@ -144,7 +144,7 @@ describe("05 · Platform-Specific Remapping", () => {
       },
     } as any);
 
-    it("react-native build: false excludes the module", () => {
+    test("react-native build: false excludes the module", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "node", runtime: "react-native" }),
@@ -155,7 +155,7 @@ describe("05 · Platform-Specific Remapping", () => {
       expect(result.matchedField).toBe("react-native");
     });
 
-    it("react-native build: normal remapping still works", () => {
+    test("react-native build: normal remapping still works", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "node", runtime: "react-native" }),
@@ -169,27 +169,27 @@ describe("05 · Platform-Specific Remapping", () => {
   });
 
   describe("5.7 — getRuntimeDefaults covers all runtimes", () => {
-    it("react-native: browserField false", () => {
+    test("react-native: browserField false", () => {
       const d = getRuntimeDefaults("react-native");
       expect(d.conditions).toContain("react-native");
       expect(d.browserField).toBe(false);
     });
 
-    it("electron-main: adds electron + node", () => {
+    test("electron-main: adds electron + node", () => {
       const d = getRuntimeDefaults("electron-main");
       expect(d.conditions).toContain("electron");
       expect(d.conditions).toContain("node");
       expect(d.browserField).toBe(false);
     });
 
-    it("electron-renderer: adds electron + browser, browserField true", () => {
+    test("electron-renderer: adds electron + browser, browserField true", () => {
       const d = getRuntimeDefaults("electron-renderer");
       expect(d.conditions).toContain("electron");
       expect(d.conditions).toContain("browser");
       expect(d.browserField).toBe(true);
     });
 
-    it("undefined runtime: empty conditions, null browserField", () => {
+    test("undefined runtime: empty conditions, null browserField", () => {
       const d = getRuntimeDefaults(undefined);
       expect(d.conditions).toHaveLength(0);
       expect(d.browserField).toBeNull();

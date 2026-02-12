@@ -9,7 +9,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -60,7 +60,7 @@ describe("10 · Dual Package Hazard", () => {
       },
     });
 
-    it("browser + ESM → esm-browser", () => {
+    test("browser + ESM → esm-browser", () => {
       const conds = getResolverConditions(
         importArgs("import-statement"),
         resolveOpts({ platform: "browser", format: "esm" }),
@@ -69,7 +69,7 @@ describe("10 · Dual Package Hazard", () => {
       expect(result.path).toBe("./dist/esm-browser/index.js");
     });
 
-    it("browser + CJS → cjs-browser", () => {
+    test("browser + CJS → cjs-browser", () => {
       const conds = getResolverConditions(
         importArgs("require-call"),
         resolveOpts({ platform: "browser", format: "cjs" }),
@@ -78,7 +78,7 @@ describe("10 · Dual Package Hazard", () => {
       expect(result.path).toBe("./dist/cjs-browser/index.js");
     });
 
-    it("node + ESM → esm (node path)", () => {
+    test("node + ESM → esm (node path)", () => {
       const conds = getResolverConditions(
         importArgs("import-statement"),
         resolveOpts({ platform: "node", format: "esm" }),
@@ -87,7 +87,7 @@ describe("10 · Dual Package Hazard", () => {
       expect(result.path).toBe("./dist/esm/index.js");
     });
 
-    it("node + CJS → cjs (node path)", () => {
+    test("node + CJS → cjs (node path)", () => {
       const conds = getResolverConditions(
         importArgs("require-call"),
         resolveOpts({ platform: "node", format: "cjs" }),
@@ -108,7 +108,7 @@ describe("10 · Dual Package Hazard", () => {
       exports: "./source/index.js",
     });
 
-    it("ESM resolves single-string exports", () => {
+    test("ESM resolves single-string exports", () => {
       const conds = getResolverConditions(
         importArgs("import-statement"),
         resolveOpts({ format: "esm" }),
@@ -117,7 +117,7 @@ describe("10 · Dual Package Hazard", () => {
       expect(result.path).toBe("./source/index.js");
     });
 
-    it("CJS also resolves single-string exports (no require guard)", () => {
+    test("CJS also resolves single-string exports (no require guard)", () => {
       const conds = getResolverConditions(
         importArgs("require-call"),
         resolveOpts({ format: "cjs" }),
@@ -132,21 +132,21 @@ describe("10 · Dual Package Hazard", () => {
   // isRequireContext helper
   // ---------------------------------------------------------------------------
   describe("isRequireContext()", () => {
-    it("returns true for require-call + cjs", () => {
+    test("returns true for require-call + cjs", () => {
       expect(isRequireContext(
         importArgs("require-call"),
         resolveOpts({ format: "cjs" }),
       )).toBe(true);
     });
 
-    it("returns false for import-statement + esm", () => {
+    test("returns false for import-statement + esm", () => {
       expect(isRequireContext(
         importArgs("import-statement"),
         resolveOpts({ format: "esm" }),
       )).toBe(false);
     });
 
-    it("returns true for entry-point + cjs format", () => {
+    test("returns true for entry-point + cjs format", () => {
       expect(isRequireContext(
         importArgs("entry-point"),
         resolveOpts({ format: "cjs" }),
@@ -158,16 +158,16 @@ describe("10 · Dual Package Hazard", () => {
   // Integration tests — format and platform
   // ---------------------------------------------------------------------------
   describe("integration: format affects output wrapping", () => {
-    it("10.4 — ESM output uses export syntax", async () => {
+    test("10.4 — ESM output uses export syntax", async () => {
       const result = await buildPackage("preact@10.25.4", {
         esbuild: { format: "esm" },
       });
 
       const text = getOutputText(result);
       expect(text).toMatch(/export/);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("10.4 — CJS output uses module.exports or require", async () => {
+    test("10.4 — CJS output uses module.exports or require", async () => {
       const result = await buildPackage("preact@10.25.4", {
         esbuild: { format: "cjs" },
       });
@@ -177,9 +177,9 @@ describe("10 · Dual Package Hazard", () => {
         outputContains(result, "exports.") ||
         outputMatches(result, /require\(/)
       ).toBe(true);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("10.4 — IIFE output wraps in function", async () => {
+    test("10.4 — IIFE output wraps in function", async () => {
       const result = await buildPackage("preact@10.25.4", {
         esbuild: { format: "iife" },
       });
@@ -187,11 +187,11 @@ describe("10 · Dual Package Hazard", () => {
       const text = getOutputText(result);
       // esbuild IIFE output typically starts with (() => { or var
       expect(text.length).toBeGreaterThan(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 
   describe("integration: minification toggle", () => {
-    it("10.7 — unminified output is larger", async () => {
+    test("10.7 — unminified output is larger", async () => {
       const minified = await buildPackage("preact@10.25.4", {
         esbuild: { minify: true },
       });
@@ -204,6 +204,6 @@ describe("10 · Dual Package Hazard", () => {
 
       // Unminified should be larger (more whitespace, longer names)
       expect(unminSize).toBeGreaterThan(minSize);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 });

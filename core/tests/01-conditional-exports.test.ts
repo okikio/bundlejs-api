@@ -8,7 +8,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -42,7 +42,7 @@ describe("01 · Conditional Exports", () => {
       },
     });
 
-    it("browser build picks the 'browser' condition", () => {
+    test("browser build picks the 'browser' condition", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = resolveModern(pkg, ".", conds);
 
@@ -51,7 +51,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./dist/preact.module.js");
     });
 
-    it("node build picks 'import' (no browser condition)", () => {
+    test("node build picks 'import' (no browser condition)", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
       const result = resolveModern(pkg, ".", conds);
 
@@ -59,7 +59,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./dist/preact.mjs");
     });
 
-    it("CJS node build picks 'require'", () => {
+    test("CJS node build picks 'require'", () => {
       const conds = getResolverConditions(
         importArgs("entry-point"),
         resolveOpts({ platform: "node", format: "cjs" }),
@@ -92,7 +92,7 @@ describe("01 · Conditional Exports", () => {
       },
     });
 
-    it("browser production resolves to ./dist/solid.js", () => {
+    test("browser production resolves to ./dist/solid.js", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = resolveModern(pkg, ".", conds);
 
@@ -100,7 +100,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./dist/solid.js");
     });
 
-    it("browser + development resolves to ./dist/dev.js", () => {
+    test("browser + development resolves to ./dist/dev.js", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "browser", conditions: ["development"] }),
@@ -111,7 +111,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./dist/dev.js");
     });
 
-    it("deno runtime resolves to ./dist/server.js", () => {
+    test("deno runtime resolves to ./dist/server.js", () => {
       const conds = getResolverConditions(
         importArgs(),
         resolveOpts({ platform: "node", runtime: "deno" }),
@@ -145,7 +145,7 @@ describe("01 · Conditional Exports", () => {
       },
     });
 
-    it("browser ESM resolves to bundler entry", () => {
+    test("browser ESM resolves to bundler entry", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = resolveModern(pkg, ".", conds);
 
@@ -153,7 +153,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./dist/vue.runtime.esm-bundler.js");
     });
 
-    it("node ESM resolves to ./index.mjs", () => {
+    test("node ESM resolves to ./index.mjs", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
       const result = resolveModern(pkg, ".", conds);
 
@@ -161,7 +161,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./index.mjs");
     });
 
-    it("node CJS resolves through 'require' → 'node' → 'default'", () => {
+    test("node CJS resolves through 'require' → 'node' → 'default'", () => {
       const conds = getResolverConditions(
         importArgs("entry-point"),
         resolveOpts({ platform: "node", format: "cjs" }),
@@ -190,13 +190,13 @@ describe("01 · Conditional Exports", () => {
       },
     });
 
-    it("browser + ESM → esm-browser", () => {
+    test("browser + ESM → esm-browser", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = resolveModern(pkg, ".", conds);
       expect(result.path).toBe("./dist/esm-browser/index.js");
     });
 
-    it("browser + CJS → cjs-browser", () => {
+    test("browser + CJS → cjs-browser", () => {
       const conds = getResolverConditions(
         importArgs("entry-point"),
         resolveOpts({ platform: "browser", format: "cjs" }),
@@ -205,13 +205,13 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./dist/cjs-browser/index.js");
     });
 
-    it("node + ESM → esm", () => {
+    test("node + ESM → esm", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
       const result = resolveModern(pkg, ".", conds);
       expect(result.path).toBe("./dist/esm/index.js");
     });
 
-    it("node + CJS → cjs", () => {
+    test("node + CJS → cjs", () => {
       const conds = getResolverConditions(
         importArgs("entry-point"),
         resolveOpts({ platform: "node", format: "cjs" }),
@@ -227,7 +227,7 @@ describe("01 · Conditional Exports", () => {
       exports: "./source/index.js" as any,
     });
 
-    it("resolves the string directly", () => {
+    test("resolves the string directly", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, ".", conds);
 
@@ -246,7 +246,7 @@ describe("01 · Conditional Exports", () => {
       },
     });
 
-    it("ESM picks import from the first array entry", () => {
+    test("ESM picks import from the first array entry", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, ".", conds);
 
@@ -254,7 +254,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./index.mjs");
     });
 
-    it("CJS picks require from the first array entry", () => {
+    test("CJS picks require from the first array entry", () => {
       const conds = getResolverConditions(
         importArgs("entry-point"),
         resolveOpts({ format: "cjs" }),
@@ -274,7 +274,7 @@ describe("01 · Conditional Exports", () => {
       },
     });
 
-    it("root resolves normally", () => {
+    test("root resolves normally", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, ".", conds);
 
@@ -282,7 +282,7 @@ describe("01 · Conditional Exports", () => {
       expect(result.path).toBe("./index.js");
     });
 
-    it("./internal produces a resolution failure (null exclusion)", () => {
+    test("./internal produces a resolution failure (null exclusion)", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./internal", conds);
 
@@ -297,32 +297,32 @@ describe("01 · Conditional Exports", () => {
   // ===========================================================================
 
   describe("integration: real packages", () => {
-    it("preact@10.25.4 builds successfully for browser", async () => {
+    test("preact@10.25.4 builds successfully for browser", { }, async () => {
       const result = await buildPackage("preact@10.25.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("solid-js@1.9.4 builds for browser", async () => {
+    test("solid-js@1.9.4 builds for browser", async () => {
       const result = await buildPackage("solid-js@1.9.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("uuid@11.0.5 builds for browser", async () => {
+    test("uuid@11.0.5 builds for browser", async () => {
       const result = await buildPackage("uuid@11.0.5");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("chalk@5.4.1 builds for browser", async () => {
+    test("chalk@5.4.1 builds for browser", async () => {
       const result = await buildPackage("chalk@5.4.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 });

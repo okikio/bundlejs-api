@@ -8,7 +8,7 @@
  * @module
  */
 
-import { describe, it } from "@std/testing/bdd";
+import { describe, test } from "@std/testing/bdd";
 import { expect } from "@std/expect";
 
 import {
@@ -40,7 +40,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("./dist/solid.js matches the wildcard and substitutes", () => {
+    test("./dist/solid.js matches the wildcard and substitutes", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./dist/solid.js", conds);
 
@@ -48,7 +48,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       expect(result.path).toBe("./dist/solid.js");
     });
 
-    it("./web/dist/web.js matches the web wildcard", () => {
+    test("./web/dist/web.js matches the web wildcard", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./web/dist/web.js", conds);
 
@@ -66,7 +66,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("./web matches the explicit key, not a wildcard", () => {
+    test("./web matches the explicit key, not a wildcard", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./web", conds);
 
@@ -88,7 +88,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("browser default → esm5 path", () => {
+    test("browser default → esm5 path", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = resolveModern(pkg, "./internal/operators/map", conds);
 
@@ -96,7 +96,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       expect(result.path).toBe("./dist/esm5/internal/operators/map.js");
     });
 
-    it("node build → cjs path", () => {
+    test("node build → cjs path", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
       const result = resolveModern(pkg, "./internal/operators/map", conds);
 
@@ -114,7 +114,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("./operators hits the explicit key", () => {
+    test("./operators hits the explicit key", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./operators", conds);
 
@@ -122,7 +122,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       expect(result.path).toBe("./dist/esm5/operators/index.js");
     });
 
-    it("./internal/operators/map hits the wildcard", () => {
+    test("./internal/operators/map hits the wildcard", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./internal/operators/map", conds);
 
@@ -146,7 +146,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("browser build resolves #supports-color to browser.js", () => {
+    test("browser build resolves #supports-color to browser.js", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const result = resolveModern(pkg, "#supports-color", conds);
 
@@ -154,7 +154,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       expect(result.path).toBe("./source/vendor/supports-color/browser.js");
     });
 
-    it("node build resolves #supports-color to index.js", () => {
+    test("node build resolves #supports-color to index.js", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
       const result = resolveModern(pkg, "#supports-color", conds);
 
@@ -170,7 +170,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("resolves to the single path regardless of platform", () => {
+    test("resolves to the single path regardless of platform", () => {
       const browserConds = getResolverConditions(importArgs(), resolveOpts({ platform: "browser" }));
       const nodeConds = getResolverConditions(importArgs(), resolveOpts({ platform: "node" }));
 
@@ -191,7 +191,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("#nonexistent does not resolve (hard failure)", () => {
+    test("#nonexistent does not resolve (hard failure)", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "#nonexistent", conds);
 
@@ -215,7 +215,7 @@ describe("02 · Subpath Patterns and Imports", () => {
       },
     });
 
-    it("./helpers resolves through exports", () => {
+    test("./helpers resolves through exports", () => {
       const conds = getResolverConditions(importArgs(), resolveOpts());
       const result = resolveModern(pkg, "./helpers", conds);
 
@@ -229,18 +229,18 @@ describe("02 · Subpath Patterns and Imports", () => {
   // ===========================================================================
 
   describe("integration: real packages", () => {
-    it("chalk@5.4.1 resolves # imports correctly", async () => {
+    test("chalk@5.4.1 resolves # imports correctly", async () => {
       const result = await buildPackage("chalk@5.4.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
 
-    it("rxjs@7.8.1 builds a subpath import", async () => {
+    test("rxjs@7.8.1 builds a subpath import", async () => {
       const result = await buildPackage("rxjs@7.8.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
-    }, { timeout: NETWORK_TIMEOUT });
+    });
   });
 });
