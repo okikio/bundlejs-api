@@ -500,7 +500,11 @@ The REGISTRY_CDN flow:
 
 **Scoped registry support.** The CdnPlugin normalizes the `BuildConfig.registry` field at init time via `normalizeRegistryConfig()` (from [utils/npmrc.ts](../utils/npmrc.ts)). For each bare import, `getRegistryForPackage()` resolves the appropriate registry by scope — e.g., `@jsr/std__path` routes to `https://npm.jsr.io` while `react` routes to the default registry. This config accepts a `RegistryConfig` object, a plain URL string, or raw `.npmrc` content (auto-detected by the presence of `=` or newlines).
 
-**Transitive dependency propagation.** All bare imports from within extracted tarballs also resolve through the registry. The CdnPlugin always has the registry origin configured, and the [HttpPlugin's registry propagation](#5-httpplugin--fetch-and-resolve-httphttps-urls) ensures even files loaded from different CDNs route their deps through the registry when registry mode is active.
+**Transitive dependency propagation.** All bare imports from within extracted tarballs also resolve through the registry via two complementary mechanisms:
+
+1. **Global config** — when the user sets `cdn: "npm.registry"`, the CdnPlugin's origin is the registry for *every* bare import, and the [HttpPlugin's `REGISTRY_HOST` check](#5-httpplugin--fetch-and-resolve-httphttps-urls) ensures HTTP-loaded files also route their deps through the registry.
+
+2. **`pluginData` propagation** — when entry code uses direct registry tarball URLs (e.g., `https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz`) *without* an explicit `cdn: "npm.registry"` config, the TarballPlugin stores the source URL in `pluginData.tarballUrl`. The CdnPlugin detects this on subsequent bare imports and overrides the CDN origin to the tarball's registry. Because esbuild flows `pluginData` through the VFS `onLoad` → `onResolve` chain, the propagation is **self-sustaining** across the entire transitive dependency tree — every tarball extraction tags the next layer of imports with the registry origin.
 
 
 ## How Resolution Works
