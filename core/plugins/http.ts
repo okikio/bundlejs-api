@@ -34,7 +34,7 @@ import { decode } from "@bundle/utils/encode-decode";
 import { LOGGER_ERROR, LOGGER_INFO, LOGGER_WARN, dispatchEvent } from "../configs/events.ts";
 
 import { DEFAULT_CDN_HOST, getCDNStyle, getCDNUrl } from "../utils/cdn-format.ts";
-import { applyBrowserRemapping } from "../utils/cdn-resolution.ts";
+import { applyManifestRemappings } from "../utils/cdn-resolution.ts";
 import { getResolverConditions } from "@bundle/utils/resolve-conditions";
 import { inferLoader } from "../utils/loader.ts";
 import { setFile } from "../utils/filesystem.ts";
@@ -336,41 +336,47 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
     }
 
     // ========================================================================
-    // Apply browser field remappings for relative imports within a package
+    // Apply manifest field remappings for relative imports within a package
     //
-    // When a CDN-resolved package has a browser field object like:
-    //   { "./fallback/platform.js": "./fallback/platform.browser.js" }
-    // relative imports matching those entries must be rewritten to the
-    // browser-specific variant. Without this, the default (often Node.js)
-    // version is fetched instead.
+    // Several top-level package.json fields ("browser", "react-native",
+    // "electron") act as path-remapping layers. When the active resolve
+    // conditions include one of those fields, matching relative imports
+    // are rewritten to the platform-specific variant.
+    //
+    // Example — @exodus/bytes with browser conditions active:
+    //   manifest.browser = { "./fallback/platform.js": "./fallback/platform.browser.js" }
+    //   "./fallback/platform.js" → "./fallback/platform.browser.js"
+    //
+    // Example — react-native conditions active:
+    //   manifest["react-native"] = { "./utf16.js": "./utf16.native.js" }
+    //   "./utf16.js" → "./utf16.native.js"
     //
     // The packageBaseUrl (set by CdnPlugin) lets us convert the resolved
-    // absolute URL back to a package-relative path for lookup in the
-    // browser remapping table.
+    // absolute URL back to a package-relative path for field lookup.
     // ========================================================================
     const manifest = args.pluginData?.manifest;
     const packageBaseUrl: string | undefined = args.pluginData?.packageBaseUrl;
 
-    if (packageBaseUrl && manifest?.browser && typeof manifest.browser === "object") {
+    if (packageBaseUrl && manifest && resolvedPath.startsWith(packageBaseUrl)) {
       const conditions = getResolverConditions(args, effectiveResolveOpts);
+      const packageRelPath = "./" + resolvedPath.slice(packageBaseUrl.length);
+      const { path: remappedPath, excluded, matchedField } = applyManifestRemappings(
+        packageRelPath,
+        manifest,
+        conditions,
+      );
 
-      if (conditions.browser && resolvedPath.startsWith(packageBaseUrl)) {
-        const packageRelPath = "./" + resolvedPath.slice(packageBaseUrl.length);
-        const remapped = applyBrowserRemapping(packageRelPath, manifest.browser);
+      if (excluded) {
+        return {
+          errors: [{
+            text: `Module "${packageRelPath}" excluded by "${matchedField}" field`,
+            detail: `Package "${manifest.name ?? "unknown"}" maps this path to false for the current environment.`,
+          }],
+        };
+      }
 
-        if (remapped === false) {
-          // Module excluded by browser field — surface as a build error
-          return {
-            errors: [{
-              text: `Module "${packageRelPath}" excluded by browser field`,
-              detail: `Package "${manifest.name ?? "unknown"}" maps this path to false for browser environments.`,
-            }],
-          };
-        }
-
-        if (remapped !== packageRelPath) {
-          resolvedPath = packageBaseUrl + remapped.replace(/^\.\//, "");
-        }
+      if (remappedPath !== packageRelPath) {
+        resolvedPath = packageBaseUrl + remappedPath.replace(/^\.\//, "");
       }
     }
 

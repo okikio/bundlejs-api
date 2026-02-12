@@ -41,9 +41,45 @@ import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 /** Resolution conditions from resolve-conditions.ts */
 export interface ResolverConditions extends BaseResolverConditions {}
 
-/** Browser field remapping table */
-export interface BrowserRemappings {
+/** Path remapping table (used by browser, react-native, and similar fields) */
+export interface PathRemappings {
   [source: string]: string | false;
+}
+
+/**
+ * Top-level package.json fields that act as path remapping layers.
+ *
+ * Each entry maps a **condition name** (as it appears in the `conditions`
+ * array computed by `getResolverConditions()`) to the **package.json
+ * field** that holds its remapping object.
+ *
+ * Convention:
+ * - `"browser"` — the original remapping field, defined by the
+ *   [browser-field spec](https://github.com/nicolo-ribaudo/tc39-proposal-import-conditions#previous-work).
+ *   Activated when the `"browser"` condition is present.
+ * - `"react-native"` — Metro bundler convention. Activated when
+ *   `"react-native"` is in conditions.
+ * - `"electron"` — occasionally used; activated when `"electron"` is
+ *   in conditions.
+ *
+ * The list is ordered from *most specific* to *least specific*. When
+ * multiple remapping fields match the active conditions, the first
+ * match wins — mirroring how `exports` condition ordering works.
+ */
+export const REMAPPING_FIELDS: ReadonlyArray<{ condition: string; field: string }> = [
+  { condition: "react-native", field: "react-native" },
+  { condition: "electron", field: "electron" },
+  { condition: "browser", field: "browser" },
+];
+
+/** Result of applying manifest field remappings */
+export interface RemappingResult {
+  /** The path after remapping (or the original if nothing matched) */
+  path: string;
+  /** Set to `true` when the remapping maps the path to `false` (excluded) */
+  excluded: boolean;
+  /** Which field triggered the remapping (null if no remapping applied) */
+  matchedField: string | null;
 }
 
 /** Result from modern exports/imports resolution */
@@ -61,7 +97,7 @@ export interface LegacyResolutionResult {
   /** Resolved entry point (from main/module, NOT browser object keys) */
   entryPoint: string | null;
   /** Browser remappings to apply (if browser field was object) */
-  browserRemappings: BrowserRemappings | null;
+  pathRemappings: PathRemappings | null;
   /** Whether module is excluded (browser: false) */
   excluded: boolean;
   /** Why the module was excluded - helps generate accurate error messages */
@@ -76,9 +112,9 @@ export interface PackageResolutionResult {
   /** Whether modern exports was used */
   usedModern: boolean;
   /** Whether browser remapping was applied */
-  appliedBrowserRemapping: boolean;
+  appliedPathRemapping: boolean;
   /** Browser remappings (for child resolution) */
-  browserRemappings: BrowserRemappings | null;
+  pathRemappings: PathRemappings | null;
   /** Whether module is excluded */
   excluded: boolean;
   error?: Error;
@@ -199,7 +235,7 @@ export function resolveModern(
  * // { "browser": "./dist/browser.js", "main": "./index.js" }
  * const result = resolveLegacy(manifest, { browser: true }, fields);
  * // result.entryPoint = "./dist/browser.js" (from browser string)
- * // result.browserRemappings = null
+ * // result.pathRemappings = null
  * ```
  *
  * @example Object browser field (THE FIX)
@@ -207,7 +243,7 @@ export function resolveModern(
  * // { "browser": { "./lib/node.js": "./lib/browser.js" }, "main": "./lib/index.js" }
  * const result = resolveLegacy(manifest, { browser: true }, fields);
  * // result.entryPoint = "./lib/index.js" (from main, NOT browser keys!)
- * // result.browserRemappings = { "./lib/node.js": "./lib/browser.js" }
+ * // result.pathRemappings = { "./lib/node.js": "./lib/browser.js" }
  * ```
  */
 export function resolveLegacy(
@@ -217,7 +253,7 @@ export function resolveLegacy(
 ): LegacyResolutionResult {
   const result: LegacyResolutionResult = {
     entryPoint: null,
-    browserRemappings: null,
+    pathRemappings: null,
     excluded: false,
   };
 
@@ -263,7 +299,7 @@ export function resolveLegacy(
         }
 
         // Store remappings for later application
-        result.browserRemappings = withBrowser as BrowserRemappings;
+        result.pathRemappings = withBrowser as PathRemappings;
         // Fall through to get actual entry point from non-browser fields
       }
     }
@@ -330,16 +366,16 @@ export function resolveLegacy(
  *
  * @example
  * ```ts
- * applyBrowserRemapping("./lib/node.js", { "./lib/node.js": "./lib/browser.js" })
+ * applyPathRemapping("./lib/node.js", { "./lib/node.js": "./lib/browser.js" })
  * // => "./lib/browser.js"
  *
- * applyBrowserRemapping("fs", { "fs": false })
+ * applyPathRemapping("fs", { "fs": false })
  * // => false
  * ```
  */
-export function applyBrowserRemapping(
+export function applyPathRemapping(
   resolvedPath: string,
-  remappings: BrowserRemappings | null
+  remappings: PathRemappings | null
 ): string | false {
   if (!remappings || !resolvedPath) return resolvedPath;
 
@@ -358,6 +394,81 @@ export function applyBrowserRemapping(
   }
 
   return resolvedPath;
+}
+
+/**
+ * Apply all active manifest remapping fields to a resolved path.
+ *
+ * Iterates over `REMAPPING_FIELDS` in priority order. For each field
+ * whose condition appears in the active conditions list, it checks
+ * whether the manifest has a matching top-level object and whether
+ * that object contains a remapping for the given path.
+ *
+ * The first field that produces a remapping wins — subsequent fields
+ * are not consulted. This mirrors the "first match" semantics of
+ * `exports` conditions.
+ *
+ * @param resolvedPath  Package-relative path (e.g. `"./fallback/platform.js"`)
+ * @param manifest      The package's manifest (package.json)
+ * @param conditions    Active resolver conditions
+ * @returns Remapping result with the (possibly rewritten) path
+ *
+ * @example browser remapping
+ * ```ts
+ * // manifest.browser = { "./fallback/platform.js": "./fallback/platform.browser.js" }
+ * applyManifestRemappings("./fallback/platform.js", manifest, conditions)
+ * // => { path: "./fallback/platform.browser.js", excluded: false, matchedField: "browser" }
+ * ```
+ *
+ * @example react-native remapping
+ * ```ts
+ * // manifest["react-native"] = { "./utf16.js": "./utf16.native.js" }
+ * // conditions.conditions includes "react-native"
+ * applyManifestRemappings("./utf16.js", manifest, conditions)
+ * // => { path: "./utf16.native.js", excluded: false, matchedField: "react-native" }
+ * ```
+ *
+ * @example exclusion (mapped to false)
+ * ```ts
+ * // manifest.browser = { "fs": false }
+ * applyManifestRemappings("fs", manifest, conditions)
+ * // => { path: "fs", excluded: true, matchedField: "browser" }
+ * ```
+ */
+export function applyManifestRemappings(
+  resolvedPath: string,
+  manifest: Partial<PackageJson | FullPackageVersion> | null | undefined,
+  conditions: ResolverConditions
+): RemappingResult {
+  const noChange: RemappingResult = { path: resolvedPath, excluded: false, matchedField: null };
+  if (!manifest || !resolvedPath) return noChange;
+
+  // Build a Set for O(1) condition lookups.
+  // Include the "browser" pseudo-condition when `conditions.browser` is true,
+  // since the browser flag lives outside the conditions array.
+  const activeConditions = new Set(conditions.conditions);
+  if (conditions.browser) activeConditions.add("browser");
+
+  for (const { condition, field } of REMAPPING_FIELDS) {
+    if (!activeConditions.has(condition)) continue;
+
+    // Access the field dynamically — these are conventional top-level keys
+    // ("browser", "react-native", "electron", etc.).
+    const remappingTable = (manifest as Record<string, unknown>)[field];
+    if (!remappingTable || typeof remappingTable !== "object") continue;
+
+    const remapped = applyPathRemapping(resolvedPath, remappingTable as PathRemappings);
+
+    if (remapped === false) {
+      return { path: resolvedPath, excluded: true, matchedField: field };
+    }
+
+    if (remapped !== resolvedPath) {
+      return { path: remapped, excluded: false, matchedField: field };
+    }
+  }
+
+  return noChange;
 }
 
 // =============================================================================
@@ -385,8 +496,8 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
   const result: PackageResolutionResult = {
     path: null,
     usedModern: false,
-    appliedBrowserRemapping: false,
-    browserRemappings: null,
+    appliedPathRemapping: false,
+    pathRemappings: null,
     excluded: false,
   };
 
@@ -437,7 +548,7 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
 
     if (legacyResult.entryPoint) {
       // Apply browser remapping if present
-      const remapped = applyBrowserRemapping(legacyResult.entryPoint, legacyResult.browserRemappings);
+      const remapped = applyPathRemapping(legacyResult.entryPoint, legacyResult.pathRemappings);
 
       if (remapped === false) {
         result.excluded = true;
@@ -446,9 +557,9 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
       }
 
       result.path = remapped;
-      result.browserRemappings = legacyResult.browserRemappings;
-      result.appliedBrowserRemapping =
-        legacyResult.browserRemappings !== null && remapped !== legacyResult.entryPoint;
+      result.pathRemappings = legacyResult.pathRemappings;
+      result.appliedPathRemapping =
+        legacyResult.pathRemappings !== null && remapped !== legacyResult.entryPoint;
       return result;
     }
 
