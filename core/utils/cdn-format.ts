@@ -61,9 +61,12 @@
  * - `github`: Raw GitHub file access (jsdelivr.gh, raw.githubusercontent.com)
  * - `deno`: Deno's deno.land/x registry
  * - `tarball`: Tarball providers (pkg.pr.new for PR previews)
+ * - `registry`: npm registry tarball mode — fetches whole-package tarballs from
+ *   registry.npmjs.org instead of individual files from a CDN. Faster for large
+ *   packages with many internal imports (one fetch vs. hundreds).
  * - `other`: Unknown CDN patterns
  */
-export type CDNStyle = "npm" | "jsr" | "github" | "deno" | "tarball" | "other";
+export type CDNStyle = "npm" | "jsr" | "github" | "deno" | "tarball" | "registry" | "other";
 
 /**
  * URL scheme prefixes that indicate a specific CDN.
@@ -78,7 +81,10 @@ export type CDNScheme =
   | "jsdelivr.gh"
   | "github"
   | "deno"
-  | "jsr";
+  | "jsr"
+  | "jsr.registry"
+  | "npm"
+  | "npm.registry";
 
 /**
  * Result from getCDNUrl.
@@ -104,6 +110,27 @@ export interface CDNUrlResult {
  * Default CDN host for npm packages.
  */
 export const DEFAULT_CDN_HOST = "https://unpkg.com";
+
+/**
+ * npm registry base URL.
+ *
+ * Used in "registry" CDN mode to fetch whole-package tarballs directly
+ * from the npm registry, bypassing CDN proxies like unpkg.
+ *
+ * Tarball URL pattern:
+ *   `https://registry.npmjs.org/<name>/-/<basename>-<version>.tgz`
+ *
+ * @example Scoped package
+ * ```
+ * https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.0.0.tgz
+ * ```
+ *
+ * @example Unscoped package
+ * ```
+ * https://registry.npmjs.org/lodash-es/-/lodash-es-4.17.21.tgz
+ * ```
+ */
+export const NPM_REGISTRY = "https://registry.npmjs.org";
 
 /**
  * JSR registry base URL.
@@ -133,6 +160,9 @@ export const CDN_SCHEME_TO_ORIGIN: Record<CDNScheme, string> = {
   github: "https://raw.githubusercontent.com",
   deno: "https://deno.land/x",
   jsr: "https://jsr.io",
+  "jsr.registry": "https://jsr.io",
+  npm: NPM_REGISTRY,
+  "npm.registry": NPM_REGISTRY,
 };
 
 // =============================================================================
@@ -187,11 +217,28 @@ export const CDN_SCHEME_TO_ORIGIN: Record<CDNScheme, string> = {
  * ```ts
  * getCDNStyle("https://pkg.pr.new/user/repo@commit")  // "tarball"
  * ```
+ *
+ * @example Registry detection
+ * ```ts
+ * getCDNStyle("npm:react@18")                                    // "registry"
+ * getCDNStyle("npm.registry:react@18")                           // "registry"
+ * getCDNStyle("https://registry.npmjs.org/react/-/react-18.2.0.tgz")  // "registry"
+ * ```
+ *
+ * @example JSR registry detection
+ * ```ts
+ * getCDNStyle("jsr.registry:@std/path")  // "jsr"
+ * ```
  */
 export function getCDNStyle(urlStr: string): CDNStyle {
   // JSR - check first as it's a distinct ecosystem
+  // NOTE: jsr.registry: must be checked before jsr: since "jsr.registry:"
+  // does NOT start with "jsr:" (the char after "jsr" is ".", not ":").
+  // Both jsr: and jsr.registry: map to the same "jsr" style — direct
+  // access to jsr.io. The jsr.registry: alias exists for naming consistency
+  // with npm.registry: ("go directly to the registry, not through a CDN proxy").
   if (
-    /^jsr\:/.test(urlStr) ||
+    /^jsr(\.registry)?\:/.test(urlStr) ||
     /^https?:\/\/(jsr\.io)/.test(urlStr)
   ) {
     return "jsr";
@@ -227,6 +274,19 @@ export function getCDNStyle(urlStr: string): CDNStyle {
   // Tarball providers (PR previews, etc.)
   if (/^https?:\/\/pkg\.pr\.new/.test(urlStr)) {
     return "tarball";
+  }
+
+  // npm registry tarball mode — whole-package tarballs from registry.npmjs.org.
+  // Matches the scheme prefixes (npm: and npm.registry:) and the origin URL.
+  //
+  // NOTE: npm: is checked AFTER the npm-CDN check above, so "unpkg:", "esm:",
+  // etc. are not affected. The npm: scheme is only reached for strings that
+  // literally start with "npm:" and did NOT match any earlier CDN pattern.
+  if (
+    /^npm(\.registry)?\:/.test(urlStr) ||
+    /^https?:\/\/registry\.npmjs\.(org|com)/.test(urlStr)
+  ) {
+    return "registry";
   }
 
   return "other";
@@ -321,6 +381,8 @@ export function getCDNOrigin(importStr: string, cdn = DEFAULT_CDN_HOST): string 
     cdn = CDN_SCHEME_TO_ORIGIN.skypack;
   } else if (/^jsr\:/.test(importStr)) {
     cdn = CDN_SCHEME_TO_ORIGIN.jsr;
+  } else if (/^jsr\.registry\:/.test(importStr)) {
+    cdn = CDN_SCHEME_TO_ORIGIN["jsr.registry"];
   } else if (/^(esm\.sh|esm)\:/.test(importStr)) {
     cdn = CDN_SCHEME_TO_ORIGIN.esm;
   } else if (/^unpkg\:/.test(importStr)) {
@@ -333,6 +395,8 @@ export function getCDNOrigin(importStr: string, cdn = DEFAULT_CDN_HOST): string 
     cdn = CDN_SCHEME_TO_ORIGIN.deno;
   } else if (/^github\:/.test(importStr)) {
     cdn = CDN_SCHEME_TO_ORIGIN.github;
+  } else if (/^npm(\.registry)?\:/.test(importStr)) {
+    cdn = CDN_SCHEME_TO_ORIGIN["npm.registry"];
   }
 
   // Ensure trailing slash
@@ -378,10 +442,10 @@ export function getCDNOrigin(importStr: string, cdn = DEFAULT_CDN_HOST): string 
 export function getPureImportPath(importStr: string): string {
   return importStr
     // Remove scheme prefixes
-    .replace(/^(skypack|esm|esm\.sh|unpkg|jsdelivr|jsdelivr\.gh|esm\.run|deno|github|jsr)\:/, "")
+    .replace(/^(skypack|esm|esm\.sh|unpkg|jsdelivr|jsdelivr\.gh|esm\.run|deno|github|jsr\.registry|jsr|npm\.registry|npm)\:/, "")
     // Remove known CDN hosts
     .replace(
-      /^(https?:\/\/)?(cdn\.skypack\.dev|(cdn\.)?esm\.sh|cdn\.jsdelivr\.net\/npm|unpkg\.com|cdn\.jsdelivr\.net\/gh|raw\.githubusercontent\.com|deno\.land\/x|jsr\.io)/,
+      /^(https?:\/\/)?(cdn\.skypack\.dev|(cdn\.)?esm\.sh|cdn\.jsdelivr\.net\/npm|unpkg\.com|cdn\.jsdelivr\.net\/gh|raw\.githubusercontent\.com|deno\.land\/x|jsr\.io|registry\.npmjs\.(org|com))/,
       ""
     )
     // Remove leading slash

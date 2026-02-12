@@ -17,6 +17,10 @@
  * | 19.6 — stripPackagePrefix | Tarball path prefix stripping |
  * | 19.7 — Edge cases | Case sensitivity, multi-extension, archive-detect coverage |
  * | 19.8 — VFS tarball path detection | isTarballPath + findTarballSplitInPathname for VFS paths |
+ * | 19.9 — Registry CDN style detection | getCDNStyle for npm:, npm.registry:, jsr.registry:, URLs |
+ * | 19.10 — getNpmTarballUrl construction | Tarball URL construction for scoped/unscoped packages |
+ * | 19.11 — getPackageTarballUrl | Manifest dist.tarball preference vs fallback |
+ * | 19.12 — npm: and jsr.registry: scheme helpers | Origin, path, URL generation for shorthand schemes |
  *
  * @see docs/scenarios/19-registry-tarballs.md
  * @module
@@ -36,7 +40,8 @@ import {
 } from "../plugins/tar.ts";
 
 import { getResolverConditions } from "../../utils/resolve-conditions.ts";
-import { getCDNStyle } from "../utils/cdn-format.ts";
+import { getCDNStyle, getCDNOrigin, getPureImportPath, getCDNUrl } from "../utils/cdn-format.ts";
+import { getNpmTarballUrl, getPackageTarballUrl } from "@bundle/utils/npm-search";
 import { TAR_MULTI_EXTENSIONS, TAR_SHORT_EXTENSIONS } from "@bundle/utils/archive-detect";
 
 // =============================================================================
@@ -575,5 +580,209 @@ describe("19.8 — VFS tarball path detection", () => {
     for (const ext of allExtensions) {
       expect(isTarballPath(`/packages/pkg${ext}`)).toBe(true);
     }
+  });
+});
+// =============================================================================
+// 19.9 — Registry CDN style detection
+// =============================================================================
+
+describe("19.9 — Registry CDN style detection", () => {
+  test("npm.registry scheme prefix", () => {
+    expect(getCDNStyle("npm.registry:react@18")).toBe("registry");
+  });
+
+  test("npm scheme prefix (shorthand for npm.registry)", () => {
+    expect(getCDNStyle("npm:react@18")).toBe("registry");
+  });
+
+  test("registry.npmjs.org URL", () => {
+    expect(getCDNStyle("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")).toBe("registry");
+  });
+
+  test("registry.npmjs.com URL", () => {
+    expect(getCDNStyle("https://registry.npmjs.com/react")).toBe("registry");
+  });
+
+  test("jsr.registry scheme prefix maps to jsr style", () => {
+    expect(getCDNStyle("jsr.registry:@std/path")).toBe("jsr");
+  });
+
+  test("jsr.registry does not conflict with jsr", () => {
+    expect(getCDNStyle("jsr:@std/path")).toBe("jsr");
+    expect(getCDNStyle("jsr.registry:@std/path")).toBe("jsr");
+  });
+
+  test("does not confuse npm CDN with registry", () => {
+    expect(getCDNStyle("https://unpkg.com/react")).toBe("npm");
+    expect(getCDNStyle("esm:react")).toBe("npm");
+  });
+
+  test("does not confuse pkg.pr.new with registry", () => {
+    expect(getCDNStyle("https://pkg.pr.new/@tanstack/react-query@7988")).toBe("tarball");
+  });
+});
+
+// =============================================================================
+// 19.10 — getNpmTarballUrl construction
+// =============================================================================
+
+describe("19.10 — getNpmTarballUrl construction", () => {
+  test("unscoped package", () => {
+    expect(getNpmTarballUrl("lodash-es", "4.17.21")).toBe(
+      "https://registry.npmjs.com/lodash-es/-/lodash-es-4.17.21.tgz"
+    );
+  });
+
+  test("scoped package", () => {
+    expect(getNpmTarballUrl("@tanstack/react-query", "5.0.0")).toBe(
+      "https://registry.npmjs.com/@tanstack/react-query/-/react-query-5.0.0.tgz"
+    );
+  });
+
+  test("custom registry", () => {
+    expect(getNpmTarballUrl("react", "18.2.0", "https://registry.npmmirror.com")).toBe(
+      "https://registry.npmmirror.com/react/-/react-18.2.0.tgz"
+    );
+  });
+
+  test("strips trailing slashes from registry", () => {
+    expect(getNpmTarballUrl("react", "18.2.0", "https://registry.npmjs.com///")).toBe(
+      "https://registry.npmjs.com/react/-/react-18.2.0.tgz"
+    );
+  });
+});
+
+// =============================================================================
+// 19.11 — getPackageTarballUrl (manifest vs fallback)
+// =============================================================================
+
+describe("19.11 — getPackageTarballUrl", () => {
+  test("prefers manifest dist.tarball when available", () => {
+    const manifest = {
+      name: "react",
+      version: "18.2.0",
+      dist: {
+        tarball: "https://registry.npmjs.org/react/-/react-18.2.0.tgz",
+        integrity: "",
+        shasum: "",
+        fileCount: 0,
+        unpackedSize: 0,
+        "npm-signature": "",
+        signatures: [],
+      },
+    };
+    expect(getPackageTarballUrl(manifest as any, "react", "18.2.0")).toBe(
+      "https://registry.npmjs.org/react/-/react-18.2.0.tgz"
+    );
+  });
+
+  test("falls back to construction when manifest is null", () => {
+    expect(getPackageTarballUrl(null, "react", "18.2.0")).toBe(
+      "https://registry.npmjs.com/react/-/react-18.2.0.tgz"
+    );
+  });
+
+  test("falls back to construction when dist.tarball is missing", () => {
+    expect(getPackageTarballUrl({} as any, "lodash", "4.17.21")).toBe(
+      "https://registry.npmjs.com/lodash/-/lodash-4.17.21.tgz"
+    );
+  });
+});
+
+// =============================================================================
+// 19.12 — npm: and jsr.registry: scheme helpers
+// =============================================================================
+
+describe("19.12 — npm: and jsr.registry: scheme helpers", () => {
+  describe("getCDNOrigin", () => {
+    test("npm: resolves to npm registry origin", () => {
+      expect(getCDNOrigin("npm:react")).toBe("https://registry.npmjs.org/");
+    });
+
+    test("npm.registry: resolves to npm registry origin", () => {
+      expect(getCDNOrigin("npm.registry:react")).toBe("https://registry.npmjs.org/");
+    });
+
+    test("npm: and npm.registry: resolve to the same origin", () => {
+      expect(getCDNOrigin("npm:lodash@4")).toBe(getCDNOrigin("npm.registry:lodash@4"));
+    });
+
+    test("jsr.registry: resolves to jsr.io origin", () => {
+      expect(getCDNOrigin("jsr.registry:@std/path")).toBe("https://jsr.io/");
+    });
+
+    test("jsr: and jsr.registry: resolve to the same origin", () => {
+      expect(getCDNOrigin("jsr:@std/path")).toBe(getCDNOrigin("jsr.registry:@std/path"));
+    });
+
+    test("does not affect plain bare imports", () => {
+      expect(getCDNOrigin("react")).toBe("https://unpkg.com/");
+    });
+  });
+
+  describe("getPureImportPath", () => {
+    test("strips npm: prefix", () => {
+      expect(getPureImportPath("npm:react@18")).toBe("react@18");
+    });
+
+    test("strips npm.registry: prefix", () => {
+      expect(getPureImportPath("npm.registry:react@18")).toBe("react@18");
+    });
+
+    test("strips jsr.registry: prefix", () => {
+      expect(getPureImportPath("jsr.registry:@std/path@1.0.0")).toBe("@std/path@1.0.0");
+    });
+
+    test("strips jsr: prefix", () => {
+      expect(getPureImportPath("jsr:@std/path@1.0.0")).toBe("@std/path@1.0.0");
+    });
+
+    test("scoped package with npm: prefix", () => {
+      expect(getPureImportPath("npm:@tanstack/react-query@5.0.0")).toBe("@tanstack/react-query@5.0.0");
+    });
+
+    test("does not double-strip (no false partial matches)", () => {
+      // "npm.registry:" should not leave ".registry:" behind
+      expect(getPureImportPath("npm.registry:lodash")).toBe("lodash");
+      // "jsr.registry:" should not leave ".registry:" behind
+      expect(getPureImportPath("jsr.registry:@std/fs")).toBe("@std/fs");
+    });
+  });
+
+  describe("getCDNUrl", () => {
+    test("npm: generates correct URL with registry origin", () => {
+      const result = getCDNUrl("npm:react@18.2.0");
+      expect(result.origin).toBe("https://registry.npmjs.org/");
+      expect(result.path).toBe("react@18.2.0");
+      expect(result.url.href).toBe("https://registry.npmjs.org/react@18.2.0");
+    });
+
+    test("npm.registry: generates correct URL with registry origin", () => {
+      const result = getCDNUrl("npm.registry:lodash@4.17.21");
+      expect(result.origin).toBe("https://registry.npmjs.org/");
+      expect(result.path).toBe("lodash@4.17.21");
+      expect(result.url.href).toBe("https://registry.npmjs.org/lodash@4.17.21");
+    });
+
+    test("jsr.registry: generates correct URL with jsr.io origin", () => {
+      const result = getCDNUrl("jsr.registry:@std/path@1.0.0");
+      expect(result.origin).toBe("https://jsr.io/");
+      expect(result.path).toBe("@std/path@1.0.0");
+      expect(result.url.href).toBe("https://jsr.io/@std/path@1.0.0");
+    });
+
+    test("npm: and npm.registry: produce equivalent URLs", () => {
+      const a = getCDNUrl("npm:react@18");
+      const b = getCDNUrl("npm.registry:react@18");
+      expect(a.url.href).toBe(b.url.href);
+      expect(a.origin).toBe(b.origin);
+    });
+
+    test("jsr: and jsr.registry: produce equivalent URLs", () => {
+      const a = getCDNUrl("jsr:@std/path@1.0.0");
+      const b = getCDNUrl("jsr.registry:@std/path@1.0.0");
+      expect(a.url.href).toBe(b.url.href);
+      expect(a.origin).toBe(b.origin);
+    });
   });
 });

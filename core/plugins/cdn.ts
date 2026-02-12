@@ -68,7 +68,7 @@ import type { SideEffectsMatchers } from "../utils/side-effects.ts";
 import { Context, fromContext, withContext } from "../context/context.ts";
 
 import { parsePackageName } from "@bundle/utils/parse-package-name";
-import { getPackageOfVersion, getRegistryURL, resolveVersion } from "@bundle/utils/npm-search";
+import { getPackageOfVersion, getPackageTarballUrl, getRegistryURL, resolveVersion } from "@bundle/utils/npm-search";
 
 import {
   isUrlSpec,
@@ -333,6 +333,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       // npm standard CDNs, e.g. unpkg, skypack, esm.sh, etc...
       const NPM_CDN = getCDNStyle(origin) === "npm";
 
+      // npm registry tarball mode — fetch whole-package tarballs directly
+      // from registry.npmjs.org instead of individual files from a CDN.
+      const REGISTRY_CDN = getCDNStyle(origin) === "registry";
+
       // Heavily based off of https://github.com/egoist/play-esbuild/blob/main/src/lib/esbuild.ts
       const parsed = parsePackageName(_argPath, { defaultVersion: null });
       const parsedSubpath = parsed.path;
@@ -426,6 +430,118 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
             text: getUnsupportedSpecError(spec, parsed.name),
           }],
         };
+      }
+
+      // ======================================================================
+      // Registry tarball mode — skip CDN, fetch entire package from npm registry
+      //
+      // Instead of resolving individual files via a CDN like unpkg or esm.sh,
+      // download the whole package tarball from registry.npmjs.org in one shot,
+      // extract it to VFS, then resolve entry points from the extracted tree.
+      //
+      // Why this is useful:
+      // - Large packages with many internal imports (lodash-es, @aws-sdk/*)
+      //   generate hundreds of individual HTTP fetches in CDN mode. Registry
+      //   mode collapses this into a single tarball download + local resolution.
+      // - Eliminates CDN-specific redirect/resolution quirks.
+      // - Uses the exact same files that `npm install` would produce.
+      //
+      // The flow:
+      // 1. Resolve version from the npm registry (same as CDN mode)
+      // 2. Fetch the resolved package manifest to get dist.tarball
+      // 3. Construct a tarball URL with any subpath appended
+      // 4. Route through build.resolve() → TarballPlugin extracts + resolves
+      // ======================================================================
+
+      if (REGISTRY_CDN && build) {
+        const nameToResolve = effectiveName;
+        const versionToResolve = effectiveAssumedVersion;
+
+        try {
+          // Step 1: Resolve version range to exact version
+          const identifiedVersion = await resolveVersion(`${nameToResolve}@${versionToResolve}`);
+          if (identifiedVersion) effectiveAssumedVersion = identifiedVersion;
+        } catch (e) {
+          dispatchEvent(LOGGER_WARN, `[registry] Version resolution failed for ${nameToResolve}@${versionToResolve}, falling back to assumed version.`);
+          dispatchEvent(LOGGER_WARN, e);
+        }
+
+        // Step 2: Try to get manifest for authoritative dist.tarball URL
+        let resolvedManifest: PackageJson | FullPackageVersion | null = null;
+        const packageId = `${effectiveName}@${effectiveAssumedVersion}`;
+        try {
+          resolvedManifest = packageManifestsMap.get(packageId) ?? null;
+          if (!resolvedManifest) {
+            resolvedManifest = await getPackageOfVersion(packageId);
+            if (resolvedManifest) {
+              packageManifestsMap.set(packageId, resolvedManifest);
+            }
+          }
+        } catch (e) {
+          dispatchEvent(LOGGER_WARN, `[registry] Could not fetch manifest for ${packageId}, constructing tarball URL from convention.`);
+          dispatchEvent(LOGGER_WARN, e);
+        }
+
+        // Step 3: Construct tarball URL with subpath
+        const tarballUrl = getPackageTarballUrl(
+          resolvedManifest as FullPackageVersion | null,
+          effectiveName,
+          effectiveAssumedVersion,
+        );
+
+        const combinedSubpath = joinSubpath(effectiveExtraSubpath, parsedSubpath);
+        const targetUrl = combinedSubpath
+          ? `${tarballUrl}${combinedSubpath}`
+          : tarballUrl;
+
+        // Step 4: Let TarballPlugin handle the download, extraction, and resolution
+        const resolved = await build.resolve(targetUrl, {
+          importer: args.importer,
+          kind: args.kind,
+          resolveDir: args.resolveDir,
+          pluginData: args.pluginData,
+        });
+
+        if (resolved.errors?.length) return { errors: resolved.errors };
+        if (!resolved.path) {
+          return {
+            errors: [{
+              text: `[registry] Failed to resolve tarball for ${effectiveName}@${effectiveAssumedVersion}`,
+              detail: `Tarball URL: ${targetUrl}`,
+            }],
+          };
+        }
+
+        // Merge pluginData with peerDependencies for version stabilization
+        const resolvedPluginData = Object.assign({}, resolved.pluginData);
+        const resolvedManifestFromTarball: PackageJson | null = resolvedPluginData.manifest ?? null;
+
+        if (resolvedManifestFromTarball && typeof resolvedManifestFromTarball === "object") {
+          // Store the manifest in the cache for install-size reporting
+          if (!packageManifestsMap.get(packageId)) {
+            packageManifestsMap.set(packageId, resolvedManifestFromTarball);
+          }
+
+          const inheritPeerDependencies = computePeerDependencies({
+            initialManifest,
+            resolvedManifest: resolvedManifestFromTarball,
+            initialDeps,
+            packageName: effectiveName,
+            packageVersion: effectiveAssumedVersion,
+            isNpmCdn: true, // registry mode behaves like an npm CDN for peer dep purposes
+          });
+
+          Object.assign(resolvedPluginData, {
+            manifest: deepMerge(
+              structuredClone(resolvedManifestFromTarball),
+              { peerDependencies: inheritPeerDependencies }
+            )
+          });
+        }
+
+        return Object.assign({}, resolved, {
+          pluginData: resolvedPluginData,
+        });
       }
 
       // ======================================================================

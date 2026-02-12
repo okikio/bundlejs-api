@@ -42,6 +42,95 @@ import { maxSatisfying, parse, parseRange, format } from "./semver.ts";
 export const DEFAULT_REGISTRY = "https://registry.npmjs.com";
 
 // =============================================================================
+// Tarball URL Construction
+// =============================================================================
+
+/**
+ * Construct the npm registry tarball URL for a given package name and version.
+ *
+ * npm registries serve tarballs at a predictable URL pattern:
+ *   `<registry>/<name>/-/<basename>-<version>.tgz`
+ *
+ * For scoped packages the `<name>` includes the scope but the `<basename>`
+ * is the part after the `/`:
+ *   `<registry>/@scope/pkg/-/pkg-1.0.0.tgz`
+ *
+ * @param name  Full package name (e.g. "lodash-es" or "@tanstack/react-query")
+ * @param version  Exact version string (e.g. "4.17.21")
+ * @param registry  Registry base URL (default: npm public registry)
+ * @returns The tarball URL string
+ *
+ * @example Unscoped package
+ * ```ts
+ * getNpmTarballUrl("lodash-es", "4.17.21")
+ * // "https://registry.npmjs.com/lodash-es/-/lodash-es-4.17.21.tgz"
+ * ```
+ *
+ * @example Scoped package
+ * ```ts
+ * getNpmTarballUrl("@tanstack/react-query", "5.0.0")
+ * // "https://registry.npmjs.com/@tanstack/react-query/-/react-query-5.0.0.tgz"
+ * ```
+ */
+export function getNpmTarballUrl(
+  name: string,
+  version: string,
+  registry: string = DEFAULT_REGISTRY,
+): string {
+  const host = registry.replace(/\/+$/, "");
+
+  // For scoped packages (@scope/pkg), the basename in the tarball URL
+  // is just the part after the slash: @scope/pkg → pkg
+  const basename = name.includes("/")
+    ? name.split("/").pop()!
+    : name;
+
+  return `${host}/${name}/-/${basename}-${version}.tgz`;
+}
+
+/**
+ * Get the tarball URL for a package, preferring the manifest's `dist.tarball`
+ * field (authoritative) and falling back to URL construction (convention).
+ *
+ * The `dist.tarball` field is the canonical source — the registry itself tells
+ * us where the tarball lives. The constructed URL is a safe fallback when the
+ * manifest isn't available yet (e.g. during initial resolution before we fetch
+ * the full packument).
+ *
+ * @param manifest  Resolved package version metadata (may be partial)
+ * @param name  Package name (used for fallback construction)
+ * @param version  Exact version (used for fallback construction)
+ * @param registry  Registry base URL (used for fallback construction)
+ * @returns Tarball URL string
+ *
+ * @example With manifest
+ * ```ts
+ * const manifest = await getPackageOfVersion("react@18.2.0");
+ * getPackageTarballUrl(manifest, "react", "18.2.0")
+ * // "https://registry.npmjs.org/react/-/react-18.2.0.tgz"  (from dist.tarball)
+ * ```
+ *
+ * @example Without manifest (fallback)
+ * ```ts
+ * getPackageTarballUrl(null, "react", "18.2.0")
+ * // "https://registry.npmjs.com/react/-/react-18.2.0.tgz"  (constructed)
+ * ```
+ */
+export function getPackageTarballUrl(
+  manifest: FullPackageVersion | PackageInfo | null | undefined,
+  name: string,
+  version: string,
+  registry: string = DEFAULT_REGISTRY,
+): string {
+  // Prefer authoritative dist.tarball from the manifest
+  const dist = (manifest as FullPackageVersion | null)?.dist;
+  if (dist?.tarball) return dist.tarball;
+
+  // Fallback: construct from convention
+  return getNpmTarballUrl(name, version, registry);
+}
+
+// =============================================================================
 // URL Utilities
 // =============================================================================
 
