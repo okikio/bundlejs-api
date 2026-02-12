@@ -5,6 +5,11 @@
     "./utils",
     "./compress"
   ],
+  "imports": {
+    "@std/testing": "jsr:@std/testing",
+    "@std/expect": "jsr:@std/expect",
+    "@libs/testing": "jsr:@libs/testing"
+  },
   "deploy": {
     "project": "bundlejs",
     "exclude": [
