@@ -12,6 +12,59 @@ import type { RegistryConfig } from "@bundle/utils/npmrc";
 
 export type { ESBUILD, ESBUILD_WASM };
 
+/**
+ * Policy for handling `false` remapping values found in path remapping
+ * fields (browser, react-native, electron).
+ *
+ * - `"stub"` – replace the module with an empty export (`{}` at runtime).
+ *   This is spec-compliant and matches webpack/rollup behavior.
+ * - `"error"` – produce a build error, halting the bundle.
+ * - `"external"` – mark the import as external so it's preserved in the
+ *   output verbatim and resolved at runtime.
+ */
+export type RemapFalsePolicy = "stub" | "error" | "external";
+
+/**
+ * Controls how the bundler reacts when a path remapping field (browser,
+ * react-native, electron) maps a package or module to `false`.
+ */
+export interface RemapFalseBehavior {
+  /**
+   * Policy when an *entire package* is excluded (e.g., the top-level
+   * `"browser": false` or an exports condition that resolves to nothing).
+   *
+   * - `"error"` (default) – fail the build with a clear error.
+   * - `"stub"` – replace with an empty export stub instead of erroring.
+   *
+   * `"external"` is not supported at the package level because the bare
+   * specifier would need a runtime resolver, which esbuild cannot provide.
+   *
+   * @default "error"
+   */
+  packageRemapFalse?: "error" | "stub";
+
+  /**
+   * Policy when a *single module* inside a package is excluded (e.g.,
+   * `"browser": { "./server.js": false }`).
+   *
+   * - `"stub"` (default) – spec-compliant empty export.
+   * - `"error"` – fail the build.
+   * - `"external"` – mark the import as external.
+   *
+   * @default "stub"
+   */
+  importRemapFalse?: RemapFalsePolicy;
+
+  /**
+   * Whether to emit an esbuild warning when a module is stubbed.
+   *
+   * Only takes effect when the active policy is `"stub"`.
+   *
+   * @default true
+   */
+  warnOnStubbedRemapFalse?: boolean;
+}
+
 export interface CommonConfigOptions extends record {
   /**
    * Configures how esbuild-wasm is initialized 
@@ -99,6 +152,22 @@ export interface BuildConfig extends CommonConfigOptions {
    * ```
    */
   registry?: string | RegistryConfig,
+
+  /**
+   * Controls behavior when path remapping fields (browser, react-native,
+   * electron) map a package or module to `false`.
+   *
+   * @example Stub whole-package exclusions instead of erroring
+   * ```ts
+   * { remapFalse: { packageRemapFalse: "stub" } }
+   * ```
+   *
+   * @example Error on per-module exclusions
+   * ```ts
+   * { remapFalse: { importRemapFalse: "error" } }
+   * ```
+   */
+  remapFalse?: RemapFalseBehavior,
 
   /** Aliases for replacing packages with different ones, e.g. replace "fs" with "memfs", so, it can work on the web, etc... */
   alias?: Record<string, string>,

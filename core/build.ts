@@ -29,6 +29,12 @@ export const BUILD_CONFIG: BuildConfig = {
   "cdn": DEFAULT_CDN_HOST,
   "polyfill": false,
 
+  "remapFalse": {
+    "packageRemapFalse": "error",
+    "importRemapFalse": "stub",
+    "warnOnStubbedRemapFalse": true,
+  },
+
   "esbuild": {
     "color": true,
     "globalName": "BundledCode",

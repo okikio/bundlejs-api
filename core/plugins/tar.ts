@@ -28,6 +28,7 @@ import { normalize, join, resolve as resolvePath } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 
 import { VIRTUAL_FILESYSTEM_NAMESPACE, resolveVfsPath } from "./fs.ts";
+import { EXCLUDED_MODULE_NAMESPACE } from "./http.ts";
 import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../configs/events.ts";
 
 import { getResolverConditions, getLegacyMainFields } from "../../utils/resolve-conditions.ts";
@@ -743,9 +744,16 @@ export function resolvePackageEntry(
 	}
 
   // Convert the resolved path to VFS-relative format (leading `/`)
-  const entryPath = result.path
+  let entryPath = result.path
     ? normalizeResolvedPath(result.path)
     : (subpath && subpath !== "/" ? subpath : "/index.js");
+
+  // Guard against directory-like root entries (".", "./", "/", "/.").
+  // These are not loadable files in VFS and can cause esbuild to attempt
+  // directory reads (e.g. "Cannot read directory '.': not implemented on js").
+  if (entryPath === "/" || entryPath === "/.") {
+    entryPath = "/index.js";
+  }
 
   return {
     entryPath,
@@ -931,6 +939,19 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
         );
 
         if (excluded) {
+          const packagePolicy = LocalConfig.remapFalse?.packageRemapFalse ?? "error";
+          if (packagePolicy === "stub") {
+            const warnOnStub = LocalConfig.remapFalse?.warnOnStubbedRemapFalse ?? true;
+            return {
+              path: `${mount.manifest.name ?? "unknown"}/${subpath || "."}`,
+              namespace: EXCLUDED_MODULE_NAMESPACE,
+              pluginData: Object.assign({}, args.pluginData, {
+                excludedBy: "field-remapping",
+                originalPath: subpath || ".",
+                suppressWarning: !warnOnStub,
+              }),
+            };
+          }
           return {
             errors: [{
               text: `Package "${mount.manifest.name}" is excluded for the current environment`,
@@ -988,6 +1009,19 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
             );
 
             if (excluded) {
+              const packagePolicy = LocalConfig.remapFalse?.packageRemapFalse ?? "error";
+              if (packagePolicy === "stub") {
+                const warnOnStub = LocalConfig.remapFalse?.warnOnStubbedRemapFalse ?? true;
+                return {
+                  path: `${mount.manifest.name ?? "unknown"}/${split.subpath || "."}`,
+                  namespace: EXCLUDED_MODULE_NAMESPACE,
+                  pluginData: Object.assign({}, args.pluginData, {
+                    excludedBy: "field-remapping",
+                    originalPath: split.subpath || ".",
+                    suppressWarning: !warnOnStub,
+                  }),
+                };
+              }
               return {
                 errors: [{
                   text: `Package "${mount.manifest.name}" is excluded for the current environment`,
@@ -1035,6 +1069,19 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
           );
 
           if (excluded) {
+            const packagePolicy = LocalConfig.remapFalse?.packageRemapFalse ?? "error";
+            if (packagePolicy === "stub") {
+              const warnOnStub = LocalConfig.remapFalse?.warnOnStubbedRemapFalse ?? true;
+              return {
+                path: `${mount.manifest.name}/${subpath || "."}`,
+                namespace: EXCLUDED_MODULE_NAMESPACE,
+                pluginData: Object.assign({}, args.pluginData, {
+                  excludedBy: "field-remapping",
+                  originalPath: subpath || ".",
+                  suppressWarning: !warnOnStub,
+                }),
+              };
+            }
             return {
               errors: [{
                 text: `Self-reference "${importPath}" excluded for the current environment`,
