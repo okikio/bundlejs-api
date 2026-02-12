@@ -166,7 +166,7 @@ The dependency graph looks like this:
 - **Builtin catalogs** — [utils/runtime-builtins.ts](../utils/runtime-builtins.ts) catalogs ~50 Node.js builtins with browser polyfill mappings
 - **Caching fetch** — [utils/fetch-and-cache.ts](../utils/fetch-and-cache.ts) wraps `fetch()` with multi-tier caching (LRU + Cache API)
 - **npm registry API** — [utils/npm-search.ts](../utils/npm-search.ts) wraps the npm registry REST API — version resolution, packument fetching, tarball URL construction. Handles scoped packages (`@scope/name`) with the registry's `%2f` encoding convention and a full-packument fallback when version-specific endpoints fail
-- **`.npmrc` parsing** — [utils/npmrc.ts](../utils/npmrc.ts) extracts registry configuration from `.npmrc` content — default registry overrides, scoped registry mappings (`@scope:registry=https://...`), comment stripping, and environment variable interpolation. Intentionally omits auth tokens (security boundary)
+- **`.npmrc` parsing** — [utils/npmrc.ts](../utils/npmrc.ts) extracts registry configuration from `.npmrc` content — default registry overrides, scoped registry mappings (`@scope:registry=https://...`), comment stripping, and environment variable interpolation. Auth tokens (`//registry/:_authToken=...`) are opt-in via `parseNpmrc(content, { extractAuth: true })` — disabled by default for security
 
 A deliberate design principle runs through `@bundle/utils` — it wraps **Web APIs** instead of Node.js APIs. This is strategic: by building on web standards, the same code runs in Deno Deploy, browsers, Cloudflare Workers, *and* Node.js without platform-specific shims.
 
@@ -499,6 +499,10 @@ The REGISTRY_CDN flow:
 - **No CDN quirks** — eliminates CDN-specific redirect/resolution differences.
 
 **Scoped registry support.** The CdnPlugin normalizes the `BuildConfig.registry` field at init time via `normalizeRegistryConfig()` (from [utils/npmrc.ts](../utils/npmrc.ts)). For each bare import, `getRegistryForPackage()` resolves the appropriate registry by scope — e.g., `@jsr/std__path` routes to `https://npm.jsr.io` while `react` routes to the default registry. This config accepts a `RegistryConfig` object, a plain URL string, or raw `.npmrc` content (auto-detected by the presence of `=` or newlines).
+
+**Private registry auth tokens.** The `.npmrc` parser supports opt-in auth token extraction via `parseNpmrc(content, { extractAuth: true })`. When enabled, `//registry.example.com/:_authToken=TOKEN` lines are parsed into `RegistryConfig.authTokens`, a host-keyed map. `getAuthHeaderForRegistry(url, config)` resolves a URL to a `Bearer <token>` header using longest-prefix matching against configured tokens. Auth is disabled by default — callers must explicitly opt in, keeping the security boundary clear for the web-facing bundler. Tokens from `${ENV_VAR}` interpolation resolve to empty strings in edge/browser contexts (no env access).
+
+**Per-module exclusion stubs.** Path remapping fields (`browser`, `react-native`, `electron`) can map individual modules to `false`, meaning "this module doesn't exist on this platform." When the HttpPlugin encounters such a remapping, it returns an empty module stub (`export default {}`) via the `EXCLUDED_MODULE_NAMESPACE` — NOT a build error. This matches webpack/rollup spec behavior: consumers importing the excluded module receive an empty object at runtime. Package-level exclusions (e.g., the entire `browser` field is `false`) still produce build errors in the CdnPlugin, since the whole package is unavailable.
 
 **Transitive dependency propagation.** All bare imports from within extracted tarballs also resolve through the registry via two complementary mechanisms:
 
