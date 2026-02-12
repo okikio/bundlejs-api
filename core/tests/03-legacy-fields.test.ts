@@ -116,7 +116,8 @@ describe("03 · Legacy Field Resolution", () => {
 
       // main/module missing → should fall to unpkg
       // resolveLegacy checks unpkg as a fallback
-      expect(result.entryPoint).toBe("dist/global.js");
+      // Note: legacy() normalizes the path with "./" prefix
+      expect(result.entryPoint).toBe("./dist/global.js");
     });
   });
 

@@ -266,10 +266,18 @@ export function resolveLegacy(
       });
 
       // Case: browser field is `false` - module excluded
+      // IMPORTANT: Only treat this as browser exclusion if the manifest
+      // actually has a "browser" field. When no fields match at all
+      // (e.g. empty manifest), legacy() also returns falsy — that's NOT
+      // a browser exclusion, it just means "nothing found yet".
       if (!withBrowser) {
-        result.excluded = true;
-        result.exclusionReason = "browser";
-        return result;
+        const hasBrowserField = "browser" in manifest && manifest.browser !== undefined;
+        if (hasBrowserField) {
+          result.excluded = true;
+          result.exclusionReason = "browser";
+          return result;
+        }
+        // No browser field in manifest → fall through to Step 2
       }
 
       // Case: browser field is a string - direct entry point
@@ -313,25 +321,19 @@ export function resolveLegacy(
       fields,
     });
 
-    if (!entryPoint) {
-      // Note: This is NOT browser exclusion - it's "no entry point found"
-      // The error message should reflect this distinction
-      result.excluded = true;
-      result.exclusionReason = "no-entry-point";
-      return result;
+    if (entryPoint) {
+      if (typeof entryPoint === "string") {
+        result.entryPoint = entryPoint;
+      } else if (Array.isArray(entryPoint)) {
+        result.entryPoint = entryPoint[0] ?? null;
+      } else if (typeof entryPoint === "object" && entryPoint !== null) {
+        // Shouldn't happen with browser: false, but handle defensively
+        const validEntry = Object.entries(entryPoint).find(([, v]) => v && typeof v === "string");
+        result.entryPoint = validEntry ? (validEntry[1] as string) : null;
+      }
     }
 
-    if (typeof entryPoint === "string") {
-      result.entryPoint = entryPoint;
-    } else if (Array.isArray(entryPoint)) {
-      result.entryPoint = entryPoint[0] ?? null;
-    } else if (typeof entryPoint === "object" && entryPoint !== null) {
-      // Shouldn't happen with browser: false, but handle defensively
-      const validEntry = Object.entries(entryPoint).find(([, v]) => v && typeof v === "string");
-      result.entryPoint = validEntry ? (validEntry[1] as string) : null;
-    }
-
-    // Step 3: Fallback to unpkg/bin
+    // Step 3: Fallback to unpkg/bin (runs when Step 2 found nothing)
     if (!result.entryPoint) {
       const fallback = legacy(manifest, {
         browser: false,
@@ -343,6 +345,12 @@ export function resolveLegacy(
       } else if (Array.isArray(fallback) && fallback[0]) {
         result.entryPoint = fallback[0];
       }
+    }
+
+    // After all steps exhausted, mark as no-entry-point
+    if (!result.entryPoint && !result.pathRemappings) {
+      result.excluded = true;
+      result.exclusionReason = "no-entry-point";
     }
 
     return result;
@@ -520,30 +528,21 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
   if (isRootOrEmpty) {
     const legacyResult = resolveLegacy(manifest, { browser: conditions.browser }, legacyFields);
 
-    // Check if excluded for browser
-    if (conditions.browser && legacyResult.excluded) {
+    // Check if excluded by browser field
+    if (legacyResult.excluded) {
       const reason = legacyResult.exclusionReason;
       
-      // Browser exclusion only matters when targeting browser
-      // When platform is 'node', browser: false doesn't exclude the module
-      if (reason === "browser" && !conditions.browser) {
-        // Platform is node, browser exclusion doesn't apply
-        // Continue resolution - module might have valid Node.js entry
-        dispatchEvent(LOGGER_WARN, 
-          `Package excluded for browser but platform is not browser, continuing resolution`);
-      } else if (reason === "no-entry-point") {
-        // No entry point is an error regardless of platform
-        result.excluded = true;
-        result.error = new Error("No entry point found in package.json");
-        (result as { exclusionReason?: string }).exclusionReason = reason;
-        return result;
-      } else {
-        // Browser exclusion when targeting browser
+      if (reason === "browser" && conditions.browser) {
+        // Genuine browser exclusion (browser field is false or all-false object)
         result.excluded = true;
         result.error = new Error("Module excluded by browser field");
         (result as { exclusionReason?: string }).exclusionReason = reason;
         return result;
       }
+
+      // "no-entry-point" — legacy found nothing, but resolvePackageEntry
+      // still has its own ./index.js fallback (step 4), so don't bail out.
+      // Just fall through.
     }
 
     if (legacyResult.entryPoint) {
