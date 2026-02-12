@@ -418,8 +418,7 @@ The plugin registers three `onResolve` handlers with carefully scoped filters:
 - **Bare imports** (no `.` or `/` prefix) skip this plugin entirely → fall through to CDN
 - Resolution follows esbuild's filesystem pattern: *exact path match* → *extension probing* (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`) → `/index.*` fallback
 - **TarballPlugin runs first**, so tarball paths (e.g., `/packages/my-lib.tgz`) are intercepted and extracted before VFS sees them
-
-**Content pre-processing:** The VFS `onLoad` handler also runs **Flow type stripping** on loaded content — tarball-extracted packages (especially from the React Native ecosystem) may contain Flow annotations that esbuild cannot parse. The same `maybeStripFlow()` function used by HttpPlugin is applied here. See [Scenario 20 — Flow Type Stripping](scenarios/20-flow-type-stripping.md).
+- **Flow type stripping** runs in `onLoad` — tarball-extracted React Native packages may contain Flow annotations. See [Content Pre-Processing: Flow Type Stripping](#content-pre-processing-flow-type-stripping)
 
 ---
 
@@ -442,9 +441,7 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles**:
 
 Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers** that need fetching alongside the module.
 
-**Content pre-processing:** Before returning fetched content to esbuild, the `onLoad` handler runs two content-aware transformations:
-- **Flow type stripping** — detects and removes Flow type annotations (e.g., `import typeof`, `opaque type`) from React Native ecosystem packages. Uses `flow-remove-types` with a regex fallback. See [Scenario 20 — Flow Type Stripping](scenarios/20-flow-type-stripping.md).
-- **JSX loader upgrade** — detects JSX syntax in `.js` files and upgrades the esbuild loader from `ts` to `tsx`. See [Scenario 18 — JSX in `.js` Files](scenarios/18-jsx-in-js-files.md).
+**Content pre-processing:** Before returning fetched content to esbuild, the `onLoad` handler runs two content-aware transformations: **Flow type stripping** (removes Flow annotations from React Native ecosystem packages) and **JSX loader upgrade** (detects JSX in `.js` files and upgrades the loader to `tsx`). Both are detailed in [Content Pre-Processing: Flow Type Stripping](#content-pre-processing-flow-type-stripping) and [Scenario 18 — JSX in `.js` Files](scenarios/18-jsx-in-js-files.md).
 
 ---
 
@@ -995,7 +992,334 @@ The unsupported types all require local filesystem access or git operations — 
 >
 > These schemes are handled by the VirtualFileSystemPlugin (see [Plugin 4](#4-virtualfilesystemplugin--in-memory-file-layer) above). You can pre-populate the VFS at build time with `setFile()`, making `vfs:` a practical alternative to `file:` for injecting local content into a build. The prefixes are configurable via `opts.prefixes` — the defaults are `["vfs:", "virtual:"]`.
 
-That covers the full resolution picture — from bare npm imports through JSR, tarballs, aliases, and builtins. What makes all of this work *across* plugins is a shared data layer that every plugin reads and writes during a build.
+That covers the full resolution picture — from bare npm imports through JSR, tarballs, aliases, and builtins. The next section covers a different problem: what happens when a resolved file's *content* is not valid JavaScript as far as esbuild is concerned.
+
+
+## Content Pre-Processing: Flow Type Stripping
+
+> **Source:** [core/utils/flow-strip.ts](../core/utils/flow-strip.ts) · **Scenario doc:** [Scenario 20 — Flow Type Stripping](scenarios/20-flow-type-stripping.md)
+
+After a file is resolved and its content is fetched (from CDN) or read (from VFS), but *before* esbuild parses it, bundlejs runs **content-aware transformations** that fix syntax esbuild cannot handle. The most significant of these is **Flow type stripping** — removing Meta's Flow type annotations from JavaScript files.
+
+This section covers what Flow is, how it differs from TypeScript, why npm packages contain it, and how bundlejs strips it.
+
+
+### What Is Flow?
+
+**[Flow](https://flow.org/)** is a **static type checker for JavaScript**, created by **Meta (Facebook)** and open-sourced in 2014. Like TypeScript, it lets developers add type annotations to JavaScript. Unlike TypeScript, Flow does not define a new language or file extension — Flow annotations are written directly in `.js` files, marked with a `// @flow` pragma.
+
+> **Mental model:** TypeScript *replaces* JavaScript's type story — it defines a `.ts` language that is a superset of `.js`. Flow *annotates* JavaScript without changing its identity — a `.js` file with Flow annotations is still a JavaScript file, just one with extra annotations that Flow-aware tooling can read and everyone else must strip.
+
+Flow was created to solve the same problem as TypeScript — catching type errors before runtime — but with a different design philosophy:
+
+- **Soundness-first** — Flow's type system was designed to be more *sound* (fewer false negatives) than TypeScript's, at the cost of being stricter
+- **Gradual adoption** — the `@flow` pragma means you can add Flow to individual files without converting an entire codebase
+- **No new language** — no `.flow` or `.fjs` extension; annotations live in standard `.js` files
+
+In practice, TypeScript has become the dominant choice for new projects. Flow's usage is concentrated in **Meta's open-source ecosystem** — React Native, Expo, fbjs, and related packages.
+
+
+### Flow vs TypeScript — Syntax and Ecosystem
+
+Flow and TypeScript share some syntax (type annotations on parameters, generics, `type` and `interface` declarations), but Flow introduces several syntax forms that are **completely invalid** in both JavaScript and TypeScript:
+
+```js
+// @flow
+
+// ❌ import typeof — imports the *type* of a value binding
+//    TypeScript uses `import type { X }` instead
+import typeof ActionSheetIOS from './ActionSheetIOS';
+
+// ❌ opaque type — an opaque type alias only visible within the defining module
+//    No TypeScript equivalent (TS uses branded types as a workaround)
+opaque type Token = string;
+
+// ❌ Flow utility types — $-prefixed built-in type operators
+//    TypeScript has its own utility types (Partial<T>, Pick<T,K>, etc.)
+//    but does NOT use the $ prefix
+type Props = $Exact<{ name: string }>;
+type Diff = $Diff<Full, Partial>;
+type Mapped = $ObjMap<Obj, <V>(V) => Array<V>>;
+
+// ❌ Type cast expressions (non-standard parenthesized syntax)
+//    TypeScript uses `value as Type` instead
+const x = (value: any);
+
+// ❌ declare module with Flow-specific syntax
+declare module 'react-native' { }
+declare export default class Foo { }
+```
+
+The full comparison:
+
+| Aspect | Flow | TypeScript |
+|:-------|:-----|:-----------|
+| **File extension** | `.js` (same as JavaScript) | `.ts` / `.tsx` |
+| **Pragma** | `// @flow` at top of file | None required |
+| **Import type syntax** | `import typeof X from '...'` | `import type { X } from '...'` |
+| **Opaque types** | `opaque type Foo = Bar` (built-in keyword) | No equivalent (use branded types) |
+| **Utility types** | `$Exact<T>`, `$Diff<A,B>`, `$ObjMap<T,F>` | `Partial<T>`, `Omit<T,K>`, `Record<K,V>` |
+| **Type casts** | `(value: Type)` (parenthesized) | `value as Type` |
+| **Ecosystem** | React Native, Metro, Expo, Meta OSS | Broadly adopted across the web ecosystem |
+| **Type stripping support** | `flow-remove-types`, Babel plugin | esbuild, SWC, OXC, `tsc`, Node.js 22+ |
+| **Spec status** | No TC39 proposal; Meta-proprietary | No TC39 proposal; Microsoft-backed |
+
+> **The TC39 Type Annotations proposal.** There is an active [TC39 proposal (Stage 1)](https://github.com/tc39/proposal-type-annotations) that would let JavaScript engines natively *ignore* type annotation syntax. If this proposal advances, Flow annotations in `.js` files could become valid JavaScript — eliminating the need for stripping entirely. As of 2025, this proposal has not progressed beyond Stage 1.
+
+> **Node.js `--experimental-strip-types`.** Starting with Node.js 22, the `--experimental-strip-types` flag (powered by `amaro`/SWC) can strip **TypeScript** types natively at startup. It does **not** support Flow. This asymmetry is a concrete example of Flow's narrower tooling support.
+
+
+### Why Do npm Packages Contain Flow Syntax?
+
+In the **React Native / Metro / Expo ecosystem**, shipping raw Flow annotations in `.js` files is the **convention** — not the exception:
+
+1. **Metro bundler** — React Native's default build tool — has **native Flow support**. Its Babel pipeline includes `@babel/plugin-transform-flow-strip-types`, so it strips Flow automatically. Packages don't need to pre-compile.
+
+2. **React Native itself** (`react-native` on npm) ships its *entire source* as Flow-annotated `.js` files. The `index.js` entry point is full of `import typeof` statements — the exact syntax that triggered this feature.
+
+3. **Expo SDK packages**, **fbjs**, **react-native-web**, and other Meta OSS packages follow the same pattern.
+
+4. **Metro's `.js` = JSX + Flow convention.** Metro treats *all* `.js` files as capable of containing both JSX *and* Flow syntax by default. This means a single `.js` file in the React Native ecosystem may require *both* [Flow stripping](#flow-stripping-pipeline) and [JSX loader upgrade](scenarios/18-jsx-in-js-files.md).
+
+This creates a problem for **any bundler that isn't Metro**: the published npm package contains syntax that no standard JavaScript parser understands.
+
+```
+Metro Bundler (React Native)               Any other bundler (esbuild, webpack, etc.)
+┌───────────────────────────────┐           ┌───────────────────────────────┐
+│  .js with Flow annotations    │           │  .js with Flow annotations    │
+│             │                 │           │             │                 │
+│             ▼                 │           │             ▼                 │
+│  Babel: @flow strip plugin    │           │  ??? → parse error            │
+│             │                 │           │                               │
+│             ▼                 │           │  bundlejs: flow-remove-types  │
+│  Valid JavaScript             │           │             │                 │
+│             │                 │           │             ▼                 │
+│             ▼                 │           │  Valid JavaScript             │
+│  Bundle output                │           │             │                 │
+└───────────────────────────────┘           │             ▼                 │
+                                            │  esbuild continues            │
+                                            └───────────────────────────────┘
+```
+
+The specific error that motivated this feature:
+
+```
+✘ [ERROR] Unexpected "typeof"
+    react-native@1000.0.0/index.js:14:7:
+      14 │ import typeof ActionSheetIOS from './Libraries/ActionSheetIOS/ActionSheetIOS';
+         │        ~~~~~~
+```
+
+esbuild sees `import typeof` — valid in neither JavaScript nor TypeScript — and fails at the parse phase. No amount of configuration or loader selection can fix this; the syntax must be removed *before* esbuild sees it.
+
+
+### Why Not OXC, SWC, or esbuild Itself?
+
+Before implementing a dedicated stripping layer, we evaluated existing tools:
+
+| Tool | Can strip Flow? | Details |
+|:-----|:---------------|:--------|
+| **esbuild** | ❌ No | No Flow support at all. Cannot be configured to ignore Flow syntax. |
+| **OXC** (`oxc-transform`) | ❌ No | Explicitly rejects Flow. The parser detects `@flow` pragmas and emits `"Flow is not supported"`. Only handles TypeScript type stripping. ([Source](https://github.com/oxc-project/oxc)) |
+| **SWC** | ❌ No | No built-in Flow support. |
+| **Babel** + `@babel/plugin-transform-flow-strip-types` | ✅ Yes | Works, but requires `@babel/core` + parser + plugin — a heavy dependency chain with significant startup cost. Too expensive for per-request bundling. |
+| **`flow-remove-types`** | ✅ Yes | Official tool from the Flow team. Built on `hermes-parser` (Meta's Hermes engine compiled to WASM). Lightweight, zero-config, understands all Flow syntax. **This is what bundlejs uses.** |
+
+> **`hermes-parser`** is the parser from [Hermes](https://github.com/nicolo-ribaudo/hermes-parser-wasm) — Meta's JavaScript engine designed for React Native. When compiled to WASM, it can parse JavaScript files containing ES6+, Flow annotations, and JSX — the exact combination that React Native packages use. `flow-remove-types` wraps `hermes-parser` to produce clean JavaScript output with Flow annotations replaced by whitespace (preserving source positions).
+
+
+### Flow Stripping Pipeline
+
+> **Source:** [core/utils/flow-strip.ts](../core/utils/flow-strip.ts)
+
+The implementation has three layers, ordered from cheapest to most expensive:
+
+```
+                     Flow Stripping Pipeline
+
+  ┌───────────────────────────────────────────────────────────────┐
+  │  Layer 1: Detection — containsFlow(content, opts?)            │
+  │                                                               │
+  │  1a. Known-package fast path (Set lookup: "react-native")     │
+  │  1b. URL heuristic (/react-native/ or /react-native@ in URL)  │
+  │  1c. @flow pragma scan (first 4 KB only)                      │
+  │  1d. Syntax pattern scan (import typeof, opaque type, $...)   │
+  │                                                               │
+  │  → false? Return content unchanged. Zero overhead.            │
+  └───────────────────────────┬───────────────────────────────────┘
+                              │ true
+                              ▼
+  ┌───────────────────────────────────────────────────────────────┐
+  │  Layer 2: Full stripping — flow-remove-types (hermes-parser)  │
+  │                                                               │
+  │  Uses hermes-parser (WASM) for complete AST-based type        │
+  │  removal. Replaces all annotations with whitespace,           │
+  │  preserving source positions (line/column numbers stable).    │
+  │                                                               │
+  │  → success? Return cleaned source.                            │
+  │  → parse error or unavailable? Fall through to Layer 3.       │
+  └───────────────────────────┬───────────────────────────────────┘
+                              │ fallback
+                              ▼
+  ┌───────────────────────────────────────────────────────────────┐
+  │  Layer 3: Regex fallback — regexStripFlow()                   │
+  │                                                               │
+  │  Best-effort removal of the patterns that most commonly       │
+  │  cause esbuild parse failures:                                │
+  │  • @flow pragmas → whitespace                                 │
+  │  • import typeof → import (preserving columns)                │
+  │  • import type { ... } from '...' → whitespace                │
+  │  • export type { ... } → whitespace                           │
+  │                                                               │
+  │  ⚠ Does NOT handle: inline type annotations, opaque type      │
+  │    bodies, type cast expressions, generic parameters,         │
+  │    declare statements.                                        │
+  └───────────────────────────────────────────────────────────────┘
+```
+
+
+#### Layer 1: Detection — `containsFlow()`
+
+Detection is ordered by cost (cheapest first) and short-circuits on the first positive signal:
+
+1. **Known-package lookup** — a `Set` of package names known to ship Flow source. Currently contains `"react-native"`. The URL or `packageName` option provides the lookup key. This check is O(1) and avoids content scanning entirely.
+
+2. **URL heuristic** — scans the URL string for known-package names (e.g., `/react-native/` or `/react-native@`). Catches files loaded via CDN where the package name is encoded in the URL path.
+
+3. **`@flow` pragma** — scans only the first **4 KB** of the file for `// @flow` or `/* @flow */`. Most properly authored Flow files include this pragma in their first comment block. The 4 KB window keeps scanning fast for large non-Flow files.
+
+4. **Syntax pattern scan** — tests the full content against three regex patterns chosen for **near-zero false positives** in standard JavaScript and TypeScript:
+
+   | Pattern | Matches | Why it's safe |
+   |:--------|:--------|:--------------|
+   | `/\bimport\s+typeof\b/` | `import typeof Foo from '...'` | Invalid in both JS (`typeof` not allowed after `import`) and TS (uses `import type` instead) |
+   | `/\bopaque\s+type\b/` | `opaque type Foo = ...` | `opaque type` as two consecutive tokens does not appear in JS or TS. TS has `type` but not `opaque type` |
+   | `/\$(?:Exact\|Diff\|ObjMap\|...)\b/` | `$Exact<T>`, `$Diff<A,B>`, etc. | Flow-specific utility types. The `$` prefix + specific names are extremely unlikely outside Flow |
+
+> **Why not detect `import type`?** TypeScript uses `import type { X } from '...'` extensively — triggering on this pattern would produce false positives on every TypeScript codebase. Flow's `import typeof` is the distinguishing marker — it is syntactically invalid in TypeScript.
+
+
+#### Layer 2: Full Stripping — `flow-remove-types`
+
+When `containsFlow()` returns `true`, the `stripFlowTypes()` function invokes `flow-remove-types`:
+
+```typescript
+import flowRemoveTypes from "flow-remove-types";
+
+const result = flowRemoveTypes(sourceText, { pretty: true, all: true });
+return result.toString();
+```
+
+- **`pretty: true`** — removes extra whitespace left by type erasure, producing cleaner output
+- **`all: true`** — strips *all* files passed to it, not just those with `@flow` pragma. Since detection already filters, every file that reaches this layer should be stripped
+
+The `flow-remove-types` package replaces type annotations with whitespace by default (spaces and newlines), which **preserves source positions** — line numbers and column offsets in the output match the original. This is important for error messages and source maps referencing the original file.
+
+If `flow-remove-types` throws (e.g., a parse error on malformed input), the function falls through to the regex fallback.
+
+
+#### Layer 3: Regex Fallback — `regexStripFlow()`
+
+The regex fallback is a **last resort** for when `flow-remove-types` is unavailable or fails. It handles only the patterns that most commonly cause esbuild parse failures:
+
+| Input | Output | Technique |
+|:------|:-------|:----------|
+| `import typeof Foo from './Foo'` | `import        Foo from './Foo'` | Replace `typeof` with spaces |
+| `import type { X } from 'mod'` | *(entire line → whitespace)* | Preserve line structure |
+| `export type { X }` | *(entire line → whitespace)* | Preserve line structure |
+| `// @flow` | *(whitespace)* | Pragma removal |
+| `/* @flow */` | *(whitespace, preserving newlines)* | Block comment pragma removal |
+
+The fallback **does not handle**: inline type annotations (`function foo(x: string) {}`), type cast expressions (`(value: Type)`), opaque type declarations, generic parameters in Flow syntax, or `declare` statements. These would still cause esbuild parse errors. In practice, `flow-remove-types` is an explicit dependency (listed in [core/deno.jsonc](../core/deno.jsonc)) and should always be available — the regex fallback exists as a safety net, not a primary code path.
+
+
+### Integration Into the Plugin Pipeline
+
+Flow stripping hooks into esbuild's **`onLoad`** phase — the moment a plugin returns file content to esbuild for parsing. Two plugins apply it:
+
+**HttpPlugin** ([core/plugins/http.ts](../core/plugins/http.ts)):
+
+```
+  CDN fetch → raw bytes (Uint8Array)
+       │
+       ▼
+  maybeStripFlow(content, { url })
+       │
+       ├─ Flow detected → strip → return cleaned string to esbuild
+       └─ No Flow       → return original bytes to esbuild
+```
+
+**VirtualFileSystemPlugin** ([core/plugins/fs.ts](../core/plugins/fs.ts)):
+
+```
+  VFS getFile() → raw bytes (Uint8Array)
+       │
+       ▼
+  maybeStripFlow(content, { url: args.path })
+       │
+       ├─ Flow detected → strip → return cleaned string to esbuild
+       └─ No Flow       → return original bytes to esbuild
+```
+
+**ExternalPlugin** does **not** need Flow stripping — it returns a static `export default {}` stub.
+
+The entry point for both is `maybeStripFlow()`, which combines detection and stripping in one call:
+
+```typescript
+// Returns { contents, wasStripped }
+// - No Flow detected → contents = original Uint8Array (zero-copy), wasStripped = false
+// - Flow detected    → contents = stripped string, wasStripped = true
+const { contents, wasStripped } = maybeStripFlow(rawBytes, { url });
+```
+
+When `wasStripped` is `true`, the plugin logs an info event for observability.
+
+> **Ordering with JSX detection.** Flow stripping runs *before* loader inference. The stripped content (clean JavaScript) is then passed to `inferLoader()`, which may upgrade the loader from `ts` to `tsx` if JSX is detected. This ordering matters: Flow type annotations could theoretically mask or disrupt JSX pattern detection, so stripping first ensures accurate JSX detection. See [Scenario 18 — JSX in `.js` Files](scenarios/18-jsx-in-js-files.md) for JSX detection details.
+
+> **Overhead for non-Flow builds.** If no Flow files are encountered during a build, the only cost is the `containsFlow()` check on each loaded file — a fast regex test against the first 4 KB. The `flow-remove-types` package is never imported, and no source transformation occurs. The cost is O(n) in the number of files, with a very small constant per file.
+
+
+### Deviations from Standard Flow Handling
+
+bundlejs intentionally differs from how the Flow type checker and Metro bundler handle Flow files:
+
+| Aspect | Standard Flow / Metro | bundlejs |
+|:-------|:---------------------|:---------|
+| **Detection** | Requires `@flow` pragma (files without it are ignored) | Also detects via syntax patterns and known-package list — many React Native files lack pragmas but still contain Flow syntax |
+| **Stripping tool** | Babel pipeline (`@babel/plugin-transform-flow-strip-types`) | `flow-remove-types` — lighter weight, zero-config, same parser (hermes) |
+| **Scope** | Metro strips *all* `.js` files unconditionally through Babel *regardless* of whether they contain Flow | bundlejs only strips files where Flow is *detected* (`containsFlow()` returns `true`) — opt-in per file |
+| **Fallback** | No fallback — Babel either works or fails | Regex fallback for partial stripping when `flow-remove-types` is unavailable |
+| **`.flow.js` convention** | Some Flow tools recognize `.flow.js` as a Flow source file suffix | Not currently detected — could be added to the known-patterns list |
+
+**Key deviation — selective vs unconditional stripping.** Metro applies Babel's Flow plugin to *every* `.js` file in its pipeline. bundlejs is selective: it only strips files where `containsFlow()` returns `true`. This is a deliberate efficiency choice — most npm packages do not contain Flow, and running a full parser on every file would add unnecessary latency in a per-request bundling service.
+
+The trade-off: a Flow file with *no* pragma, *no* known-package match, and *no* detectable syntax patterns could slip through unstripped. In practice this gap is very small, because the syntax patterns specifically target the constructs that cause esbuild parse failures — if a file doesn't match any pattern, it likely doesn't contain syntax that would break esbuild either.
+
+
+### Flow + JSX: Two Content Transformations
+
+React Native packages often contain *both* Flow annotations and JSX syntax in the same `.js` file. bundlejs handles these as **two independent content transformations** that run in sequence during `onLoad`:
+
+```
+  Raw content (Uint8Array)
+       │
+       ▼
+  1. maybeStripFlow()      → removes Flow type annotations
+       │
+       ▼
+  2. inferLoader(content)  → detects JSX, upgrades loader ts → tsx if found
+       │
+       ▼
+  esbuild.parse(content, { loader })
+```
+
+These are complementary:
+- **Flow stripping** (this section) handles *type system annotations* — `import typeof`, `opaque type`, `$Exact<T>`, etc.
+- **JSX loader upgrade** ([Scenario 18](scenarios/18-jsx-in-js-files.md)) handles *UI syntax* — `<Component>`, `<div>`, `</>`, etc.
+
+Neither subsumes the other: a file can have Flow without JSX, JSX without Flow, both, or neither. The detection and handling are additive and order-independent (though Flow stripping runs first to give JSX detection clean input).
+
+> **The shared root cause:** Both features exist because the React Native ecosystem ships `.js` files with non-standard syntax that Metro understands but other bundlers don't. They are sister features addressing different facets of the same ecosystem compatibility problem.
 
 
 ## Plugin Shared State
