@@ -75,7 +75,6 @@ import {
   isGitSpec,
   isRegistrySpec,
   isUnsupportedSpec,
-  isNpmVersionSpec,
   joinSubpath,
   appendUrlSubpath,
   getUnsupportedSpecError,
@@ -369,8 +368,8 @@ describe("17.2 — npm-spec type guards and utilities", () => {
       expect(isUnsupportedSpec(parseNpmSpec("npm:preact@10"))).toBe(false);
     });
 
-    test("isNpmVersionSpec identifies exact versions", () => {
-      expect(isNpmVersionSpec(parseNpmSpec("1.2.3"))).toBe(true);
+    test("isRegistrySpec identifies exact versions", () => {
+      expect(isRegistrySpec(parseNpmSpec("1.2.3"))).toBe(true);
     });
   });
 
