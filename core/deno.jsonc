@@ -22,6 +22,7 @@
     "./utils/get-esbuild": "./utils/get-esbuild.ts",
     "./utils": "./utils/index.ts",
     "./utils/loader": "./utils/loader.ts",
+    "./utils/flow-strip": "./utils/flow-strip.ts",
     "./utils/resolve-conditions": "./utils/resolve-conditions.ts",
     "./utils/types": "./utils/types.ts",
     "./context/context": "./context/context.ts",
@@ -38,6 +39,7 @@
   },
   "imports": {
     "@logtape/logtape": "jsr:@logtape/logtape@^2",
+    "flow-remove-types": "npm:flow-remove-types@^2",
     "@std/tar": "jsr:@std/tar@^0",
     "esbuild-wasm": "npm:esbuild-wasm",
     "esbuild": "https://deno.land/x/esbuild/wasm.js"

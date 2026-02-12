@@ -32,6 +32,7 @@ import { fetchContent, fetchHeaders } from "@bundle/utils/fetch-and-cache";
 import { decode } from "@bundle/utils/encode-decode";
 
 import { LOGGER_ERROR, LOGGER_INFO, LOGGER_WARN, dispatchEvent } from "../configs/events.ts";
+import { maybeStripFlow } from "../utils/flow-strip.ts";
 
 import { DEFAULT_CDN_HOST, getCDNStyle, getCDNUrl } from "../utils/cdn-format.ts";
 import { applyManifestRemappings } from "../utils/cdn-resolution.ts";
@@ -461,8 +462,21 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
 
         toContext("assets", Assets.concat(resolvedAssets), StateContext);
 
+        // Strip Flow type annotations from files that use Flow syntax.
+        // React Native and the Metro/Expo ecosystem ship .js files with raw
+        // Flow annotations (e.g. `import typeof`). esbuild can't parse Flow,
+        // so we pre-process these files before handing them to the bundler.
+        const { contents: processedContent, wasStripped } = await maybeStripFlow(
+          content as Uint8Array,
+          { url }
+        );
+
+        if (wasStripped) {
+          dispatchEvent(LOGGER_INFO, `Stripped Flow types from ${url}`);
+        }
+
         return {
-          contents: content,
+          contents: processedContent,
           loader: inferLoader(url, contentType, content),
           // CRITICAL: Pass the final URL (after redirects) in pluginData
           // This is used as the base URL for resolving relative imports
