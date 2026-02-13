@@ -23,14 +23,14 @@ import {
 describe("08 · Non-npm Resolution", () => {
   describe("JSR resolution", () => {
     test("8.1 — basic jsr:@std/path@1.0.0 resolves", async () => {
-      const result = await buildPackage("jsr:@std/path@1.0.0");
+      await using result = await buildPackage("jsr:@std/path@1.0.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("8.3 — JSR with subpath export (jsr:@std/path@1.0.0/posix)", async () => {
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `export * from "jsr:@std/path@1.0.0/posix";`,
       );
 
@@ -45,7 +45,7 @@ describe("08 · Non-npm Resolution", () => {
 
   describe("Tarball extraction", () => {
     test("8.6 — tarball from pkg.pr.new resolves", async () => {
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `export * from "https://pkg.pr.new/@tanstack/react-query@7988";`,
       );
 

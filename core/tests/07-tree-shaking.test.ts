@@ -143,9 +143,9 @@ describe("07 · Tree-Shaking and Side Effects", () => {
   describe("integration: tree-shaking with real packages", () => {
     test("lodash-es: selective import is smaller than full import", async () => {
       // Full import
-      const full = await buildPackage("lodash-es@4.17.21");
+      await using full = await buildPackage("lodash-es@4.17.21");
       // Selective (tree-shaken) import
-      const selective = await buildWithEntry(
+      await using selective = await buildWithEntry(
         `export { debounce } from "lodash-es@4.17.21";`,
       );
 

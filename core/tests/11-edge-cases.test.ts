@@ -90,7 +90,7 @@ describe("11 · Edge Cases and Errors", () => {
 
   describe("11.5 — AliasPlugin rewrites before resolution", () => {
     test("alias react → preact/compat uses preact (not React)", async () => {
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `export { useState } from "react";`,
         {
           alias: { react: "preact@10.25.4/compat" },
@@ -111,7 +111,7 @@ describe("11 · Edge Cases and Errors", () => {
   describe("11.9 — Nonexistent package", () => {
     test("returns an error for a package that does not exist", async () => {
       try {
-        const result = await buildPackage("this-package-does-not-exist-12345");
+        await using result = await buildPackage("this-package-does-not-exist-12345");
         // Should either throw or produce errors
         expect(result.errors.length).toBeGreaterThan(0);
       } catch (_e) {
@@ -124,7 +124,7 @@ describe("11 · Edge Cases and Errors", () => {
   describe("11.10 — Nonexistent version", () => {
     test("returns an error for a version that does not exist", async () => {
       try {
-        const result = await buildPackage("react@999.0.0");
+        await using result = await buildPackage("react@999.0.0");
         expect(result.errors.length).toBeGreaterThan(0);
       } catch (_e) {
         expect(true).toBe(true);
@@ -138,7 +138,7 @@ describe("11 · Edge Cases and Errors", () => {
 
   describe("11.7 — Peer dependency cycle", () => {
     test("react-dom@19.0.0 builds despite peer-depending on react", async () => {
-      const result = await buildPackage("react-dom@19.0.0");
+      await using result = await buildPackage("react-dom@19.0.0");
 
       // Should complete without infinite loops
       expect(result.contents.length).toBeGreaterThan(0);
@@ -153,7 +153,7 @@ describe("11 · Edge Cases and Errors", () => {
   describe("11.15 — Scoped packages with special characters", () => {
     test("@anthropic-ai/sdk resolves correctly (scoped + hyphens)", async () => {
       // This tests that URL encoding handles @scope/name-with-hyphens
-      const result = await buildPackage("@anthropic-ai/sdk@0.39.0");
+      await using result = await buildPackage("@anthropic-ai/sdk@0.39.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -166,7 +166,7 @@ describe("11 · Edge Cases and Errors", () => {
 
   describe("11.16 — VFS file takes precedence over CDN", () => {
     test("entry file in VFS resolves from memory", async () => {
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `export const hello = "world";`,
       );
 
@@ -182,7 +182,7 @@ describe("11 · Edge Cases and Errors", () => {
       // resolves correctly without hitting the network. A full VFS-relative
       // test would require setFile for both files, but this validates
       // that VFS-based resolution does work for the entry point.
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `const msg: string = "hello from VFS";\nexport { msg };`,
       );
 
@@ -200,8 +200,8 @@ describe("11 · Edge Cases and Errors", () => {
       // bundlejs resolves each package independently; here we verify
       // that multiple packages can be built in succession without
       // cross-contamination.
-      const r1 = await buildPackage("preact@10.25.4");
-      const r2 = await buildPackage("chalk@5.4.1");
+      await using r1 = await buildPackage("preact@10.25.4");
+      await using r2 = await buildPackage("chalk@5.4.1");
 
       expect(r1.errors.length).toBe(0);
       expect(r2.errors.length).toBe(0);

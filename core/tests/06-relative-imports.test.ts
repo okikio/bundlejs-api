@@ -22,7 +22,7 @@ import {
 describe("06 · Relative Imports and CDN Behavior", () => {
   describe("6.1 — Post-redirect URL as resolve base", () => {
     test("react@19.0.0 via esm.sh resolves relative imports after redirect", async () => {
-      const result = await buildPackage("react@19.0.0", {
+      await using result = await buildPackage("react@19.0.0", {
         cdn: "esm.sh",
       });
 
@@ -33,7 +33,7 @@ describe("06 · Relative Imports and CDN Behavior", () => {
 
   describe("6.2 — Extension probing for extensionless imports", () => {
     test("events@3.3.0 resolves extensionless internal imports", async () => {
-      const result = await buildPackage("events@3.3.0");
+      await using result = await buildPackage("events@3.3.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -42,7 +42,7 @@ describe("06 · Relative Imports and CDN Behavior", () => {
 
   describe("6.5 — Bare import inside HTTP module delegates to CdnPlugin", () => {
     test("axios@1.7.9 resolves transitive bare imports", async () => {
-      const result = await buildPackage("axios@1.7.9");
+      await using result = await buildPackage("axios@1.7.9");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -51,7 +51,7 @@ describe("06 · Relative Imports and CDN Behavior", () => {
 
   describe("6.8 — # imports inside HTTP modules", () => {
     test("chalk@5.4.1 resolves # imports in CDN-fetched source", async () => {
-      const result = await buildPackage("chalk@5.4.1");
+      await using result = await buildPackage("chalk@5.4.1");
 
       // chalk uses #supports-color and #ansi-styles
       expect(result.contents.length).toBeGreaterThan(0);

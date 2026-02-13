@@ -209,21 +209,21 @@ describe("04 · Browser Field Remapping", () => {
 
   describe("integration: real packages", () => {
     test("@exodus/bytes@1.13.0 builds with browser remapping", async () => {
-      const result = await buildPackage("@exodus/bytes@1.13.0");
+      await using result = await buildPackage("@exodus/bytes@1.13.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("readable-stream@4.7.0 builds for browser", async () => {
-      const result = await buildPackage("readable-stream@4.7.0");
+      await using result = await buildPackage("readable-stream@4.7.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("axios@1.7.9 builds with browser field swaps", async () => {
-      const result = await buildPackage("axios@1.7.9");
+      await using result = await buildPackage("axios@1.7.9");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);

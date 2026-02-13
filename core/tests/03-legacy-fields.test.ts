@@ -171,21 +171,21 @@ describe("03 · Legacy Field Resolution", () => {
 
   describe("integration: real packages", () => {
     test("isarray@2.0.5 builds with only main field", async () => {
-      const result = await buildPackage("isarray@2.0.5");
+      await using result = await buildPackage("isarray@2.0.5");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("lodash-es@4.17.21 builds with module field", async () => {
-      const result = await buildPackage("lodash-es@4.17.21");
+      await using result = await buildPackage("lodash-es@4.17.21");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("ms@2.1.3 builds with extensionless main", async () => {
-      const result = await buildPackage("ms@2.1.3");
+      await using result = await buildPackage("ms@2.1.3");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);

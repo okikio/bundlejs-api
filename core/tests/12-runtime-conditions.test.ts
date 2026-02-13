@@ -389,14 +389,14 @@ describe("12 · Runtime-Specific Condition Sets", () => {
 
   describe("integration: conditions flow through full pipeline", () => {
     test("12.1 — default browser build of solid-js succeeds", async () => {
-      const result = await buildPackage("solid-js@1.9.4");
+      await using result = await buildPackage("solid-js@1.9.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("12.11 — CJS format build of uuid succeeds", async () => {
-      const result = await buildPackage("uuid@11.0.5", {
+      await using result = await buildPackage("uuid@11.0.5", {
         esbuild: { format: "cjs" },
       });
 

@@ -663,7 +663,7 @@ describe("integration · VFS → CDN handoff", () => {
   test("VFS entry that imports bare package routes to CDN", async () => {
     // Entry in VFS (/index.tsx) imports "preact" (bare) → CDN resolves it
     // Pin version to avoid CDN resolution picking up wrong versions
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export { h } from "preact@10.25.4";`,
       { esbuild: { treeShaking: true, format: "esm" } },
     );
@@ -674,7 +674,7 @@ describe("integration · VFS → CDN handoff", () => {
 
   test("VFS-only build never hits network", async () => {
     // Pure VFS code with no external imports
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `const x: number = 42;\nexport { x };`,
     );
 
@@ -685,7 +685,7 @@ describe("integration · VFS → CDN handoff", () => {
   test("VFS relative import resolves within VFS (not HTTP)", async () => {
     // A single-file test — the entry file references its own exports
     // This validates that VFS onLoad sets resolveDir correctly
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export const msg = "vfs-internal";\nexport const copy = msg;`,
     );
 
@@ -696,7 +696,7 @@ describe("integration · VFS → CDN handoff", () => {
 
 describe("integration · ExternalPlugin", () => {
   test("builtin exclusion: import 'fs' → empty export (no error)", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import fs from "fs";\nexport { fs };`,
     );
 
@@ -706,7 +706,7 @@ describe("integration · ExternalPlugin", () => {
   });
 
   test("node: prefix handled: import 'node:path' → excluded", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import path from "node:path";\nexport { path };`,
     );
 
@@ -715,7 +715,7 @@ describe("integration · ExternalPlugin", () => {
   });
 
   test("non-builtin packages are NOT excluded", async () => {
-    const result = await buildPackage("preact@10.25.4");
+    await using result = await buildPackage("preact@10.25.4");
 
     expect(result.errors.length).toBe(0);
     // preact output should be non-trivial (more than just an empty export)
@@ -726,7 +726,7 @@ describe("integration · ExternalPlugin", () => {
 
 describe("integration · AliasPlugin", () => {
   test("alias rewrites package before CDN resolution", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export { h } from "react";`,
       {
         alias: { react: "preact@10.25.4" },
@@ -738,7 +738,7 @@ describe("integration · AliasPlugin", () => {
   });
 
   test("alias with subpath: react → preact/compat", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export { useState } from "react";`,
       {
         alias: { react: "preact@10.25.4/compat" },
@@ -754,7 +754,7 @@ describe("integration · AliasPlugin", () => {
 describe("integration · polyfill mode", () => {
   test("polyfill: true makes builtins resolve to CDN packages", async () => {
     // With polyfill: true, "path" → "path-browserify" → fetched from CDN
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import { join } from "path";\nexport { join };`,
       { polyfill: true },
     );
@@ -770,7 +770,7 @@ describe("integration · browser field remapping on relative imports", () => {
   test("@exodus/bytes resolves browser-specific files", async () => {
     // @exodus/bytes has browser field remappings for platform/utf8 files
     // The HttpPlugin applies these remappings for relative imports
-    const result = await buildPackage("@exodus/bytes@1.13.0");
+    await using result = await buildPackage("@exodus/bytes@1.13.0");
 
     expect(result.errors.length).toBe(0);
     expect(result.contents.length).toBeGreaterThan(0);
@@ -779,7 +779,7 @@ describe("integration · browser field remapping on relative imports", () => {
 
 describe("integration · conditional exports resolution", () => {
   test("preact exports: browser + import conditions select ESM entry", async () => {
-    const result = await buildPackage("preact@10.25.4");
+    await using result = await buildPackage("preact@10.25.4");
 
     expect(result.errors.length).toBe(0);
     expect(result.contents.length).toBeGreaterThan(0);
@@ -789,7 +789,7 @@ describe("integration · conditional exports resolution", () => {
   });
 
   test("solid-js exports: deeply nested conditions resolve correctly", async () => {
-    const result = await buildPackage("solid-js@1.9.4");
+    await using result = await buildPackage("solid-js@1.9.4");
 
     expect(result.errors.length).toBe(0);
     expect(result.contents.length).toBeGreaterThan(0);
@@ -799,12 +799,12 @@ describe("integration · conditional exports resolution", () => {
 describe("integration · tree-shaking with sideEffects", () => {
   test("rxjs barrel vs single export produces smaller output", async () => {
     // rxjs is a good tree-shaking test: large barrel export, well-defined sideEffects
-    const full = await buildWithEntry(
+    await using full = await buildWithEntry(
       `export * from "rxjs";`,
       { esbuild: { treeShaking: true } },
     );
 
-    const shaken = await buildWithEntry(
+    await using shaken = await buildWithEntry(
       `export { of } from "rxjs";`,
       { esbuild: { treeShaking: true } },
     );
@@ -822,7 +822,7 @@ describe("integration · tree-shaking with sideEffects", () => {
 
 describe("integration · JSR resolution", () => {
   test("jsr:@std/path resolves and bundles", async () => {
-    const result = await buildPackage("jsr:@std/path@1.0.0");
+    await using result = await buildPackage("jsr:@std/path@1.0.0");
 
     expect(result.errors.length).toBe(0);
     expect(result.contents.length).toBeGreaterThan(0);
@@ -831,7 +831,7 @@ describe("integration · JSR resolution", () => {
 
 describe("integration · tarball extraction", () => {
   test("pkg.pr.new URL resolves through TarballPlugin", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export * from "https://pkg.pr.new/@tanstack/react-query@7988";`,
     );
 
@@ -842,11 +842,11 @@ describe("integration · tarball extraction", () => {
 
 describe("integration · platform-specific resolution", () => {
   test("node platform uses different conditions than browser", async () => {
-    const browserResult = await buildPackage("preact@10.25.4", {
+    await using browserResult = await buildPackage("preact@10.25.4", {
       esbuild: { platform: "browser" },
     });
 
-    const nodeResult = await buildPackage("preact@10.25.4", {
+    await using nodeResult = await buildPackage("preact@10.25.4", {
       esbuild: { platform: "node" },
     });
 
@@ -862,7 +862,7 @@ describe("integration · platform-specific resolution", () => {
 
 describe("integration · CJS format output", () => {
   test("format: 'cjs' wraps output in CommonJS", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export const x = 1;`,
       { esbuild: { format: "cjs" } },
     );
@@ -881,7 +881,7 @@ describe("integration · CJS format output", () => {
 
 describe("integration · IIFE format output", () => {
   test("format: 'iife' wraps in IIFE with globalName", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export const x = 1;`,
       { esbuild: { format: "iife", globalName: "TestBundle" } },
     );
@@ -895,8 +895,8 @@ describe("integration · IIFE format output", () => {
 
 describe("integration · multiple entry points", () => {
   test("separate builds don't leak VFS state", async () => {
-    const r1 = await buildWithEntry(`export const a = "first";`);
-    const r2 = await buildWithEntry(`export const b = "second";`);
+    await using r1 = await buildWithEntry(`export const a = "first";`);
+    await using r2 = await buildWithEntry(`export const b = "second";`);
 
     expect(r1.errors.length).toBe(0);
     expect(r2.errors.length).toBe(0);
@@ -986,13 +986,13 @@ describe("integration · remapFalse: warnOnStubbedRemapFalse controls warnings",
   // either way, and the warning count reflects the config.
 
   test("default config (warnOnStubbedRemapFalse: true) builds successfully", async () => {
-    const result = await buildPackage("@exodus/bytes@1.13.0");
+    await using result = await buildPackage("@exodus/bytes@1.13.0");
     expect(result.errors.length).toBe(0);
     expect(result.contents.length).toBeGreaterThan(0);
   });
 
   test("warnOnStubbedRemapFalse: false suppresses stub warnings", async () => {
-    const result = await buildPackage("@exodus/bytes@1.13.0", {
+    await using result = await buildPackage("@exodus/bytes@1.13.0", {
       remapFalse: { warnOnStubbedRemapFalse: false },
     });
     expect(result.errors.length).toBe(0);

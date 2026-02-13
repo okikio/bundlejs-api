@@ -29,7 +29,7 @@ describe("09 · Builtins and Polyfills", () => {
   // ---------------------------------------------------------------------------
   describe("9.1 — Builtin exclusion (default)", () => {
     test("fs-extra@11.2.0 builds successfully without polyfills", async () => {
-      const result = await buildPackage("fs-extra@11.2.0");
+      await using result = await buildPackage("fs-extra@11.2.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -41,8 +41,8 @@ describe("09 · Builtins and Polyfills", () => {
   // ---------------------------------------------------------------------------
   describe("9.2 — Builtin polyfill mode", () => {
     test("fs-extra@11.2.0 with polyfill produces a larger bundle", async () => {
-      const without = await buildPackage("fs-extra@11.2.0");
-      const withPoly = await buildPackage("fs-extra@11.2.0", {
+      await using without = await buildPackage("fs-extra@11.2.0");
+      await using withPoly = await buildPackage("fs-extra@11.2.0", {
         polyfill: true,
       });
 
@@ -60,7 +60,7 @@ describe("09 · Builtins and Polyfills", () => {
   // ---------------------------------------------------------------------------
   describe("9.3 — node: prefix stripping", () => {
     test("@noble/hashes@1.7.1 resolves node:crypto as builtin", async () => {
-      const result = await buildPackage("@noble/hashes@1.7.1");
+      await using result = await buildPackage("@noble/hashes@1.7.1");
 
       // Should build without trying to fetch "node:crypto" from npm
       expect(result.contents.length).toBeGreaterThan(0);
@@ -73,7 +73,7 @@ describe("09 · Builtins and Polyfills", () => {
   // ---------------------------------------------------------------------------
   describe("9.4 — fs vs node:fs equivalence", () => {
     test("events@3.3.0 as npm package builds", async () => {
-      const result = await buildPackage("events@3.3.0");
+      await using result = await buildPackage("events@3.3.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -85,7 +85,7 @@ describe("09 · Builtins and Polyfills", () => {
   // ---------------------------------------------------------------------------
   describe("9.5 — Builtin inside CDN-fetched module", () => {
     test("axios@1.7.9 internal `http`/`https` imports are excluded", async () => {
-      const result = await buildPackage("axios@1.7.9");
+      await using result = await buildPackage("axios@1.7.9");
 
       // axios uses http/https internally; these should be excluded (not
       // fetched from CDN) via the ExternalPlugin.
@@ -99,7 +99,7 @@ describe("09 · Builtins and Polyfills", () => {
   // ---------------------------------------------------------------------------
   describe("9.6 — Polyfill output format", () => {
     test("CJS format wraps polyfill output in module.exports", async () => {
-      const result = await buildPackage("events@3.3.0", {
+      await using result = await buildPackage("events@3.3.0", {
         esbuild: { format: "cjs" },
       });
 
@@ -113,7 +113,7 @@ describe("09 · Builtins and Polyfills", () => {
     });
 
     test("IIFE format wraps output in a function wrapper", async () => {
-      const result = await buildPackage("events@3.3.0", {
+      await using result = await buildPackage("events@3.3.0", {
         esbuild: { format: "iife" },
       });
 

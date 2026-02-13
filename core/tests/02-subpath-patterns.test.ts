@@ -225,14 +225,14 @@ describe("02 · Subpath Patterns and Imports", () => {
 
   describe("integration: real packages", () => {
     test("chalk@5.4.1 resolves # imports correctly", async () => {
-      const result = await buildPackage("chalk@5.4.1");
+      await using result = await buildPackage("chalk@5.4.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("rxjs@7.8.1 builds a subpath import", async () => {
-      const result = await buildPackage("rxjs@7.8.1");
+      await using result = await buildPackage("rxjs@7.8.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);

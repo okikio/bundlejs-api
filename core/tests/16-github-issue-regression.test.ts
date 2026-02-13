@@ -247,7 +247,7 @@ describe("16.1 — Subpath bare import resolution (Issues #97, #77, #58)", () =>
   describe("integration: real subpath imports", () => {
     test("date-fns/format resolves subpath export (like Issue #58 pattern)", async () => {
       // date-fns has proper subpath exports for each function
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `import { format } from "date-fns@4.1.0/format";
          console.log(format);`,
       );
@@ -258,14 +258,14 @@ describe("16.1 — Subpath bare import resolution (Issues #97, #77, #58)", () =>
 
     test("preact/hooks resolves subpath export", async () => {
       // preact has exports: { "./hooks": "./hooks/dist/hooks.module.js" }
-      const result = await buildPackage("preact@10.25.4/hooks");
+      await using result = await buildPackage("preact@10.25.4/hooks");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("@reduxjs/toolkit resolves root export (Issue #58)", async () => {
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `import { createSlice } from "@reduxjs/toolkit@2.0.1";
          export { createSlice };`,
       );
@@ -371,7 +371,7 @@ describe("16.2 — Browser field edge cases (Issues #87, #31, #92)", () => {
   describe("integration: packages with browser field variations", () => {
     test("detect-node-es@1.1.0 resolves browser entry (Issue #31 pattern)", async () => {
       // detect-node-es has: "browser": "./es5/browser.js"
-      const result = await buildPackage("detect-node-es@1.1.0");
+      await using result = await buildPackage("detect-node-es@1.1.0");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -397,7 +397,7 @@ describe("16.2 — Browser field edge cases (Issues #87, #31, #92)", () => {
 describe("16.3 — External config patterns (Issues #65, #66)", () => {
 
   test("external config excludes static import", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import { useState } from "react";
        export { useState };`,
       { esbuild: { external: ["react"] } },
@@ -415,7 +415,7 @@ describe("16.3 — External config patterns (Issues #65, #66)", () => {
 
   test("external config excludes dynamic import (Issue #66)", async () => {
     // The exact scenario from Issue #66 (tRPC)
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export async function importReact() {
          const reactDomServer = await import('react-dom/server');
          return reactDomServer;
@@ -432,7 +432,7 @@ describe("16.3 — External config patterns (Issues #65, #66)", () => {
   });
 
   test("multiple externals array works correctly", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import React from "react";
        import ReactDOM from "react-dom";
        export { React, ReactDOM };`,
@@ -447,7 +447,7 @@ describe("16.3 — External config patterns (Issues #65, #66)", () => {
   });
 
   test("wildcard pattern in external (e.g. @aws-sdk/*)", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import { S3 } from "@aws-sdk/client-s3";
        export { S3 };`,
       { esbuild: { external: ["@aws-sdk/*"] } },
@@ -470,7 +470,7 @@ describe("16.3 — External config patterns (Issues #65, #66)", () => {
 describe("16.4 — node: imports regression (Issue #2)", () => {
 
   test("node: prefix resolves without error (default external mode)", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import path from "node:path";
        import fs from "node:fs";
        export const p = path.join("a", "b");`,
@@ -482,10 +482,10 @@ describe("16.4 — node: imports regression (Issue #2)", () => {
   });
 
   test("bare 'path' and 'node:path' are treated equivalently", async () => {
-    const result1 = await buildWithEntry(
+    await using result1 = await buildWithEntry(
       `import path from "path"; export const p = path.join("a", "b");`,
     );
-    const result2 = await buildWithEntry(
+    await using result2 = await buildWithEntry(
       `import path from "node:path"; export const p = path.join("a", "b");`,
     );
 
@@ -495,7 +495,7 @@ describe("16.4 — node: imports regression (Issue #2)", () => {
   });
 
   test("node: prefix with polyfill mode", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import { Buffer } from "node:buffer";
        export const buf = Buffer.from("hello");`,
       { polyfill: true },
@@ -548,14 +548,14 @@ describe("16.5 — CDN host variants (Issue #60)", () => {
 
   describe("integration: build with different CDNs", () => {
     test("build via unpkg (default) succeeds", async () => {
-      const result = await buildPackage("tslib@2.8.1");
+      await using result = await buildPackage("tslib@2.8.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("build via esm.sh succeeds", async () => {
-      const result = await buildPackage("tslib@2.8.1", { cdn: "esm.sh" });
+      await using result = await buildPackage("tslib@2.8.1", { cdn: "esm.sh" });
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -578,7 +578,7 @@ describe("16.6 — Node builtins in transitive deps (Issue #63)", () => {
   test("package importing path/url transitively still builds", async () => {
     // Entry that simulates a package hierarchy where a transitive dep
     // uses Node builtins
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import { join } from "path";
        import { URL } from "url";
        export const resolved = join("a", "b");
@@ -590,7 +590,7 @@ describe("16.6 — Node builtins in transitive deps (Issue #63)", () => {
   });
 
   test("multiple Node builtins in one module don't cause cascading failures", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import fs from "fs";
        import path from "path";
        import crypto from "crypto";
@@ -614,7 +614,7 @@ describe("16.6 — Node builtins in transitive deps (Issue #63)", () => {
 describe("16.7 — Multiple packages / deduplication (Issue #39)", () => {
 
   test("two packages sharing tslib produce single output", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export { __awaiter } from "tslib@2.8.1";
        export { __spreadArray } from "tslib@2.8.1";`,
     );
@@ -624,7 +624,7 @@ describe("16.7 — Multiple packages / deduplication (Issue #39)", () => {
   });
 
   test("build with multiple unrelated packages", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import * as preact from "preact@10.25.4";
        import * as tslib from "tslib@2.8.1";
        export { preact, tslib };`,
@@ -652,7 +652,7 @@ describe("16.8 — Expected error / warning cases (Issues #57, #59, #70)", () =>
     // jest heavily depends on Node.js APIs (child_process, vm, etc.)
     // We expect build errors, warnings, or a throw — not silent success
     try {
-      const result = await buildPackage("jest@29.7.0");
+      await using result = await buildPackage("jest@29.7.0");
       const hasIssues = result.errors.length > 0 || result.warnings.length > 0;
       expect(hasIssues).toBe(true);
     } catch (_e) {
@@ -664,7 +664,7 @@ describe("16.8 — Expected error / warning cases (Issues #57, #59, #70)", () =>
   test("nonexistent package version produces error", async () => {
     // Issue #92: react-native@1000.0.0 doesn't exist
     try {
-      const result = await buildPackage("nonexistent-xyz-pkg-99@999.999.999");
+      await using result = await buildPackage("nonexistent-xyz-pkg-99@999.999.999");
       // If build doesn't throw, it should at least have errors
       expect(result.errors.length).toBeGreaterThan(0);
     } catch (_e) {
@@ -690,7 +690,7 @@ describe("16.9 — Complex real-world packages (Issues #41, #61, #68, #88)", () 
   test("@floating-ui/dom@1.6.13 builds successfully (tippy.js dep, Issue #68)", async () => {
     // @floating-ui/dom is a core dependency of tippy.js
     // It has clean exports and should build without issues
-    const result = await buildPackage("@floating-ui/dom@1.6.13");
+    await using result = await buildPackage("@floating-ui/dom@1.6.13");
 
     expect(result.contents.length).toBeGreaterThan(0);
     expect(result.errors.length).toBe(0);
@@ -701,7 +701,7 @@ describe("16.9 — Complex real-world packages (Issues #41, #61, #68, #88)", () 
 
   test("zustand@5.0.3 builds successfully", async () => {
     // zustand is a popular state management library with clean exports
-    const result = await buildPackage("zustand@5.0.3");
+    await using result = await buildPackage("zustand@5.0.3");
 
     expect(result.contents.length).toBeGreaterThan(0);
     expect(result.errors.length).toBe(0);
@@ -710,7 +710,7 @@ describe("16.9 — Complex real-world packages (Issues #41, #61, #68, #88)", () 
   test("use-sync-external-store@1.4.0 builds (react transitive dep)", async () => {
     // This is a transitive dep of many React-ecosystem packages
     // that appeared in Issue #97's trace
-    const result = await buildPackage("use-sync-external-store@1.4.0");
+    await using result = await buildPackage("use-sync-external-store@1.4.0");
 
     expect(result.contents.length).toBeGreaterThan(0);
     expect(result.errors.length).toBe(0);
@@ -718,7 +718,7 @@ describe("16.9 — Complex real-world packages (Issues #41, #61, #68, #88)", () 
 
   test("tslib@2.8.1 builds cleanly", async () => {
     // tslib appears in many dep trees; should be trivial
-    const result = await buildPackage("tslib@2.8.1");
+    await using result = await buildPackage("tslib@2.8.1");
 
     expect(result.contents.length).toBeGreaterThan(0);
     expect(result.errors.length).toBe(0);
@@ -798,14 +798,14 @@ describe("16.10 — Deep deps and edge cases (Issues #72, #83)", () => {
   describe("integration: packages with many transitive deps", () => {
     test("axios@1.7.9 builds without recursion issues", async () => {
       // axios has several layers of transitive deps
-      const result = await buildPackage("axios@1.7.9");
+      await using result = await buildPackage("axios@1.7.9");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("preact@10.25.4 builds without errors", async () => {
-      const result = await buildPackage("preact@10.25.4");
+      await using result = await buildPackage("preact@10.25.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
@@ -824,7 +824,7 @@ describe("16.11 — Alias and version pinning", () => {
 
   test("pinned version in config overrides latest", async () => {
     // Config specifies exact version — must be respected
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export * from "preact";`,
       {
         "package.json": {
@@ -841,7 +841,7 @@ describe("16.11 — Alias and version pinning", () => {
 
   test("esbuild alias config rewrites imports", async () => {
     // Issue #67 workaround: use alias to redirect broken packages
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export * from "preact";`,
       {
         esbuild: {
@@ -867,7 +867,7 @@ describe("16.11 — Alias and version pinning", () => {
 describe("16.12 — Loader inference edge cases", () => {
 
   test("JSON file builds correctly", async () => {
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `import pkg from "tslib@2.8.1/package.json";
        export default pkg;`,
     );
@@ -887,7 +887,7 @@ describe("16.12 — Loader inference edge cases", () => {
 describe("16.13 — Build output format variants", () => {
 
   test("ESM format produces export statements", async () => {
-    const result = await buildPackage("tslib@2.8.1", {
+    await using result = await buildPackage("tslib@2.8.1", {
       esbuild: { format: "esm" },
     });
 
@@ -899,7 +899,7 @@ describe("16.13 — Build output format variants", () => {
   });
 
   test("CJS format produces module.exports or require", async () => {
-    const result = await buildPackage("tslib@2.8.1", {
+    await using result = await buildPackage("tslib@2.8.1", {
       esbuild: { format: "cjs" },
     });
 
@@ -908,7 +908,7 @@ describe("16.13 — Build output format variants", () => {
   });
 
   test("IIFE format wraps in function", async () => {
-    const result = await buildPackage("tslib@2.8.1", {
+    await using result = await buildPackage("tslib@2.8.1", {
       esbuild: { format: "iife", globalName: "tslib" },
     });
 

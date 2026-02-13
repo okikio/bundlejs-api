@@ -293,28 +293,28 @@ describe("01 · Conditional Exports", () => {
 
   describe("integration: real packages", () => {
     test("preact@10.25.4 builds successfully for browser", async () => {
-      const result = await buildPackage("preact@10.25.4");
+      await using result = await buildPackage("preact@10.25.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("solid-js@1.9.4 builds for browser", async () => {
-      const result = await buildPackage("solid-js@1.9.4");
+      await using result = await buildPackage("solid-js@1.9.4");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("uuid@11.0.5 builds for browser", async () => {
-      const result = await buildPackage("uuid@11.0.5");
+      await using result = await buildPackage("uuid@11.0.5");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("chalk@5.4.1 builds for browser", async () => {
-      const result = await buildPackage("chalk@5.4.1");
+      await using result = await buildPackage("chalk@5.4.1");
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);

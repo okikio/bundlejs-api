@@ -156,7 +156,7 @@ describe("10 · Dual Package Hazard", () => {
   // ---------------------------------------------------------------------------
   describe("integration: format affects output wrapping", () => {
     test("10.4 — ESM output uses export syntax", async () => {
-      const result = await buildPackage("preact@10.25.4", {
+      await using result = await buildPackage("preact@10.25.4", {
         esbuild: { format: "esm" },
       });
 
@@ -165,7 +165,7 @@ describe("10 · Dual Package Hazard", () => {
     });
 
     test("10.4 — CJS output uses module.exports or require", async () => {
-      const result = await buildPackage("preact@10.25.4", {
+      await using result = await buildPackage("preact@10.25.4", {
         esbuild: { format: "cjs" },
       });
 
@@ -177,7 +177,7 @@ describe("10 · Dual Package Hazard", () => {
     });
 
     test("10.4 — IIFE output wraps in function", async () => {
-      const result = await buildPackage("preact@10.25.4", {
+      await using result = await buildPackage("preact@10.25.4", {
         esbuild: { format: "iife" },
       });
 
@@ -189,10 +189,10 @@ describe("10 · Dual Package Hazard", () => {
 
   describe("integration: minification toggle", () => {
     test("10.7 — unminified output is larger", async () => {
-      const minified = await buildPackage("preact@10.25.4", {
+      await using minified = await buildPackage("preact@10.25.4", {
         esbuild: { minify: true },
       });
-      const unminified = await buildPackage("preact@10.25.4", {
+      await using unminified = await buildPackage("preact@10.25.4", {
         esbuild: { minify: false },
       });
 

@@ -655,13 +655,13 @@ describe("17.6 — esm.sh integration", () => {
 
   describe("integration: build via esm.sh", () => {
     test("preact@10.25.4 builds via esm.sh", async () => {
-      const result = await buildPackage("preact@10.25.4", { cdn: "esm.sh" });
+      await using result = await buildPackage("preact@10.25.4", { cdn: "esm.sh" });
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
 
     test("tslib@2.8.1 builds via esm.sh", async () => {
-      const result = await buildPackage("tslib@2.8.1", { cdn: "esm.sh" });
+      await using result = await buildPackage("tslib@2.8.1", { cdn: "esm.sh" });
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);
     });
@@ -739,7 +739,7 @@ describe("17.8 — CSS imports in packages", () => {
     // The build may fail with a resolution error, which is the expected
     // behavior when the referenced file is missing from VFS.
     try {
-      const result = await buildWithEntry(
+      await using result = await buildWithEntry(
         `import styles from "./style.css";
          export default styles;`,
       );
@@ -774,8 +774,8 @@ describe("17.8 — CSS imports in packages", () => {
 
 describe("17.9 — Tree-shaking quality", () => {
   test("named export produces smaller bundle than full re-export", async () => {
-    const full = await buildPackage("preact@10.25.4");
-    const selective = await buildWithEntry(
+    await using full = await buildPackage("preact@10.25.4");
+    await using selective = await buildWithEntry(
       `export { h } from "preact@10.25.4";`,
     );
 
@@ -788,8 +788,8 @@ describe("17.9 — Tree-shaking quality", () => {
 
   test("unused export eliminated with sideEffects: false", async () => {
     // tslib declares sideEffects: false, so unused helpers get dropped
-    const full = await buildPackage("tslib@2.8.1");
-    const selective = await buildWithEntry(
+    await using full = await buildPackage("tslib@2.8.1");
+    await using selective = await buildWithEntry(
       `export { __awaiter } from "tslib@2.8.1";`,
     );
 
@@ -1075,7 +1075,7 @@ describe("17.13 — Electron and react-native remapping", () => {
 describe("17.14 — VFS prefix resolution", () => {
   test("absolute path entry point builds correctly", async () => {
     // This tests the VFS plugin's handler 2 (absolute paths)
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `export const greeting = "hello world";`,
     );
 
@@ -1088,7 +1088,7 @@ describe("17.14 — VFS prefix resolution", () => {
 
   test("relative import between VFS files", async () => {
     // Tests handler 3 (relative paths from VFS namespace)
-    const result = await buildWithEntry(
+    await using result = await buildWithEntry(
       `const x = 42;
        export default x;`,
     );
