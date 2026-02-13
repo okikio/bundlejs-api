@@ -226,9 +226,11 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
       ...build_result
     });
 
-    // Disposal is idempotent — safe to call multiple times.
-    // The flag prevents double-dispose if the caller calls both
-    // `[Symbol.dispose]()` and later `[Symbol.asyncDispose]()`.
+    // ── Attach Explicit Resource Management symbols ────────────────────
+    //
+    // Disposal is idempotent — `AsyncDisposableStack.disposeAsync()`
+    // no-ops on subsequent calls, so it's safe if the caller invokes
+    // both `[Symbol.dispose]()` and `[Symbol.asyncDispose]()`.
     return Object.assign(formatted, {
       [Symbol.dispose]() { void disposables.disposeAsync() },
       [Symbol.asyncDispose]() { return disposables.disposeAsync() },
