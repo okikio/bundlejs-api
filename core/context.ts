@@ -19,17 +19,25 @@ import { BUILD_ERROR, INIT_LOADING, LOGGER_ERROR, dispatchEvent } from "./config
 import { DEFAULT_CDN_HOST, getCDNUrl } from "./utils/cdn-format.ts";
 
 export interface BuildContext extends ESBUILD.BuildContext {
-  state: Context<LocalState>
+  state: Context<LocalState>;
+  [Symbol.asyncDispose](): Promise<void>;
 };
 
 export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem): Promise<BuildContext> {
   if (!fromContext("initialized"))
     dispatchEvent(INIT_LOADING);
 
+  // -- Per-build resource lifecycle -------------------------------------------
+  const disposables = new AsyncDisposableStack();
+  const abortController = new AbortController();
+  disposables.defer(() => abortController.abort());
+
   const StateContext = new Context<LocalState>({
     filesystem: Context.opaque(await filesystem),
     assets: [],
     config: Context.opaque(createConfig("build", opts)),
+    disposables: Context.opaque(disposables),
+    abortSignal: Context.opaque(abortController.signal),
 
     failedExtensionChecks: new Set(),
     failedManifestUrls: new Set(),
@@ -105,7 +113,12 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
 
     return {
       state: StateContext,
-      ...context_result
+      ...context_result,
+
+      // Enable `await using ctx = await context(...)` for automatic cleanup
+      [Symbol.asyncDispose]() {
+        return dispose(this as unknown as BuildContext);
+      },
     }
   } catch (e) {
     const err = e as Error;
@@ -193,6 +206,12 @@ export async function dispose(build_ctx: BuildContext): Promise<void> {
   try {
     try {
       await build_ctx?.dispose?.();
+
+      // Dispose per-build resources (aborts background fetches, etc.)
+      const disposables = fromContext("disposables", build_ctx.state);
+      if (disposables) {
+        await disposables.disposeAsync();
+      }
     } catch (e) {
       const fail = e as ESBUILD.BuildFailure;
       if (fail.errors) {

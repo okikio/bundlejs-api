@@ -76,10 +76,23 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
   if (!fromContext("initialized"))
     dispatchEvent(INIT_LOADING);
 
+  // -- Per-build resource lifecycle -------------------------------------------
+  // The disposable stack collects cleanup callbacks (abort controllers,
+  // WASM handles, workers, …) that run in LIFO order when the build
+  // finishes.  The fetch abort controller is the first resource
+  // registered so it is the *last* thing torn down.
+  const disposables = new AsyncDisposableStack();
+  const abortController = new AbortController();
+
+  // Abort background stale-while-revalidate fetches when the build ends
+  disposables.defer(() => abortController.abort());
+
   const StateContext = new Context<LocalState>({
     filesystem: Context.opaque(await filesystem),
     assets: [],
     config: Context.opaque(createConfig("build", opts)),
+    disposables: Context.opaque(disposables),
+    abortSignal: Context.opaque(abortController.signal),
 
     failedExtensionChecks: new Set(),
     failedManifestUrls: new Set(),
@@ -164,6 +177,9 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
     }
 
     throw e;
+  } finally {
+    // Dispose per-build resources (aborts background fetches, etc.)
+    await disposables.disposeAsync();
   }
 }
 

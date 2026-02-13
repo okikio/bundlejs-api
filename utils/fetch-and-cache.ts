@@ -95,6 +95,21 @@ export interface FetchOptions {
    * Default: 'normal'
    */
   cacheMode?: 'normal' | 'force' | 'reload' | 'no-store';
+  /**
+   * Abort signal scoped to the build's lifetime.
+   *
+   * When provided, background stale-while-revalidate refreshes carry this
+   * signal so they are cancelled when the build finishes.  This prevents
+   * Deno's test-runner sanitizer from detecting leaked `fetchCancelHandle`
+   * or `op_cache_put` resources.
+   *
+   * The signal is **only** applied to background refreshes — primary
+   * (awaited) fetches are not affected, so in-progress builds won't be
+   * interrupted.
+   *
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
+   */
+  signal?: AbortSignal;
 }
 
 // ============================================================================
@@ -179,12 +194,25 @@ async function storeInCache(
   originalUrl: string,
   finalUrl: string,
   response: Response,
-  cacheApi?: Cache
+  cacheApi?: Cache,
+  signal?: AbortSignal,
 ): Promise<void> {
   // Only cache successful GET responses
   // Note: response.ok is false for 3xx, but fetch with redirect:'follow' 
   // resolves with the final 2xx response, so we're caching the final response
-  if (!response.ok) return;
+  if (!response.ok) {
+    // Cancel unconsumed body to prevent resource leak
+    await response.body?.cancel();
+    return;
+  }
+
+  // If the build finished (signal aborted) between fetch-complete and
+  // cache-write, skip the write to avoid starting an `op_cache_put` that
+  // would outlive the caller.
+  if (signal?.aborted) {
+    await response.body?.cancel();
+    return;
+  }
 
   try {
     if (SUPPORTS_CACHE_API && cacheApi) {
@@ -200,6 +228,8 @@ async function storeInCache(
       redirectMap.set(originalUrl, finalUrl);
     }
   } catch (err) {
+    // Swallow errors that occur because the signal fired mid-write
+    if (signal?.aborted) return;
     console.error(`[cache] Failed to store response for ${finalUrl}:`, err);
   }
 }
@@ -219,6 +249,9 @@ function doFetch(
     });
     
     if (!response.ok) {
+      // Cancel the body before throwing — prevents leaked response streams
+      // when the caller never reads the body of a failed request.
+      await response.body?.cancel();
       throw new Error(`HTTP ${response.status}: ${response.statusText} for ${url}`);
     }
     
@@ -250,22 +283,48 @@ async function backgroundRefresh(
   retries: number,
   cacheApi?: Cache
 ): Promise<void> {
+  // Bail early if already aborted (e.g. build finished before refresh started)
+  if (init.signal?.aborted) return;
+
   try {
     // Try original URL first — this allows version discovery for @latest etc.
     const response = await doFetch(originalUrl, init, retries);
+
+    // Check abort *after* fetch completes but *before* the cache write.
+    // Avoids starting an `op_cache_put` that would outlive the caller.
+    if (init.signal?.aborted) {
+      await response.body?.cancel();
+      return;
+    }
+
     const resolvedUrl = response.url || originalUrl;
-    await storeInCache(originalUrl, resolvedUrl, response, cacheApi);
+    await storeInCache(originalUrl, resolvedUrl, response, cacheApi, init.signal ?? undefined);
   } catch (err) {
+    // Silently swallow abort errors — expected during build cleanup
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    if (init.signal?.aborted) return;
+
     // If original URL failed with 404 and we have a different final URL,
     // try the final URL (handles extension probing case)
     const is404 = err instanceof Error && err.message.includes("404");
 
     if (is404 && originalUrl !== finalUrl) {
       try {
+        if (init.signal?.aborted) return;
+
         const response = await doFetch(finalUrl, init, retries);
+
+        if (init.signal?.aborted) {
+          await response.body?.cancel();
+          return;
+        }
+
         const resolvedUrl = response.url || finalUrl;
-        await storeInCache(finalUrl, resolvedUrl, response, cacheApi);
+        await storeInCache(finalUrl, resolvedUrl, response, cacheApi, init.signal ?? undefined);
       } catch (fallbackErr) {
+        if (fallbackErr instanceof DOMException && fallbackErr.name === "AbortError") return;
+        if (init.signal?.aborted) return;
+
         // Both failed — log but don't throw (background operation)
         console.error(`[cache] Background refresh failed for ${finalUrl}:`, fallbackErr);
       }
@@ -318,9 +377,20 @@ export async function fetchWithCache(
       const finalUrl = resolveRedirect(url);
       
       // Stale-while-revalidate: return cached, refresh in background.
-      // Fire-and-forget — errors are logged inside backgroundRefresh.
+      //
+      // When an AbortSignal is provided (per-build lifecycle), the signal
+      // is threaded into the background fetch so it is cancelled when the
+      // build finishes — preventing Deno's sanitizer from detecting
+      // leaked `fetchCancelHandle` / `op_cache_put` resources.
+      //
+      // When no signal is provided, the refresh is plain fire-and-forget
+      // — fine for standalone / REPL usage where leak detection isn't a
+      // concern.
       if (cacheMode === 'normal') {
-        void backgroundRefresh(url, finalUrl, init, retries, cacheApi);
+        const refreshInit: RequestInit = options.signal
+          ? { ...init, signal: options.signal }
+          : init;
+        void backgroundRefresh(url, finalUrl, refreshInit, retries, cacheApi);
       }
 
       // Clone response if requested (Cache API responses can be reused, but in-memory ones cannot)
@@ -433,7 +503,7 @@ export async function fetchHeaders(
   contentType: string | null;
   fromCache: boolean;
 }> {
-  const { init = {}, retries = 0, cacheMode = 'normal' } = options;
+  const { init = {}, retries = 0, cacheMode = 'normal', signal } = options;
   
   // Try HEAD first
   try {
@@ -442,6 +512,7 @@ export async function fetchHeaders(
       retries: 0,
       clone: false,
       cacheMode,
+      signal,
     });
     
     const contentType = response.headers.get("content-type");
@@ -454,6 +525,7 @@ export async function fetchHeaders(
       retries,
       clone: false,
       cacheMode: 'no-store', // Don't cache partial responses
+      signal,
     });
     
     const contentType = response.headers.get("content-type");

@@ -77,15 +77,16 @@ export interface HttpResolutionState<T> extends LocalState<T> {
  */
 export async function fetchPkg(
   url: string, 
-  opts: { fetchOpts?: RequestInit; retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store' } = {}
+  opts: { fetchOpts?: RequestInit; retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store'; signal?: AbortSignal } = {}
 ): Promise<{ url: string; content: Uint8Array; contentType: string | null }> {
-  const { fetchOpts, retry, cacheMode = 'normal' } = opts;
+  const { fetchOpts, retry, cacheMode = 'normal', signal } = opts;
   
   try {
     const result = await fetchContent(url, {
       init: fetchOpts,
       retries: retry,
       cacheMode,
+      signal,
     });
 
     // Build descriptive log message
@@ -118,10 +119,10 @@ export async function fetchPkg(
  */
 export async function fetchPkgHeaders(
   url: string, 
-  opts: { retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store' } = {}
+  opts: { retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store'; signal?: AbortSignal } = {}
 ): Promise<{ url: string; contentType: string | null }> {
   try {
-    const result = await fetchHeaders(url, { retries: opts.retry, cacheMode: opts.cacheMode });
+    const result = await fetchHeaders(url, { retries: opts.retry, cacheMode: opts.cacheMode, signal: opts.signal });
     return {
       url: result.url,
       contentType: result.contentType,
@@ -163,7 +164,8 @@ export async function fetchAssets<T>(
   const matches = Array.from(code.matchAll(rgx)) as RegExpMatchArray[];
 
   const promises = matches.map(async ([, assetURL]) => {
-    const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL));
+    const signal = fromContext("abortSignal", StateContext);
+    const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL), { signal });
 
     // Store asset in virtual file system for bundle analyzer
     if (FileSystem) {
@@ -229,6 +231,7 @@ export async function determineExtension<T>(
     ? fromContext("failedExtensionChecks", StateContext)
     : null;
   const failedSet = failedExtChecks ?? new Set<string>();
+  const signal = StateContext ? fromContext("abortSignal", StateContext) : undefined;
 
   let firstError: Error | undefined;
 
@@ -244,10 +247,10 @@ export async function determineExtension<T>(
       // Background refresh with extensionless URLs can 404 if the CDN doesn't consistently
       // redirect/resolve extensionless paths.
       if (headersOnly) {
-        const { url, contentType } = await fetchPkgHeaders(testUrl, { cacheMode: 'reload' });
+        const { url, contentType } = await fetchPkgHeaders(testUrl, { cacheMode: 'reload', signal });
         return { url, contentType };
       } else {
-        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal' });
+        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal', signal });
         return { url, contentType, content };
       }
     } catch (e) {

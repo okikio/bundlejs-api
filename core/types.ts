@@ -79,6 +79,28 @@ export interface LocalState<T = unknown> extends TarballState, record {
   filesystem: IFileSystem<T>,
 
   /**
+   * Per-build resource disposal stack.
+   *
+   * Registers cleanup callbacks (abort controllers, WASM handles, workers,
+   * etc.) that run when the build finishes or the context is disposed.
+   * Resources are released in **LIFO** order.
+   *
+   * @see https://github.com/tc39/proposal-explicit-resource-management
+   */
+  disposables: AsyncDisposableStack,
+
+  /**
+   * Abort signal scoped to this build’s lifetime.
+   *
+   * Threaded through background fetch operations so they are cancelled
+   * when the build finishes. Prevents resource leaks from fire-and-forget
+   * stale-while-revalidate refreshes.
+   *
+   * @see https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
+   */
+  abortSignal: AbortSignal,
+
+  /**
    * Versions
    */
   versions: Map<string, string>,
