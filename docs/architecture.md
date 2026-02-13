@@ -215,6 +215,22 @@ Runs first because aliases must rewrite the import path *before* any other plugi
 - Also handles **npm-style aliases** from `package.json` dependencies (e.g., `"react": "npm:preact@10"`)
 - By running first, ensures all subsequent resolution operates on the *intended* package name
 
+**Concrete trace — aliasing React to Preact:**
+
+```typescript
+// User config:
+{ alias: { "react": "preact/compat", "react-dom": "preact/compat" } }
+
+// Source code:
+import { useState } from "react";            // ← esbuild calls AliasPlugin.onResolve
+
+// AliasPlugin sees "react" matches alias table → rewrites to "preact/compat"
+// Returns: { path: "preact/compat", namespace: "" }
+// esbuild re-enters plugin chain with "preact/compat" → CdnPlugin handles it
+```
+
+> **Think of it like a mail forwarding service.** A letter addressed to "react" arrives, the alias table says "forward all react mail to preact/compat", so the letter is re-addressed and re-delivered. The downstream plugins never know the original name.
+
 ---
 
 ### 2. ExternalPlugin — *Handle Node.js builtins*
@@ -230,6 +246,27 @@ Runs second to catch Node.js built-in modules (like `fs`, `path`, `crypto`) *bef
 
 Polyfill mappings come from [utils/runtime-builtins.ts](../utils/runtime-builtins.ts). The `node:` prefix (e.g., `import "node:fs"`) is stripped before matching.
 
+**Concrete trace — `polyfill: true` for `crypto`:**
+
+```
+import { createHash } from "crypto";
+   │
+   ▼  ExternalPlugin.onResolve
+   Is "crypto" in NODE_BUILTINS?  → YES
+   Is polyfill enabled?           → YES
+   │
+   ▼  Look up polyfill mapping:
+   builtinMap["crypto"] = "crypto-browserify"
+   │
+   ▼  Rewrite:
+   Return { path: "crypto-browserify", namespace: "" }
+   │
+   ▼  esbuild re-enters plugin chain → CdnPlugin resolves "crypto-browserify"
+      from CDN → fetches browser-compatible implementation
+```
+
+With `polyfill: false` (default), the same import returns `{ external: true }` — esbuild emits a bare `import "crypto"` in the output, and the ExternalPlugin's `onLoad` serves `export default {}` so references don't break.
+
 ---
 
 ### 3. TarballPlugin — *Extract packages from `.tgz` archives (HTTP + VFS)*
@@ -241,6 +278,27 @@ Handles tarball-based package sources from **three branches**:
 2. **VFS tarball paths** — absolute paths in the in-memory filesystem (e.g., `/packages/my-lib.tgz`)
 3. **Self-reference imports** — when code *inside* an extracted tarball imports its own package name, resolves against the tarball's manifest instead of fetching from CDN
 
+**Concrete example — self-reference inside a tarball:**
+
+```
+  Tarball: @tanstack/react-query@7988 extracted to /__tarballs__/abc123/
+
+  Inside /__tarballs__/abc123/src/core.js:
+    import { QueryClient } from "@tanstack/react-query";  ← self-reference!
+       │
+       ▼  TarballPlugin.onResolve detects:
+       Importer is inside /__tarballs__/abc123/
+       tarballMounts has entry for abc123 with name "@tanstack/react-query"
+       The import specifier matches the tarball's own package name!
+       │
+       ▼  Resolve against the tarball's own manifest’s exports
+       (instead of fetching from CDN — avoids version mismatch)
+       │
+       ▼  Return: /__tarballs__/abc123/dist/index.js (VFS path)
+```
+
+> **Why this matters:** Without self-reference handling, a tarball-extracted package that imports itself by name would trigger a CDN fetch for the *published* version — potentially a different version than the tarball. This causes subtle inconsistencies.
+
 **Must be registered before VFS.** Without this ordering, a file like `/packages/my-lib.tgz` would be claimed by the VirtualFileSystemPlugin as a raw blob before the TarballPlugin could intercept and extract it.
 
 **Detection** is delegated to [utils/archive-detect.ts](../utils/archive-detect.ts):
@@ -249,11 +307,58 @@ Handles tarball-based package sources from **three branches**:
 
 The tar plugin has **zero extension-matching logic of its own** — add a new tarball extension to `archive-detect` and it's automatically recognized.
 
+**Concrete example — URL splitting for a `pkg.pr.new` tarball:**
+
+```
+Input URL: https://pkg.pr.new/@tanstack/react-query@7988
+
+  findTarballSplitInPathname("/tanstack/react-query@7988")
+       │
+       ▼  Walk each segment:
+       "tanstack"         → detectArchiveFromPathHint() → null  (not a tarball)
+       "react-query@7988" → getCDNStyle() checks origin → "tarball" ✓
+       │
+       ▼  Split result:
+       tarballPath = "https://pkg.pr.new/@tanstack/react-query@7988"
+       subpath     = "/"     (nothing after the tarball segment)
+
+Input URL: https://registry.npmjs.org/react/-/react-19.0.0.tgz/package/index.js
+
+       "react"            → null
+       "react-19.0.0.tgz" → isTarballPath() → ".tgz" extension ✓
+       │
+       ▼  Split result:
+       tarballPath = "https://registry.npmjs.org/react/-/react-19.0.0.tgz"
+       subpath     = "/package/index.js"
+```
+
 **Extraction pipeline:**
 - `fetchAndExtractTarball(source, …)` accepts both HTTP URLs (fetched via `fetchWithCache`) and VFS paths (read via `getFile`, wrapped in `new Response()`)
 - Archive format detection uses `detectArchiveFromResponse()` (multi-signal: extension, headers, magic bytes, ustar signature)
 - Extracts into VFS under `/__tarballs__/<sha256-hash>/`
 - **Content-addressed caching** via `getTarballKey()` (SHA-256 of the source, first 16 hex chars) ensures the same tarball is fetched only once per build
+
+**Concrete example — VFS state after extracting `react-19.0.0.tgz`:**
+
+```
+  VFS contents after extraction:
+  ┌──────────────────────────────────────────────────────┐
+  │  /__tarballs__/a1b2c3d4e5f6g7h8/                     │
+  │    ├── package.json          (manifest)              │
+  │    ├── index.js              (entry from "main")     │
+  │    ├── jsx-runtime.js                                │
+  │    ├── jsx-dev-runtime.js                            │
+  │    ├── cjs/                                          │
+  │    │   ├── react.production.js                       │
+  │    │   └── react.development.js                      │
+  │    └── LICENSE                                       │
+  └──────────────────────────────────────────────────────┘
+
+  Hash: SHA-256("https://registry.npmjs.org/react/-/react-19.0.0.tgz")
+        → first 16 hex chars → "a1b2c3d4e5f6g7h8"
+```
+
+> **Like a zip file mounted as a drive.** The tarball is fetched once, unpacked into a virtual directory, and from that point on every file read is a fast in-memory lookup — no more network requests for that package.
 
 **Entry point resolution** uses the shared `resolveAndProbeEntry()` function — a two-step pipeline that combines `resolvePackageEntry()` (from [core/utils/cdn-resolution.ts](../core/utils/cdn-resolution.ts)) with VFS extension probing via `resolveVfsPath()`:
 
@@ -299,6 +404,43 @@ The plugin registers three `onResolve` handlers with carefully scoped filters:
 - Relative path handling is limited to **VFS-namespace importers** — avoids intercepting relative imports inside HTTP-fetched modules (those belong to HttpPlugin)
 - **Bare imports** (no `.` or `/` prefix) skip this plugin entirely → fall through to CDN
 
+**Concrete example — resolving `./utils` inside a tarball-extracted package:**
+
+Imagine this VFS state after extracting a tarball:
+
+```
+  /__tarballs__/a1b2c3d4/
+    ├── package.json
+    ├── index.ts               ← entry point
+    ├── utils.ts               ← what we want to find
+    └── helpers/
+        └── index.tsx
+```
+
+```
+  import "./utils" from index.ts
+     │
+     ▼  resolveVfsPath("/__tarballs__/a1b2c3d4/utils")
+     │
+     Step 1: Exact match ─ does "/utils" exist?      → NO
+     Step 2: Extension probing:
+             /utils.tsx ?                              → NO
+             /utils.ts  ?                              → YES ✓
+             │
+             ▼  Return "/__tarballs__/a1b2c3d4/utils.ts"
+
+  import "./helpers" from index.ts
+     │
+     ▼  resolveVfsPath("/__tarballs__/a1b2c3d4/helpers")
+     │
+     Step 1: Exact match ─ does "/helpers" exist?     → NO  (it's a directory)
+     Step 2: Extension probing ─ /helpers.tsx? .ts?    → all NO
+     Step 3: Index fallback:
+             /helpers/index.tsx ?                       → YES ✓
+             │
+             ▼  Return "/__tarballs__/a1b2c3d4/helpers/index.tsx"
+```
+
 **Extension probing** in `resolveVfsPath()` follows a three-step algorithm:
 
 1. **Exact match** — if the file exists at the given path, return it
@@ -322,6 +464,63 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
 3. **Manifest field remapping** — applies platform-specific path rewrites from `package.json` fields (`"browser"`, `"react-native"`, `"electron"`) to relative imports *within* a package, using the `packageBaseUrl` passed from CdnPlugin. See [Manifest Field Remapping](#manifest-field-remapping-for-relative-imports).
 4. **Extension probing** — when a relative import has no extension, tries **18 combinations** (2 path variants × 9 extensions). Failed probes are cached in `failedExtensionChecks`.
 5. **Registry mode propagation** — when the configured CDN host is a *registry*, bare imports encountered inside HTTP-fetched files are resolved through the registry rather than following the parent file's CDN origin.
+
+**Concrete trace — resolving a relative import after a CDN redirect:**
+
+```
+  CdnPlugin resolves "react" → https://unpkg.com/react@19.0.0/index.js
+     │
+     ▼  HttpPlugin.onLoad fetches the URL
+     HTTP 302: https://unpkg.com/react@19.0.0/index.js
+              → https://unpkg.com/react@19.0.0/cjs/react.production.min.js
+     │
+     ▼  Store final URL in pluginData.url
+     pluginData.url = "https://unpkg.com/react@19.0.0/cjs/react.production.min.js"
+     │
+     ▼  Inside that file: import "../jsx-runtime"
+     HttpPlugin.onResolve receives { path: "../jsx-runtime", pluginData }
+     │
+     ▼  Resolve relative to FINAL url (not original!):
+     urlJoin("...cjs/react.production.min.js", "../", "jsx-runtime")
+     = "https://unpkg.com/react@19.0.0/jsx-runtime"
+     │
+     ▼  No extension? Extension probing begins:
+     /jsx-runtime.js    → 200 ✓  (first hit wins)
+     │
+     ▼  Return { path: "https://unpkg.com/react@19.0.0/jsx-runtime.js",
+              namespace: "http-url" }
+```
+
+> **Why the final URL matters:** If we resolved against the *original* URL (`/index.js`), the `../` would navigate wrong. CDN redirects can change directory depth, so we must track where we actually ended up.
+
+**Concrete trace — manifest field remapping to `false`:**
+
+```json
+// readable-stream's package.json:
+{ "browser": { "util": false, "./lib/stream.js": "./lib/stream-browser.js" } }
+```
+
+```
+  Inside readable-stream: import "util"
+     │
+     ▼  HttpPlugin.onResolve
+     applyManifestRemappings("util", manifest) → false
+     │
+     ▼  Check remapFalse.importRemapFalse (default: "stub")
+     │
+     ▼  Return { path: "util", namespace: "excluded-module" }
+     │
+     ▼  HttpPlugin.onLoad for excluded-module namespace:
+     Return { contents: "export default {}", loader: "js" }
+     + emit warning: "Module 'util' excluded via browser field"
+
+  Inside readable-stream: import "./lib/stream.js"
+     │
+     ▼  applyManifestRemappings("./lib/stream.js", manifest)
+     → "./lib/stream-browser.js"  (remapped, not excluded)
+     │
+     ▼  Fetch the browser-specific file instead
+```
 
 **Per-module exclusion handling:** When a manifest field remapping maps a module to `false`, the HttpPlugin respects `remapFalse.importRemapFalse`:
 
@@ -390,9 +589,88 @@ The flow: resolve version → fetch manifest → construct tarball URL → route
 
 2. **`pluginData` propagation** — when entry code uses direct registry tarball URLs (e.g., `https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz`) *without* an explicit `cdn: "npm.registry"` config, the TarballPlugin stores the source URL in `pluginData.tarballUrl`. The CdnPlugin detects this on subsequent bare imports and overrides the CDN origin to the tarball's registry. Because esbuild flows `pluginData` through the VFS `onLoad` → `onResolve` chain, the propagation is **self-sustaining** across the entire transitive dependency tree.
 
+**Concrete trace — pluginData propagation across 3 levels of dependencies:**
+
+```
+  Entry code: import "https://registry.npmjs.org/express/-/express-4.21.0.tgz"
+     │
+     ▼  TarballPlugin extracts to VFS, stores:
+     pluginData = { tarballUrl: "https://registry.npmjs.org/express/-/..." }
+     │
+     ▼  Resolved: /__tarballs__/abc123/index.js  (VFS namespace)
+     │
+     ▼  VFSPlugin.onLoad reads file, esbuild finds: import "body-parser"
+     esbuild calls onResolve with SAME pluginData from parent
+     │
+     ▼  CdnPlugin.onResolve receives pluginData.tarballUrl
+     Detects registry origin → overrides CDN to registry.npmjs.org
+     Fetches body-parser tarball (not individual CDN files)
+     Stores SAME tarballUrl pattern in new pluginData
+     │
+     ▼  body-parser's code: import "raw-body"
+     Same propagation → raw-body also fetched from registry
+     │
+     ... and so on through the entire dependency tree
+```
+
+> **Like a genetic trait.** The first tarball URL "infects" every descendant import with registry-mode behavior. No global config change needed — the registry preference propagates through esbuild's own pluginData forwarding.
+
 **Scoped registry support.** The CdnPlugin normalizes `BuildConfig.registry` at init time via `normalizeRegistryConfig()` (from [utils/npmrc.ts](../utils/npmrc.ts)). For each bare import, `getRegistryForPackage()` resolves the appropriate registry by scope — e.g., `@jsr/std__path` routes to `https://npm.jsr.io` while `react` routes to the default registry.
 
+**Concrete example — scoped registry config:**
+
+```typescript
+// User config:
+{
+  cdn: "npm.registry",
+  registry: {
+    defaultRegistry: "https://registry.npmjs.org",
+    scopedRegistries: {
+      "@jsr":     "https://npm.jsr.io",
+      "@myco":    "https://npm.pkg.github.com",
+    }
+  }
+}
+```
+
+```
+  import "react"          → getRegistryForPackage("react")
+                             No scope match → default: registry.npmjs.org
+
+  import "@jsr/std__path" → getRegistryForPackage("@jsr/std__path")
+                             Scope "@jsr" matches → npm.jsr.io
+
+  import "@myco/auth"     → getRegistryForPackage("@myco/auth")
+                             Scope "@myco" matches → npm.pkg.github.com
+```
+
+Alternatively, pass raw `.npmrc` content and let `normalizeRegistryConfig()` parse it:
+
+```typescript
+{ registry: "@jsr:registry=https://npm.jsr.io\nregistry=https://registry.npmjs.org" }
+```
+
 **Auth tokens.** The `.npmrc` parser supports opt-in auth token extraction via `parseNpmrc(content, { extractAuth: true })`. When enabled, `getAuthHeaderForRegistry(url, config)` resolves a URL to a `Bearer <token>` header using longest-prefix matching. Auth is disabled by default — callers must explicitly opt in.
+
+**Concrete example — auth token resolution:**
+
+```
+# .npmrc content:
+@myco:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=ghp_abc123
+```
+
+```typescript
+const config = parseNpmrc(npmrcContent, { extractAuth: true });
+
+getAuthHeaderForRegistry("https://npm.pkg.github.com/@myco/auth", config)
+  → "Bearer ghp_abc123"   // Longest-prefix match: //npm.pkg.github.com/
+
+getAuthHeaderForRegistry("https://registry.npmjs.org/react", config)
+  → undefined              // No matching auth token
+```
+
+> **Security boundary:** Auth extraction is off by default because bundlejs is a web-facing service. When embedding `@bundle/core` in a private CI tool, opt in with `{ extractAuth: true }` to authenticate against private registries.
 
 
 ## How Resolution Works
@@ -520,6 +798,35 @@ Three fields follow the same object-mapping pattern, processed in priority order
 
 The `REMAPPING_FIELDS` constant defines this ordering. When both `"browser"` and `"react-native"` conditions are active, the more-specific field wins.
 
+**Concrete trace — platform remapping with priority resolution:**
+
+```json
+// Package manifest for "cross-platform-lib":
+{
+  "main": "./lib/index.js",
+  "browser":       { "./lib/net.js": "./lib/net-browser.js" },
+  "react-native":  { "./lib/net.js": "./lib/net-native.js" }
+}
+```
+
+```
+  Importing "./lib/net.js" inside cross-platform-lib:
+     │
+     ▼  applyManifestRemappings("./lib/net.js", manifest, activeConditions)
+     │
+     Active conditions include both "browser" and "react-native"
+     │
+     Iterate REMAPPING_FIELDS in priority order:
+       1. "react-native" ─ field exists? YES → maps "./lib/net.js"?
+          YES → "./lib/net-native.js"  ✂ first match wins
+       2. "electron"      ─ (skipped, already found)
+       3. "browser"       ─ (skipped, already found)
+     │
+     ▼  Result: "./lib/net-native.js"  (react-native wins over browser)
+```
+
+> **Priority matters in practice:** Without this ordering, a React Native app bundling `readable-stream` would get the browser shim instead of the native implementation — subtly wrong behavior that's hard to debug.
+
 If a remapping maps to `false`, the module is handled by the [exclusion system](#remapping-and-exclusion-behavior) rather than fetched.
 
 
@@ -536,6 +843,38 @@ bundlejs reads `sideEffects` from `package.json` (via [core/utils/side-effects.t
 | Not present | Assume everything has side effects (conservative) |
 
 Glob patterns are normalized to `**/*.css` to match anywhere in the package tree. Side-effects analysis only applies to **JS-like files** (`.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.jsx`, `.mts`, `.cts`, or no extension) — CSS and asset files are excluded because they *must* execute to have effect.
+
+**Concrete example — tree-shaking `lodash-es`:**
+
+```typescript
+// User code:
+import { debounce } from "lodash-es";
+```
+
+```json
+// lodash-es/package.json:
+{ "sideEffects": false }
+```
+
+```
+  lodash-es has 600+ modules.
+  sideEffects: false tells esbuild: "every file is safe to remove if unused."
+
+  esbuild resolution:
+    "lodash-es" → exports["."] → ./lodash.js  (barrel file re-exporting everything)
+     │
+     ▼  lodash.js: export { default as debounce } from "./debounce.js";
+                  export { default as throttle } from "./throttle.js";
+                  export { default as map } from "./map.js";
+                  ... 600+ re-exports
+     │
+     ▼  User only imports { debounce }.
+     sideEffects: false → esbuild drops throttle.js, map.js, and 598 others.
+     │
+     ▼  Final bundle: only debounce.js + its internal deps (~1 kB vs ~80 kB)
+```
+
+Without `sideEffects: false`, esbuild must *conservatively assume* every `import` could have side effects (global polyfills, prototype patches, etc.) and include all 600+ modules.
 
 
 ### JSR Modules — Deno's TypeScript-First Registry
@@ -603,10 +942,55 @@ resolvedPath = urlJoin(args.pluginData?.url, "../", argPath);
 
 When a relative import has no extension, up to 18 URL combinations are tried (2 path variants × 9 extensions). This is a pragmatic deviation from Node.js (which does not probe) — many CDN-served packages were built for bundlers that do.
 
+**Why 18 combinations?** Two path interpretations ("/utils" as a file vs. "/utils/index") times 9 possible extensions (`.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.jsx`, `.css`, `.json`, no extension). Each combination is a HEAD or GET request:
+
+```
+  import "./utils" (no extension)
+     │
+     ▼  Extension probing — try as file:
+     ./utils.js → 404    ./utils.mjs → 404    ./utils.ts → 404
+     ./utils.tsx → 404   ./utils.jsx → 404    ./utils.css → 404
+     ./utils.json → 404  ./utils.cjs → 404    ./utils → 404
+     │
+     ▼  Try as directory (index file):
+     ./utils/index.js → 200 ✓  (found!)
+```
+
+Failed URLs are cached in `failedExtensionChecks` so the same 404 isn't fetched twice in a build.
+
 
 ### Import Maps
 
 bundlejs supports [WHATWG import maps](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) through [utils/resolve-import-map.ts](../utils/resolve-import-map.ts). Resolution checks **scopes** first (sorted by key length, per spec), then falls back to top-level **imports**.
+
+**Concrete example — import map with scopes:**
+
+```json
+{
+  "imports": {
+    "lodash": "https://esm.sh/lodash@4.17.21"
+  },
+  "scopes": {
+    "https://unpkg.com/my-lib/": {
+      "lodash": "https://esm.sh/lodash@3.10.0"
+    }
+  }
+}
+```
+
+```
+  import "lodash" from entry code (/index.ts)
+     │
+     ▼  No scope matches "/index.ts"
+     Fall back to top-level imports: "lodash" → https://esm.sh/lodash@4.17.21
+
+  import "lodash" from https://unpkg.com/my-lib/utils.js
+     │
+     ▼  Scope "https://unpkg.com/my-lib/" matches the importer URL
+     Scoped mapping: "lodash" → https://esm.sh/lodash@3.10.0  (older version!)
+```
+
+> **Scopes let different parts of your dependency tree use different versions** — like npm's nested `node_modules`, but declarative.
 
 
 ### Unsupported Dependency Types
@@ -633,6 +1017,29 @@ Path remapping fields (`browser`, `react-native`, `electron`) can map packages o
 **Package-level exclusion** occurs when the entire package resolves to `false` — e.g., `"browser": false` at the top level, or `exports` conditions that resolve to nothing. Handled by **CdnPlugin** and **TarballPlugin**.
 
 **Per-module exclusion** occurs when a single file inside a package is remapped to `false` — e.g., `"browser": { "./server.js": false }`. Handled by **HttpPlugin**.
+
+**Concrete example — what each policy produces for `import "net"` inside a package with `"browser": { "net": false }`:**
+
+```
+  Policy: "stub" (default for importRemapFalse)
+  ────────────────────────────────────────
+  Build succeeds. The import is replaced with:
+    export default {};
+  Plus a warning: ⚠ Module 'net' excluded via browser field in <package>
+  Result: code that references `net` gets an empty object. Safe for most cases.
+
+  Policy: "error" (default for packageRemapFalse)
+  ────────────────────────────────────────
+  Build FAILS with:
+    ✘ [ERROR] Module 'net' has been excluded (reason: browser-remapping)
+  Result: hard failure. Forces user to address the dependency.
+
+  Policy: "external"
+  ────────────────────────────────────────
+  Build succeeds. The import is preserved verbatim in the output:
+    import net from "net";
+  Result: deferred to the runtime environment. Useful when deploying to Node.js.
+```
 
 ### Configuration
 
@@ -692,6 +1099,30 @@ When `"stub"` is active and `warnOnStubbedRemapFalse` is `true` (default), the `
 After a file is resolved and fetched, but *before* esbuild parses it, bundlejs runs content-aware transformations. The most significant is **Flow type stripping** — removing Meta's [Flow](https://flow.org/) type annotations from JavaScript files.
 
 > **Why this exists:** The React Native / Metro / Expo ecosystem ships raw Flow-annotated `.js` files to npm. Metro (React Native's bundler) strips Flow via Babel automatically — but every other bundler (esbuild, webpack, Rollup) chokes on Flow syntax like `import typeof`, `opaque type`, and `$Exact<T>`. The specific trigger: `react-native`'s `index.js` contains `import typeof ActionSheetIOS from '...'` — invalid in both JavaScript and TypeScript.
+
+**Before and after — what Flow stripping does to real React Native code:**
+
+```javascript
+// BEFORE (raw from npm — this is valid Flow, invalid JS):
+import typeof ActionSheetIOS from './Libraries/ActionSheetIOS/ActionSheetIOS';
+import type { ColorValue } from './Libraries/StyleSheet/StyleSheet';
+
+export opaque type NativeComponentType<T> = HostComponent<T>;
+
+const Platform: $Exact<PlatformConstants> = { OS: 'ios' };
+```
+
+```javascript
+// AFTER (flow-remove-types output — valid JS, parseable by esbuild):
+import              ActionSheetIOS from './Libraries/ActionSheetIOS/ActionSheetIOS';
+/*    type { ColorValue }                                                       */
+
+/*    opaque type NativeComponentType<T> = HostComponent<T> */
+
+const Platform          /*                  */ = { OS: 'ios' };
+```
+
+> Notice: `flow-remove-types` replaces type annotations with whitespace, preserving source positions so source maps remain valid. The `import typeof` becomes a regular `import`, `opaque type` becomes a comment, and type annotations like `$Exact<...>` are blanked out.
 
 ### Three-Layer Pipeline
 
@@ -756,6 +1187,26 @@ The Context supports **two data modes**:
 > **`Context.opaque()`** marks values as *unproxyable* — `Map`, `Set`, `Promise`, and `ArrayBuffer` break under proxy interception, so they are excluded from reactive wrapping.
 
 Three accessor functions: `fromContext("key", ctx)` (read), `toContext("key", value, ctx)` (write), `withContext({ key: value }, ctx)` (create scoped child).
+
+**Concrete example — shared vs. isolated data:**
+
+```typescript
+// CdnPlugin gets its own isolated "origin" so it doesn't pollute other plugins:
+const cdnContext = withContext({ origin: "https://unpkg.com" }, StateContext);
+
+// CdnPlugin writes to the shared VFS — all plugins see extracted tarballs:
+const fs = fromContext("filesystem", cdnContext);  // same object as parent
+await setFile(fs, "/__tarballs__/abc123/index.js", content);
+
+// VFSPlugin reads the same filesystem — can see the file just written:
+const sameFs = fromContext("filesystem", StateContext);  // identical reference
+sameFs.hasFile("/__tarballs__/abc123/index.js");  // true ✓
+
+// But VFSPlugin can't see CdnPlugin's origin:
+fromContext("origin", StateContext);  // undefined (isolated to cdnContext)
+```
+
+> **Think of it like a two-way mirror.** Shared state (VFS, caches) is a window — both sides see and modify the same data. Isolated state (`withContext`) is a private room — the child can see out, but the parent can't see in.
 
 
 ## The Edge Runtime
@@ -837,6 +1288,26 @@ Responses are cached under the **final URL** after redirects — not the origina
 
 **Per-build caches** (not persisted) live in `LocalState`: `packageManifests`, `versions`, `sideEffectsMatchersCache`, `failedExtensionChecks`, `failedManifestUrls`.
 
+**Concrete example — cache key flow for a build request:**
+
+```
+  Request: /?q=react&treeshake=[{useState}]
+     │
+     ▼  Parse query → BuildConfig + generated entry:
+     entry = 'export { useState } from "react";'
+     │
+     ▼  Compute Redis cache key:
+     SHA-256( JSON.stringify(config) + entry )
+     = "e3b0c44298fc1c14..."  (64 hex chars)
+     │
+     ▼  Redis lookup: GET "e3b0c44298fc1c14..."
+     ├─ HIT  → return cached JSON (skip build entirely)
+     └─ MISS → run build, then:
+              SET "e3b0c44298fc1c14..." = result  (TTL: 24 hours)
+```
+
+Same config + same entry code = same cache key, so identical requests from different users hit the cache.
+
 
 ## Compression
 
@@ -850,6 +1321,22 @@ After bundling, `@bundle/compress` compresses the output to report production si
 | **lz4** | WASM module | Fastest decompression |
 
 Brotli, zstd, and lz4 WASM modules are **lazily loaded**.
+
+**Concrete example — what the compression step produces:**
+
+```typescript
+// After esbuild produces the bundled output:
+const bundledCode = new TextEncoder().encode(esbuildOutput);  // 6,720 bytes
+
+// compress() returns both sizes:
+const result = await compress(bundledCode, "gzip");
+// result = {
+//   compressedSize: 2398,          → "2.34 kB" (what you'd ship)
+//   uncompressedSize: 6720,        → "6.72 kB" (what esbuild produced)
+// }
+```
+
+> **Why both sizes?** The uncompressed size shows what esbuild generated after tree-shaking and minification. The compressed size shows what users actually download — the number that matters for page load performance. The difference between the two reveals how compressible the code is.
 
 
 ## Configuration Reference
