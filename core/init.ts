@@ -58,3 +58,43 @@ export async function init(opts: Partial<ESBUILD.InitializeOptions> | null = {},
     toContext("esbuild", null);
   }
 }
+
+/**
+ * Tears down the esbuild WASM worker and resets global init state.
+ *
+ * After calling this, any subsequent `build()` / `transform()` / `context()`
+ * call will re-run `init()` and spin up a fresh worker.
+ *
+ * Safe to call multiple times — no-ops if esbuild was never initialized
+ * or has already been stopped.
+ *
+ * @example Standalone cleanup
+ * ```ts
+ * const result = await build({ entryPoints: ["/mod.tsx"] });
+ * // … use result …
+ * await stop(); // release WASM worker
+ * ```
+ *
+ * @example With explicit resource management (automatic)
+ * ```ts
+ * // build() and context() dispose automatically via AsyncDisposableStack,
+ * // which includes calling stop(). Manual calls are only needed for
+ * // transform() or standalone usage.
+ * ```
+ */
+export async function stop(): Promise<void> {
+  const esbuild = fromContext("esbuild");
+  if (!esbuild) return;
+
+  // esbuild's stop() terminates the WASM worker thread and resets
+  // internal init state. The cast is needed because the type declarations
+  // don't always include `stop` — but it's present at runtime on every
+  // platform skew (Deno WASM, browser WASM, native Node).
+  const maybeStop = (esbuild as Record<string, unknown>).stop;
+  if (typeof maybeStop === "function") {
+    await (maybeStop as () => Promise<void>)();
+  }
+
+  toContext("initialized", false);
+  toContext("esbuild", null);
+}
