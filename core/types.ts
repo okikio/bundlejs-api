@@ -69,7 +69,7 @@ export interface CommonConfigOptions extends record {
   /**
    * Configures how esbuild-wasm is initialized 
    */
-  init?: InitOptions | null
+  init?: InitOptions | null;
 };
 
 /**

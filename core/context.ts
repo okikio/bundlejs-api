@@ -192,7 +192,7 @@ export async function cancel(build_ctx: BuildContext): Promise<void> {
 export async function dispose(build_ctx: BuildContext): Promise<void> {
   try {
     try {
-      await build_ctx.dispose();
+      await build_ctx?.dispose?.();
     } catch (e) {
       const fail = e as ESBUILD.BuildFailure;
       if (fail.errors) {

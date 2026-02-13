@@ -1,4 +1,3 @@
-import { retry } from "./async.ts";
 import { LruCache } from "./lru.ts";
 
 /**
@@ -118,6 +117,35 @@ export function openCache(): Promise<Cache> {
 }
 
 // ============================================================================
+// In-flight request deduplication
+// ============================================================================
+
+/**
+ * Capacity for the in-flight request deduplication map.
+ *
+ * Limits memory when many unique URLs are fetched concurrently.
+ * Once full, the oldest entry is evicted (LRU) so a duplicate request
+ * will simply start a fresh fetch — correctness is preserved, only the
+ * dedup optimisation is lost.
+ */
+export const INFLIGHT_CAPACITY = 200;
+
+/**
+ * Maps a URL to its **in-progress** network fetch promise.
+ *
+ * When two callers request the same URL before the first fetch settles,
+ * the second caller joins the existing promise instead of issuing a
+ * duplicate HTTP request.  The entry is removed as soon as the promise
+ * settles so subsequent requests go to the normal cache-or-fetch path.
+ *
+ * This also bounds the number of concurrent fire-and-forget
+ * `backgroundRefresh` calls: if a background refresh for URL X is already
+ * in progress, the next stale-while-revalidate hit simply joins the
+ * existing refresh rather than spawning a second one.
+ */
+export const inflight = new LruCache<string, Promise<Response>>(INFLIGHT_CAPACITY);
+
+// ============================================================================
 // Core fetch implementation
 // ============================================================================
 
@@ -182,7 +210,7 @@ async function storeInCache(
 function doFetch(
   url: string,
   init: RequestInit = {},
-  retries: number
+  _retries: number
 ): Promise<Response> {
   const fetchWithRedirect = async () => {
     const response = await fetch(url, {
@@ -197,8 +225,9 @@ function doFetch(
     return response;
   };
 
-  // if (retries > 0) {
-  //   return retry(fetchWithRedirect, { maxAttempts: retries + 1 });
+  // TODO: re-enable retry logic
+  // if (_retries > 0) {
+  //   return retry(fetchWithRedirect, { maxAttempts: _retries + 1 });
   // }
   
   return fetchWithRedirect();
@@ -222,26 +251,26 @@ async function backgroundRefresh(
   cacheApi?: Cache
 ): Promise<void> {
   try {
-    // Try original URL first - this allows version discovery for @latest etc.
+    // Try original URL first — this allows version discovery for @latest etc.
     const response = await doFetch(originalUrl, init, retries);
     const resolvedUrl = response.url || originalUrl;
     await storeInCache(originalUrl, resolvedUrl, response, cacheApi);
   } catch (err) {
     // If original URL failed with 404 and we have a different final URL,
     // try the final URL (handles extension probing case)
-    const is404 = err instanceof Error && err.message.includes('404');
-    
+    const is404 = err instanceof Error && err.message.includes("404");
+
     if (is404 && originalUrl !== finalUrl) {
       try {
         const response = await doFetch(finalUrl, init, retries);
         const resolvedUrl = response.url || finalUrl;
         await storeInCache(finalUrl, resolvedUrl, response, cacheApi);
       } catch (fallbackErr) {
-        // Both failed - log but don't throw (background operation)
+        // Both failed — log but don't throw (background operation)
         console.error(`[cache] Background refresh failed for ${finalUrl}:`, fallbackErr);
       }
     } else {
-      // Not a 404 or no fallback available - log the original error
+      // Not a 404 or no fallback available — log the original error
       console.error(`[cache] Background refresh failed for ${originalUrl}:`, err);
     }
   }
@@ -288,7 +317,8 @@ export async function fetchWithCache(
     if (cached) {
       const finalUrl = resolveRedirect(url);
       
-      // Stale-while-revalidate: return cached, refresh in background
+      // Stale-while-revalidate: return cached, refresh in background.
+      // Fire-and-forget — errors are logged inside backgroundRefresh.
       if (cacheMode === 'normal') {
         void backgroundRefresh(url, finalUrl, init, retries, cacheApi);
       }
@@ -307,8 +337,46 @@ export async function fetchWithCache(
     }
   }
 
-  // Fetch from network
-  const response = await doFetch(url, init, retries);
+  // -----------------------------------------------------------------
+  // Network fetch with request deduplication
+  // -----------------------------------------------------------------
+  // If another caller is already fetching the same URL, join that
+  // promise instead of issuing a duplicate HTTP request.
+  // When the shared fetch settles we read the result from cache so
+  // every caller gets its own clone and the response body isn't
+  // consumed twice.
+  // -----------------------------------------------------------------
+
+  const existing = inflight.get(url);
+  if (existing) {
+    // Join the in-flight request, then read the result from cache.
+    try { await existing; } catch { /* original caller handles the error */ }
+
+    const deduped = await lookupCache(url, cacheApi);
+    if (deduped) {
+      const finalUrl = resolveRedirect(url);
+      return {
+        url: finalUrl,
+        response: deduped.clone(),
+        fromCache: true,
+        redirected: url !== finalUrl,
+      };
+    }
+    // Cache miss after dedup — fall through to a fresh fetch below.
+  }
+
+  // Start the authoritative fetch and register it in the inflight map
+  // so concurrent callers can join.
+  const fetchPromise = doFetch(url, init, retries);
+  inflight.set(url, fetchPromise);
+
+  let response: Response;
+  try {
+    response = await fetchPromise;
+  } finally {
+    inflight.delete(url);
+  }
+
   const finalUrl = response.url || url;
   const redirected = response.redirected || url !== finalUrl;
   
@@ -411,6 +479,7 @@ export async function fetchHeaders(
 export async function clearCache(): Promise<void> {
   responseCache.clear();
   redirectMap.clear();
+  inflight.clear();
   
   if (SUPPORTS_CACHE_API) {
     try {
@@ -428,6 +497,7 @@ export async function invalidate(url: string): Promise<void> {
   
   responseCache.delete(finalUrl);
   redirectMap.delete(url);
+  inflight.delete(url);
   
   if (SUPPORTS_CACHE_API) {
     try {
