@@ -65,7 +65,9 @@ This returns JSON with the bundle size of `react`:
 
 At the highest level, bundlejs is an **adapter layer** that makes esbuild work *without a filesystem*.
 
-esbuild is extremely fast, but it assumes local files exist on disk. bundlejs intercepts every module resolution and file read that esbuild attempts, then redirects them to:
+esbuild is written in Go and normally runs as a native binary — which makes it blazing fast, but also ties it to a specific OS and architecture. bundlejs use esbuild-wasm which compiles esbuild to **WebAssembly** (WASM), making esbuild run in *any* JavaScript runtime: Deno Deploy, browsers, Cloudflare Workers, Node.js. This is not just a portability convenience — Deno Deploy (where the production API runs) **cannot execute native Go binaries**; only JavaScript and WASM. WASM esbuild is roughly 2–5× slower than native Go, but it's the only way to make the bundler work in a serverless edge environment. (Future versions may support native binaries for contexts that allow them — see [core/utils/get-esbuild.ts](../core/utils/get-esbuild.ts) — but WASM remains the portable default.)
+
+With WASM esbuild in hand, the next challenge is that esbuild assumes local files exist on disk. bundlejs intercepts every module resolution and file read that esbuild attempts, then redirects them to:
 
 - **CDN fetches** — downloading packages from a Content Delivery Network (CDN) like [unpkg.com](https://unpkg.com) or [esm.sh](https://esm.sh)
 - **Tarball extraction** — unpacking `.tgz` archives from services like [pkg.pr.new](https://pkg.pr.new)
@@ -76,6 +78,8 @@ esbuild is extremely fast, but it assumes local files exist on disk. bundlejs in
 > **The division of labor:** esbuild does the heavy lifting — parsing, linking, tree-shaking, minification, code generation. bundlejs does the plumbing — figuring out *where* modules live, fetching them, and presenting them to esbuild as local.
 >
 > In short: *"esbuild, plus a portable module system implemented as plugins and shared resolvers."*
+
+> **Why a VFS instead of esbuild's built-in `stdin`/virtual modules?** esbuild's `stdin` option only works for the entry point — it can't handle relative imports *between* virtual files, directory traversal, or file-existence checks. Tarballs extract dozens of files that reference each other with relative paths. The VFS provides a full filesystem API (read, write, list, exists, delete) shared across all plugins, so tarball extraction, content pre-processing, and esbuild loading all operate on the same in-memory tree.
 
 ```
                           bundlejs Pipeline
@@ -93,7 +97,7 @@ esbuild is extremely fast, but it assumes local files exist on disk. bundlejs in
                              │
                              ▼
   ┌─────────────────────────────────────────────────────────────┐
-  │  Core Engine (@bundle/core — esbuild-wasm + 6 plugins)      │
+  │  Core Engine (@bundle/core — esbuild-wasm + 7 plugins)      │
   │  Resolves imports via CDN, fetches packages over HTTP,      │
   │  bundles in-memory with virtual filesystem                  │
   └──────────────────────────┬──────────────────────────────────┘
@@ -158,7 +162,7 @@ bundlejs-api/
 
 ## The Plugin Pipeline
 
-The core architectural insight: **six esbuild plugins** registered in a specific order in [core/build.ts](../core/build.ts). This order is *load-bearing* — esbuild evaluates `onResolve` callbacks in registration order, and the **first plugin that returns a result wins**. Returning `undefined` passes control to the next plugin.
+The core architectural insight: **seven esbuild plugins** registered in a specific order in [core/build.ts](../core/build.ts). This order is *load-bearing* — esbuild evaluates `onResolve` callbacks in registration order, and the **first plugin that returns a result wins**. Returning `undefined` passes control to the next plugin.
 
 > **esbuild plugins** intercept two phases of module handling: **`onResolve`** (map an import specifier to a path + namespace) and **`onLoad`** (return a file's source code + loader type). A module's identity in esbuild is the tuple *(namespace, path)* — two modules with the same path but different namespaces are distinct files. bundlejs uses namespaces to distinguish VFS files, HTTP-fetched modules, tarball-extracted files, and CDN-resolved packages.
 
@@ -166,12 +170,23 @@ The core architectural insight: **six esbuild plugins** registered in a specific
 plugins: [
   AliasPlugin(StateContext),              // 1. Alias rewrites
   ExternalPlugin(StateContext),           // 2. External marking / polyfills
-  TarballPlugin(StateContext),            // 3. Tarball URL extraction
-  VirtualFileSystemPlugin(StateContext),  // 4. In-memory files
-  HttpPlugin(StateContext),               // 5. HTTP URL resolution and loading
-  CdnPlugin(withContext({ origin: host }, StateContext)),  // 6. Bare import → CDN URL
+  TarballPlugin(StateContext),            // 3. Tarball fetch / extract / mount
+  PackagePlugin(StateContext),            // 4. Per-file enrichment (sideEffects + remapping)
+  VirtualFileSystemPlugin(StateContext),  // 5. In-memory files
+  HttpPlugin(StateContext),               // 6. HTTP URL resolution and loading
+  CdnPlugin(withContext({ origin: host }, StateContext)),  // 7. Bare import → CDN URL
 ]
 ```
+
+The ordering reflects a deliberate reasoning chain — each plugin narrows the problem space before the next one runs:
+
+1. **Alias first** — rewrites must transform the import path *before* any other plugin tries to resolve the original name.
+2. **External second** — Node.js builtins like `fs` and `path` must be caught *before* the CDN plugin tries to download them from npm (where packages named `fs` actually exist).
+3. **Tarball third** — `.tgz` archive URLs must be intercepted and extracted *before* the VFS or HTTP plugins claim them as raw files.
+4. **PackagePlugin fourth** — once the path is resolved to a file within a package (tarball-extracted or CDN-fetched), per-file enrichment (sideEffects hints, manifest field remapping) must be applied *before* the VFS or HTTP plugins return a plain result without that metadata.
+5. **VFS fifth** — check in-memory files *before* making a network request. This favors the local (fast, already-fetched) copy over the remote one.
+6. **HTTP sixth** — URL imports before bare imports. An explicit `https://…` path takes priority over treating the string as an npm package name.
+7. **CDN last** — the catch-all. Everything that isn't aliased, external, archived, local, or a URL must be a bare npm/JSR specifier that needs CDN resolution.
 
 Here is what happens when esbuild encounters `import "react"`:
 
@@ -188,6 +203,9 @@ ExternalPlugin   Is "react" a Node.js builtin?               ── NO ──▶
 TarballPlugin    Is "react" a tarball URL or VFS tarball?    ── NO ──▶ pass
    │
    ▼
+PackagePlugin    Is "react" a relative path inside a package? ── NO ──▶ pass
+   │                (bare import — no package context)
+   ▼
 VFSPlugin        Is "react" in the virtual filesystem?        ── NO ──▶ pass
    │                (no "." or "/" prefix — skip bare imports)
    ▼
@@ -201,7 +219,7 @@ CdnPlugin        Bare import → resolve from CDN               ── YES ─�
                   4. Return CDN URL in http-url namespace
 ```
 
-Each plugin has one job; complex behavior emerges from their composition. These six plugins are individually simple, but together they unlock scenarios that no single plugin could handle — keep these in mind as you read through each one:
+Each plugin has one job; complex behavior emerges from their composition. These seven plugins are individually simple, but together they unlock scenarios that no single plugin could handle — keep these in mind as you read through each one:
 
 - **PR preview builds** — TarballPlugin was originally built for this: when a [pkg.pr.new](https://pkg.pr.new) tarball URL appears as a dependency, TarballPlugin fetches and extracts it while CdnPlugin resolves its npm dependencies normally. You can measure the bundle size of an unreleased package in seconds.
 - **React Native bundling** — CDNs like unpkg.com intermittently return 503 errors when fetching files from `react-native` and related packages (the root cause is unclear, but the failures are consistent enough to block bundling). Registry tarball mode (TarballPlugin + CdnPlugin) works around this by fetching the entire package as a `.tgz` from the npm registry in a single request — no individual file fetches that can 503. Separately, `react-native` ships raw [Flow](https://flow.org/)-annotated `.js` files that esbuild cannot parse, so content pre-processing (VFSPlugin and HttpPlugin) strips Flow annotations before esbuild sees them. VFSPlugin's extension probing also handles non-standard suffixes like `.native` and `.fx`. These are independent concerns that combine to make React Native bundleable.
@@ -251,6 +269,8 @@ Runs second to catch Node.js built-in modules (like `fs`, `path`, `crypto`) *bef
 |:-----------------|:-----------------------------|
 | `false` *(default)* | Marked **external** — excluded from bundle with empty `export default {}` |
 | `true` | Rewritten to a browser polyfill (e.g., `fs` → `memfs`, `path` → `path-browserify`), then falls through to CdnPlugin |
+
+> **Why `false` by default?** bundlejs's primary use case is answering *"how big will this dependency be?"* — and users typically want to measure the size of *their* code, not the polyfills that pad it. A React component library author comparing packages wants to see the component size, not the weight of `crypto-browserify`. Polyfills can be large (some are 50+ kB) and would inflate every measurement. Defaulting to external keeps the numbers focused on what the user is actually evaluating, while `polyfill: true` is one config flag away for users who genuinely want to include them.
 
 Polyfill mappings come from [utils/runtime-builtins.ts](../utils/runtime-builtins.ts). The `node:` prefix (e.g., `import "node:fs"`) is stripped before matching.
 
@@ -388,7 +408,25 @@ When entry resolution encounters an exclusion (a `package.json` field maps the e
 
 ---
 
-### 4. VirtualFileSystemPlugin — *In-memory file layer*
+### 4. PackagePlugin — *Per-file enrichment for sideEffects and remapping*
+
+> **Source:** [core/plugins/package.ts](../core/plugins/package.ts)
+
+Before this plugin existed, a recurring problem fragmented the codebase: sideEffects computation and manifest field remapping (the `browser`, `react-native`, and `electron` object-form rewrites) were duplicated across CdnPlugin, HttpPlugin, and TarballPlugin — and still incomplete. Tree-shaking was degraded for registry-mode (tarball-extracted) packages because VFSPlugin returned files without sideEffects hints. Manifest field remappings silently used the wrong file when imports resolved through the VFS path instead of HTTP.
+
+PackagePlugin solves this by centralizing per-file enrichment in a single plugin registered **before** both VFSPlugin and HttpPlugin. When a relative import resolves to a file *inside a known package* (identified by `pluginData.packageRoot` for VFS paths or `pluginData.packageBaseUrl` for HTTP paths), the plugin:
+
+1. **Normalizes the path** to a package-relative form (e.g., `/__tarballs__/abc123/lib/stream.js` → `./lib/stream.js`)
+2. **Applies manifest field remappings** — checks `react-native`, `electron`, and `browser` fields in priority order, rewriting the path if a match exists (or excluding the module if mapped to `false`)
+3. **Computes sideEffects** for that specific file — boolean `false` means side-effect-free (safe to tree-shake), array patterns are matched against the file path
+
+When no package context exists (user-authored VFS files, direct URL imports without a manifest), the plugin returns `undefined` — the downstream VFSPlugin or HttpPlugin handles it as before.
+
+> **Why a separate plugin instead of fixing it in each existing plugin?** esbuild's plugin architecture is first-match-wins on `onResolve`. Enrichment (sideEffects, remapping) must happen at the *resolution* phase — by the time `onLoad` runs, it's too late to change the resolved path or inject sideEffects hints. Having one plugin responsible for enrichment means a single code path covers both VFS and HTTP, with one set of tests and no duplication drift.
+
+---
+
+### 5. VirtualFileSystemPlugin — *In-memory file layer*
 
 > **Source:** [core/plugins/fs.ts](../core/plugins/fs.ts)
 
@@ -465,17 +503,16 @@ Together with suffix-style extension probing, these transformations are what mak
 
 ---
 
-### 5. HttpPlugin — *Fetch and resolve HTTP/HTTPS URLs*
+### 6. HttpPlugin — *Fetch and resolve HTTP/HTTPS URLs*
 
 > **Source:** [core/plugins/http.ts](../core/plugins/http.ts)
 
-The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
+The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles** (manifest field remapping and sideEffects computation are now handled by PackagePlugin):
 
 1. **Direct URL imports** — handles `import "https://esm.sh/react"` directly
 2. **Relative import resolution** — resolves paths like `"./jsx-runtime.js"` against the **final URL** after redirects (critical because CDNs redirect `react@latest` → `react@19.0.0`)
-3. **Manifest field remapping** — applies platform-specific path rewrites from `package.json` fields (`"browser"`, `"react-native"`, `"electron"`) to relative imports *within* a package, using the `packageBaseUrl` passed from CdnPlugin. See [Manifest Field Remapping](#manifest-field-remapping-for-relative-imports).
-4. **Extension probing** — when a relative import has no extension, tries **18 combinations** (2 path variants × 9 extensions). Failed probes are cached in `failedExtensionChecks`.
-5. **Registry mode propagation** — when the configured CDN host is a *registry*, bare imports encountered inside HTTP-fetched files are resolved through the registry rather than following the parent file's CDN origin.
+3. **Extension probing** — when a relative import has no extension, tries **18 combinations** (2 path variants × 9 extensions). Failed probes are cached in `failedExtensionChecks`.
+4. **Registry mode propagation** — when the configured CDN host is a *registry*, bare imports encountered inside HTTP-fetched files are resolved through the registry rather than following the parent file's CDN origin.
 
 **Concrete trace — resolving a relative import after a CDN redirect:**
 
@@ -505,7 +542,7 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
 
 > **Why the final URL matters:** If we resolved against the *original* URL (`/index.js`), the `../` would navigate wrong. CDN redirects can change directory depth, so we must track where we actually ended up.
 
-**Concrete trace — manifest field remapping to `false`:**
+**Concrete trace — manifest field remapping to `false`** (cross-plugin: PackagePlugin resolves, HttpPlugin serves the stub):
 
 ```json
 // readable-stream's package.json:
@@ -515,7 +552,7 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
 ```
   Inside readable-stream: import "util"
      │
-     ▼  HttpPlugin.onResolve
+     ▼  PackagePlugin.onResolve
      applyManifestRemappings("util", manifest) → false
      │
      ▼  Check remapFalse.importRemapFalse (default: "stub")
@@ -528,19 +565,20 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
 
   Inside readable-stream: import "./lib/stream.js"
      │
-     ▼  applyManifestRemappings("./lib/stream.js", manifest)
+     ▼  PackagePlugin.onResolve
+     applyManifestRemappings("./lib/stream.js", manifest)
      → "./lib/stream-browser.js"  (remapped, not excluded)
      │
-     ▼  Fetch the browser-specific file instead
+     ▼  HttpPlugin fetches the browser-specific file instead
 ```
 
-When a remapping resolves to `false` (meaning "this module doesn't exist on this platform"), the HttpPlugin follows the `remapFalse.importRemapFalse` policy — defaulting to an empty stub export that keeps the build alive. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
+When a remapping resolves to `false` (meaning "this module doesn't exist on this platform"), PackagePlugin follows the `remapFalse.importRemapFalse` policy — defaulting to an empty stub export that keeps the build alive. The excluded module's `onLoad` handler (still registered by HttpPlugin) serves the actual stub content. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
 
 **Content pre-processing** in the `onLoad` handler runs the same two transformations as VFSPlugin: Flow stripping and JSX loader upgrade. Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers**.
 
 ---
 
-### 6. CdnPlugin — *Catch-all for bare npm imports*
+### 7. CdnPlugin — *Catch-all for bare npm imports*
 
 > **Source:** [core/plugins/cdn.ts](../core/plugins/cdn.ts)
 
@@ -693,6 +731,8 @@ bundlejs supports multiple CDN sources. The `cdn` config option selects which on
 | `"npm"` or `"npm.registry"` | `https://registry.npmjs.org` | registry |
 | Any full URL | Used directly | Detected from URL |
 
+> **Why unpkg as the default?** unpkg serves **raw npm files without transformation** — the files you get from unpkg are byte-for-byte identical to what `npm install` produces. CDNs like esm.sh and Skypack pre-process packages (rewriting imports, converting CJS to ESM, injecting polyfills), which can break packages or produce different entry points than what the package author intended. Since bundlejs runs its *own* module resolution and bundling, pre-processing from the CDN is unnecessary and can interfere. unpkg gives bundlejs the raw materials it needs. (The historical default was actually Skypack, but was changed to unpkg for this reason.)
+
 
 ### Bare npm Imports — Conditional Exports
 
@@ -726,7 +766,9 @@ Conditions come from [utils/resolve-conditions.ts](../utils/resolve-conditions.t
 | Electron (renderer) | + `["electron", "browser"]` | ✅ yes |
 | React Native | + `["react-native"]` | no |
 
-> **Where bundlejs deviates from Node.js:** The `"module"` condition is an esbuild convention, not part of the Node.js spec. Also, bundlejs passes `unsafe: true` to the resolver and retries with `require: true` as a compatibility fallback for packages that only define CJS exports. This deviates from the spec but dramatically improves compatibility with real-world npm packages.
+> **Why `browser` platform is the default:** bundlejs's primary use case is *"how big will this dependency be in my production bundle?"* — and most production bundles target browsers. The `browser` platform gives the most useful default conditions for that scenario: it activates the `browser` export condition, enables the legacy `browser` field in `package.json`, and produces ESM output. Users targeting Deno, Node.js, or Workers can override this via `platform` and `runtime` config.
+
+> **Where bundlejs deviates from Node.js:** The `"module"` condition is an esbuild convention, not part of the Node.js spec — but many real-world packages use `"module"` as their *only* ESM export condition (because webpack, Rollup, and esbuild all recognize it). Without `"module"`, those packages would resolve to their CJS entry point, producing inaccurate bundle size measurements. bundlejs also passes `unsafe: true` to the [resolve.exports](https://www.npmjs.com/package/resolve.exports) library, which allows resolution to succeed even when no matching condition exists (instead of throwing). And it retries with `require: true` as a compatibility fallback for packages that only define CJS exports. Both deviations sacrifice spec purity for real-world coverage — the goal is measuring packages as they *actually* ship on npm, not as the spec says they should be written.
 
 
 ### Subpath Exports and Imports
@@ -788,7 +830,7 @@ If *all* legacy fields are missing, bundlejs applies a last-resort chain: `unpkg
 
 ### Manifest Field Remapping for Relative Imports
 
-After URL resolution but *before* extension probing, the HttpPlugin checks whether a resolved relative path should be **remapped** to a platform-specific alternative. This handles packages that ship different implementations for different runtimes via `package.json` fields.
+After a relative path resolves to a file inside a known package, PackagePlugin checks whether it should be **remapped** to a platform-specific alternative *before* VFSPlugin or HttpPlugin returns a plain result. This handles packages that ship different implementations for different runtimes via `package.json` fields.
 
 Three fields follow the same object-mapping pattern, processed in priority order by `applyManifestRemappings()` (from [core/utils/cdn-resolution.ts](../core/utils/cdn-resolution.ts)):
 
@@ -942,7 +984,7 @@ CDNs frequently redirect — `react@19.0.0/index.js` might redirect to `react@19
 resolvedPath = urlJoin(args.pluginData?.url, "../", argPath);
 ```
 
-When a relative import has no extension, up to 18 URL combinations are tried (2 path variants × 9 extensions). This is a pragmatic deviation from Node.js (which does not probe) — many CDN-served packages were built for bundlers that do.
+When a relative import has no extension, up to 18 URL combinations are tried (2 path variants × 9 extensions). This is a pragmatic deviation from Node.js (which does not probe) — but it's necessary because npm packages are authored assuming bundlers like webpack and Rollup will probe extensions for them. TypeScript's convention of extensionless imports compounds this — `.ts` and `.tsx` must be tried alongside `.js`. And unlike local bundlers, CDNs serve exact paths with no probing of their own; some CDNs redirect extensionless URLs to the right file, but not all of them and not consistently. bundlejs takes full responsibility for probing to ensure correctness across all CDN backends.
 
 **Why 18 combinations?** Two path interpretations ("/utils" as a file vs. "/utils/index") times 9 possible extensions (`.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.jsx`, `.css`, `.json`, no extension). Each combination is a HEAD or GET request:
 
@@ -1016,11 +1058,15 @@ The plugin sections above mentioned exclusions in passing — what happens when 
 
 Path remapping fields (`browser`, `react-native`, `electron`) can map packages or individual modules to `false`, meaning "this doesn't exist on this platform." For example, a package might declare `"browser": { "fs": false }` to signal that its filesystem code has no browser equivalent. The `remapFalse` config controls how the bundler reacts.
 
-### Two Levels of Exclusion
+The two exclusion levels have **different default policies** because they signal different author intent:
 
-**Package-level exclusion** occurs when the entire package resolves to `false` — e.g., `"browser": false` at the top level, or `exports` conditions that resolve to nothing. Handled by **CdnPlugin** and **TarballPlugin**.
+**Package-level exclusion** (`"browser": false` at the top level) occurs when the package author is explicitly saying *"this entire package does not work on this platform — we acknowledge the use case but choose not to participate."* This is a deliberate, conscious decision. The default response is `"error"` — respect the author's explicit statement and force the bundlejs user to make an active choice (stub it, externalize it, or remove the dependency).
 
-**Per-module exclusion** occurs when a single file inside a package is remapped to `false` — e.g., `"browser": { "./server.js": false }`. Handled by **HttpPlugin**.
+**Per-module exclusion** (`"browser": { "./server.js": false }`) is more granular — the author is saying *"this specific file has no browser equivalent, but the rest of the package works fine."* This represents partial platform support, not outright incompatibility. The default response is `"stub"` — replace the excluded module with an empty export and keep building. Most of the time, the excluded module is an optional code path that the user's import tree doesn't actually need at runtime.
+
+Both defaults give users the option to override: `remapFalse.packageRemapFalse` and `remapFalse.importRemapFalse` can be set to `"error"`, `"stub"`, or (for per-module only) `"external"`.
+
+**Package-level exclusion** is handled by **CdnPlugin** and **TarballPlugin**. **Per-module exclusion** is handled by **PackagePlugin**.
 
 **Concrete example — what each policy produces for `import "net"` inside a package with `"browser": { "net": false }`:**
 
@@ -1088,11 +1134,11 @@ When `"stub"` is active and `warnOnStubbedRemapFalse` is `true` (default), the `
     TarPlugin  (onResolve) ─── checks remapFalse.packageRemapFalse  (3 branches)
 
   Per-module exclusion:
-    HttpPlugin (onResolve) ─── checks remapFalse.importRemapFalse
+    PackagePlugin (onResolve) ─── checks remapFalse.importRemapFalse
 
   Stub serving:
-    HttpPlugin (onLoad)    ─── EXCLUDED_MODULE_NAMESPACE handler
-                               respects suppressWarning from pluginData
+    HttpPlugin (onLoad)       ─── EXCLUDED_MODULE_NAMESPACE handler
+                                   respects suppressWarning from pluginData
 ```
 
 
@@ -1187,7 +1233,9 @@ const Platform          /*                  */ = { OS: 'ios' };
 
 ## Plugin Shared State
 
-The six plugins described above need to coordinate: CdnPlugin writes tarballs that VFSPlugin reads, HttpPlugin caches manifests that CdnPlugin reuses, and all plugins share a single VFS. This coordination happens through a **`Context`** object — a reactive, hierarchical data container built on `EventTarget` and `Proxy` (defined in [core/context/context.ts](../core/context/context.ts)).
+The seven plugins described above need to coordinate: CdnPlugin writes tarballs that VFSPlugin reads, HttpPlugin caches manifests that CdnPlugin reuses, and all plugins share a single VFS. This coordination happens through a **`Context`** object — a reactive, hierarchical data container built on `EventTarget` and `Proxy` (defined in [core/context/context.ts](../core/context/context.ts)).
+
+> **Why not just pass a plain object?** A plain shared object would handle the *shared* data case, but breaks down when plugins need *isolated* state. CdnPlugin needs its own `origin` property that doesn't leak back to the parent context — without isolation, one plugin could accidentally change the CDN host for all other plugins. The Context's `withContext()` provides exactly this: a child scope where specified keys are isolated, while everything else (VFS, caches, config) remains shared and bidirectional. The design was inspired by Go's [`context.Context`](https://pkg.go.dev/context) — hierarchical, cancellable, with scoped values — adapted for JavaScript's `Proxy` and `EventTarget` APIs. The reactivity (observable gets/sets) is a bonus that enables debugging and future features, but the core motivation was elegant shared-vs-isolated data management.
 
 Every build creates a **`LocalState`** (from [core/types.ts](../core/types.ts)):
 
@@ -1313,6 +1361,10 @@ A single build involves dozens to hundreds of HTTP fetches — package manifests
     ▼
   Network fetch
 ```
+
+Each tier exists for a distinct reason. **Redis (Upstash)** is Tier 1 because it persists across Deno Deploy isolate cold starts — when an isolate is recycled (which happens frequently on serverless), Cache API and LRU caches are lost, but Redis retains the cached build result. A repeat request that hits Redis returns in milliseconds without re-building. **Cache API** is Tier 2 because it survives within a single isolate lifetime but is faster to access than a network Redis call — it caches *individual HTTP responses* (package manifests, source files), not whole build results. **In-memory LRU** is Tier 3 — the fastest lookup (no I/O), but the smallest and most volatile; it's gone on the next isolate restart.
+
+The per-fetch caching (Cache API + LRU) uses a **stale-while-revalidate** (SWR) pattern: return the cached response immediately, then fire a background refresh to update the cache for future requests. This works well because npm package content rarely changes for a given version — a stale response for `react@19.0.0/index.js` returns the correct file 99.99% of the time. The tradeoff favors latency over freshness, which is the right call for a size-checking tool where speed matters and a one-request delay in cache freshness is invisible.
 
 Responses are cached under the **final URL** after redirects — not the original request URL. A separate redirect map tracks *original → final* mappings.
 
@@ -1478,6 +1530,8 @@ outdir: "/",
 ## Resource Lifecycle & Explicit Resource Management
 
 Each build spins up background fetches, in-flight deduplication, and plugin-scoped resources — all of which must be cleaned up when the build finishes. bundlejs implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal so that cleanup happens automatically. Every `build()`, `transform()`, and `context()` call returns an object that implements `Disposable` and `AsyncDisposable`, enabling the `using` / `await using` syntax.
+
+> **Why ERM instead of try/finally?** The SWR caching pattern fires background fetches that *must* be aborted when the build ends — if they outlive the build, Deno's test sanitizer flags them as leaked resources, and in production they waste memory. With manual try/finally, every consumer of the `build()` API must remember to call a cleanup function in the right place. With ERM, cleanup is **correct by default** — `await using result = await build(…)` guarantees disposal at the end of scope, even if the consumer doesn't think about resource management. This is especially important for library consumers who may not know about the background fetches at all.
 
 ### Why this matters
 
@@ -1662,8 +1716,8 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 
 | Limitation | Details |
 |:-----------|:--------|
-| **WASM esbuild is slower** | ~2–5× slower than native Go. Acceptable for size checks; too slow for build-on-save. |
-| **CDN dependency** | If unpkg goes down, resolution fails. Configurable CDN mitigates; *no automatic failover*. unpkg intermittently 503s on some `react-native` packages — use `cdn: "npm.registry"` as a workaround. |
+| **WASM esbuild is slower** | ~2–5× slower than native Go. Acceptable for size checks; too slow for build-on-save. WASM is required because Deno Deploy can't run native binaries — but in contexts that allow it, future versions may support native Go esbuild for full speed. |
+| **CDN dependency** | If unpkg goes down, resolution fails. Configurable CDN mitigates; *no automatic failover* because each CDN has different URL formats, redirect behaviors, and file-processing logic — silently falling back could change which entry point resolves, producing different bundle sizes without the user knowing. unpkg intermittently 503s on some `react-native` packages — use `cdn: "npm.registry"` as a workaround. |
 | **Extension probing = HTTP requests** | Up to 18 URL probes per extensionless import. HTTP/2 multiplexing and `failedExtensionChecks` caching help. |
 | **No git/workspace/link deps** | These require local filesystem or git. `file:` specs can use `vfs:`/`virtual:` equivalents. |
 | **Browser field inconsistency** | The dual-form `browser` field is npm's most inconsistent convention. bundlejs follows Node.js spec + esbuild behavior. |
