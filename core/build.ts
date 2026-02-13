@@ -67,12 +67,67 @@ export interface BuildResult extends ESBUILD.BuildResult {
   totalInstallSize: string;
 };
 
+/**
+ * Build result with Explicit Resource Management support.
+ *
+ * Extends `BuildResult` with `Disposable` and `AsyncDisposable` so callers
+ * can use `using` / `await using` to automatically clean up per-build
+ * resources (abort background SWR fetches, release registered workers, etc.)
+ * when the result goes out of scope.
+ *
+ * Prefer `await using` over `using` — the async variant awaits all cleanup
+ * (including in-flight `op_cache_put` writes), while the sync variant fires
+ * cleanup without waiting.
+ *
+ * @example One-shot build with automatic cleanup
+ * ```ts
+ * {
+ *   await using result = await build({ entryPoints: ["/index.tsx"] });
+ *   console.log(result.contents[0].text);
+ * }
+ * // ← background fetches aborted, per-build scope disposed
+ * ```
+ *
+ * @example Manual disposal
+ * ```ts
+ * const result = await build({ entryPoints: ["/index.tsx"] });
+ * // … use result …
+ * await result[Symbol.asyncDispose]();
+ * ```
+ *
+ * @see {@link stop} to release the global esbuild WASM worker after all builds.
+ */
+export type DisposableBuildResult = BuildResult & Disposable & AsyncDisposable;
+
 export interface BuildResultContext extends ESBUILD.BuildResult {
   state: Context<LocalState>
 };
 
 export const TheFileSystem = useFileSystem();
-export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSystem<unknown>> = TheFileSystem): Promise<BuildResult> {
+
+/**
+ * Bundles entry points using esbuild-wasm with the full plugin pipeline.
+ *
+ * Returns a {@link DisposableBuildResult} that implements the
+ * [Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)
+ * protocol. Use `await using` to automatically abort per-build background
+ * fetches and release registered resources when the result goes out of scope.
+ *
+ * @example
+ * ```ts
+ * await using result = await build({ entryPoints: ["/index.tsx"] });
+ * console.log(result.contents[0].text);
+ * // ← cleanup runs automatically at end of scope
+ * ```
+ *
+ * @example Without `using` (manual cleanup)
+ * ```ts
+ * const result = await build({ entryPoints: ["/index.tsx"] });
+ * console.log(result.contents[0].text);
+ * await result[Symbol.asyncDispose]();
+ * ```
+ */
+export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSystem<unknown>> = TheFileSystem): Promise<DisposableBuildResult> {
   if (!fromContext("initialized"))
     dispatchEvent(INIT_LOADING);
 
@@ -166,20 +221,28 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
       } else throw e;
     }
 
-    return await formatBuildResult({
+    const formatted = await formatBuildResult({
       state: StateContext,
       ...build_result
     });
+
+    // Disposal is idempotent — safe to call multiple times.
+    // The flag prevents double-dispose if the caller calls both
+    // `[Symbol.dispose]()` and later `[Symbol.asyncDispose]()`.
+    return Object.assign(formatted, {
+      [Symbol.dispose]() { void disposables.disposeAsync() },
+      [Symbol.asyncDispose]() { return disposables.disposeAsync() },
+    });
   } catch (e) {
+    // Caller won't receive a disposable result — clean up before re-throwing.
+    try { await disposables.disposeAsync(); } catch { /* don't mask the original error */ }
+
     const err = e as Error;
     if (!("msgs" in err)) {
       dispatchEvent(BUILD_ERROR, err);
     }
 
     throw e;
-  } finally {
-    // Dispose per-build resources (aborts background fetches, etc.)
-    await disposables.disposeAsync();
   }
 }
 

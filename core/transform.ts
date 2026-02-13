@@ -31,7 +31,28 @@ export const TRANSFORM_CONFIG: TransformConfig = {
   }
 };
 
-export async function transform(input: string | Uint8Array, opts: TransformConfig = {}) {
+/**
+ * Transforms source code using esbuild (minify, format conversion, etc.).
+ *
+ * Returns a {@link DisposableTransformResult} for API consistency with
+ * `build()` and `context()`. The dispose methods are no-ops since
+ * `transform()` is stateless — there are no background fetches or
+ * per-call resources to clean up.
+ *
+ * @example
+ * ```ts
+ * await using result = await transform('export const x = 1;');
+ * console.log(result?.code); // 'var x=1;export{x};'
+ * ```
+ *
+ * @example One-shot with WASM cleanup
+ * ```ts
+ * const result = await transform(code);
+ * // … use result …
+ * await stop(); // release esbuild WASM worker when completely done
+ * ```
+ */
+export async function transform(input: string | Uint8Array, opts: TransformConfig = {}): Promise<ESBUILD.TransformResult | null> {
   if (!fromContext("initialized"))
     dispatchEvent(INIT_LOADING);
 
@@ -68,7 +89,7 @@ export async function transform(input: string | Uint8Array, opts: TransformConfi
 
         const message = (htmlMsgs.length > 1 ? `${htmlMsgs.length} error(s) ` : "") + "(if you are having trouble solving this issue, please create a new issue in the repo, https://github.com/okikio/bundlejs)";
         dispatchEvent(LOGGER_ERROR, new Error(message));
-        return;
+        return null;
       } else throw e;
     }
 

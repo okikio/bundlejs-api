@@ -531,7 +531,7 @@ export async function fetchHeaders(
     const contentType = response.headers.get("content-type");
     
     // Cancel body immediately - we only wanted headers
-    try { void response.body?.cancel(); } catch { /* ignore */ }
+    try { void response.body?.cancel(); } catch { /* ignore cancel errors */ }
 
     if (contentType && /text\/html/i.test(contentType)) {
       throw new Error(`Received HTML instead of expected content for ${finalUrl}`);

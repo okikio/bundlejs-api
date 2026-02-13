@@ -1,5 +1,5 @@
 import type { BuildConfig, ESBUILD, LocalState } from "./types.ts";
-import type { BuildResult } from "./build.ts";
+import type { DisposableBuildResult } from "./build.ts";
 
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
 import { ExternalPlugin } from "./plugins/external.ts";
@@ -18,6 +18,22 @@ import { init } from "./init.ts";
 import { BUILD_ERROR, INIT_LOADING, LOGGER_ERROR, dispatchEvent } from "./configs/events.ts";
 import { DEFAULT_CDN_HOST, getCDNUrl } from "./utils/cdn-format.ts";
 
+/**
+ * Long-lived build context with Explicit Resource Management support.
+ *
+ * Extends esbuild's `BuildContext` with `Disposable` and `AsyncDisposable`,
+ * enabling `using` / `await using` for automatic cleanup of the esbuild
+ * context, per-build abort controller, and registered scope resources.
+ *
+ * @example
+ * ```ts
+ * await using ctx = await context({ entryPoints: ["/index.tsx"] });
+ * const r1 = await rebuild(ctx);
+ * // … modify VFS …
+ * const r2 = await rebuild(ctx);
+ * // ← esbuild context disposed, background fetches aborted at end of scope
+ * ```
+ */
 export interface BuildContext extends ESBUILD.BuildContext, AsyncDisposable, Disposable {
   state: Context<LocalState>;
 };
@@ -120,17 +136,26 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
       state: StateContext,
       ...context_result,
 
-      // Enable `using ctx = await context(...)` for automatic cleanup
+      /**
+       * Synchronous dispose — fires cleanup without awaiting.
+       * Prefer `await using` for complete cleanup.
+       */
       [Symbol.dispose]() {
         void dispose(this as BuildContext);
       },
 
-      // Enable `await using ctx = await context(...)` for automatic cleanup
+      /**
+       * Async dispose — awaits full cleanup (esbuild context + abort + scope).
+       * Used by `await using ctx = await context(...)`.
+       */
       [Symbol.asyncDispose]() {
         return dispose(this as BuildContext);
       },
     }
   } catch (e) {
+    // Caller won't receive a disposable context — clean up before re-throwing.
+    try { await disposables.disposeAsync(); } catch { /* don't mask the original error */ }
+
     const err = e as Error;
     if (!("msgs" in err)) {
       dispatchEvent(BUILD_ERROR, err);
@@ -140,9 +165,11 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
   }
 }
 
-export async function rebuild(ctx: BuildContext): Promise<BuildResult> {
+export async function rebuild(ctx: BuildContext): Promise<DisposableBuildResult> {
   const { state: StateContext } = ctx;
   let build_result: ESBUILD.BuildResult;
+
+  const disposables = fromContext("scope", StateContext);
 
   try {
     try {
@@ -170,11 +197,22 @@ export async function rebuild(ctx: BuildContext): Promise<BuildResult> {
       } else throw e;
     }
 
-    return await formatBuildResult({
+    const formatted = await formatBuildResult({
       state: StateContext,
       ...build_result
     });
+
+    // Disposal is idempotent — safe to call multiple times.
+    // The flag prevents double-dispose if the caller calls both
+    // `[Symbol.dispose]()` and later `[Symbol.asyncDispose]()`.
+    return Object.assign(formatted, {
+      [Symbol.dispose]() { void disposables.disposeAsync() },
+      [Symbol.asyncDispose]() { return disposables.disposeAsync() },
+    });
   } catch (e) {
+    // Caller won't receive a disposable result — clean up before re-throwing.
+    try { await disposables.disposeAsync(); } catch { /* don't mask the original error */ }
+
     const err = e as Error;
     if (!("msgs" in err)) {
       dispatchEvent(BUILD_ERROR, err);
@@ -184,10 +222,16 @@ export async function rebuild(ctx: BuildContext): Promise<BuildResult> {
   }
 }
 
-export async function cancel(build_ctx: BuildContext): Promise<void> {
+export async function cancel(ctx: BuildContext): Promise<void> {
   try {
     try {
-      await build_ctx.cancel();
+      await ctx.cancel();
+
+      // Dispose per-build resources (aborts background fetches, etc.)
+      const disposables = fromContext("scope", ctx.state);
+      if (disposables) {
+        await disposables.disposeAsync();
+      }
     } catch (e) {
       const fail = e as ESBUILD.BuildFailure;
       if (fail.errors) {
@@ -212,13 +256,13 @@ export async function cancel(build_ctx: BuildContext): Promise<void> {
   }
 }
 
-export async function dispose(build_ctx: BuildContext): Promise<void> {
+export async function dispose(ctx: BuildContext): Promise<void> {
   try {
     try {
-      await build_ctx?.dispose?.();
+      await ctx?.dispose?.();
 
       // Dispose per-build resources (aborts background fetches, etc.)
-      const disposables = fromContext("scope", build_ctx.state);
+      const disposables = fromContext("scope", ctx.state);
       if (disposables) {
         await disposables.disposeAsync();
       }

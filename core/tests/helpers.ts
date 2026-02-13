@@ -9,7 +9,7 @@
  */
 
 import type { BuildConfig } from "../types.ts";
-import type { BuildResult } from "../build.ts";
+import type { BuildResult, DisposableBuildResult } from "../build.ts";
 import type { PackageJson } from "@bundle/utils/types";
 import type { ResolverConditionInputs } from "@bundle/utils/resolve-conditions";
 
@@ -86,7 +86,7 @@ export {
 export async function buildWithEntry(
   entryCode: string,
   config: BuildConfig = {},
-): Promise<BuildResult> {
+): Promise<DisposableBuildResult> {
   const fs = await TheFileSystem;
   await setFile(fs, "/index.tsx", entryCode);
 
@@ -124,7 +124,7 @@ export async function buildWithEntry(
 export function buildPackage(
   specifier: string,
   config: BuildConfig = {},
-): Promise<BuildResult> {
+): Promise<DisposableBuildResult> {
   return buildWithEntry(`export * from "${specifier}";`, config);
 }
 
