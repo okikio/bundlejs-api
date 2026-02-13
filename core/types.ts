@@ -79,18 +79,44 @@ export interface LocalState<T = unknown> extends TarballState, record {
   filesystem: IFileSystem<T>,
 
   /**
-   * Per-build resource disposal stack.
+   * Per-build resource scope.
+   *
+   * Anything that must be torn down at the end of the build (workers,
+   * wasm runtimes, in-flight background work, etc.) should be registered here.
    *
    * Registers cleanup callbacks (abort controllers, WASM handles, workers,
    * etc.) that run when the build finishes or the context is disposed.
    * Resources are released in **LIFO** order.
    *
+   * @example
+   * ```ts
+   * // Plugin-side cleanup
+   * const scope = fromContext('scope', StateContext);
+   * const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+   *
+   * scope.defer(function () {
+   *   worker.terminate();
+   * });
+   * ```
+   *
+   * @example
+   * ```ts
+   * // Adopt a non-disposable value with a disposer
+   * scope.adopt(wasmRuntime, function (rt) {
+   *   rt.close();
+   * });
+   * ```
+   *
    * @see https://github.com/tc39/proposal-explicit-resource-management
    */
-  disposables: AsyncDisposableStack,
+  scope: AsyncDisposableStack,
 
   /**
-   * Abort signal scoped to this build’s lifetime.
+   * Abort controller scoped to this build’s lifetime.
+   * Put simply, it allows you to cancel individual builds.
+   *
+   * Use this for fetches or long-running work that should stop when the build
+   * is canceled/disposed.
    *
    * Threaded through background fetch operations so they are cancelled
    * when the build finishes. Prevents resource leaks from fire-and-forget
@@ -98,7 +124,7 @@ export interface LocalState<T = unknown> extends TarballState, record {
    *
    * @see https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
    */
-  abortSignal: AbortSignal,
+  abort: AbortController,
 
   /**
    * Versions

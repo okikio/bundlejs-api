@@ -91,8 +91,8 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
     filesystem: Context.opaque(await filesystem),
     assets: [],
     config: Context.opaque(createConfig("build", opts)),
-    disposables: Context.opaque(disposables),
-    abortSignal: Context.opaque(abortController.signal),
+    scope: Context.opaque(disposables),
+    abort: Context.opaque(abortController),
 
     failedExtensionChecks: new Set(),
     failedManifestUrls: new Set(),

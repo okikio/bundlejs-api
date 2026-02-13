@@ -164,8 +164,8 @@ export async function fetchAssets<T>(
   const matches = Array.from(code.matchAll(rgx)) as RegExpMatchArray[];
 
   const promises = matches.map(async ([, assetURL]) => {
-    const signal = fromContext("abortSignal", StateContext);
-    const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL), { signal });
+    const abort = fromContext("abort", StateContext);
+    const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL), { signal: abort.signal });
 
     // Store asset in virtual file system for bundle analyzer
     if (FileSystem) {
@@ -231,7 +231,7 @@ export async function determineExtension<T>(
     ? fromContext("failedExtensionChecks", StateContext)
     : null;
   const failedSet = failedExtChecks ?? new Set<string>();
-  const signal = StateContext ? fromContext("abortSignal", StateContext) : undefined;
+  const abort = StateContext ? fromContext("abort", StateContext) : undefined;
 
   let firstError: Error | undefined;
 
@@ -247,10 +247,10 @@ export async function determineExtension<T>(
       // Background refresh with extensionless URLs can 404 if the CDN doesn't consistently
       // redirect/resolve extensionless paths.
       if (headersOnly) {
-        const { url, contentType } = await fetchPkgHeaders(testUrl, { cacheMode: 'reload', signal });
+        const { url, contentType } = await fetchPkgHeaders(testUrl, { cacheMode: 'reload', signal: abort?.signal });
         return { url, contentType };
       } else {
-        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal', signal });
+        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal', signal: abort?.signal });
         return { url, contentType, content };
       }
     } catch (e) {

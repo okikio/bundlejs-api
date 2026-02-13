@@ -18,9 +18,8 @@ import { init } from "./init.ts";
 import { BUILD_ERROR, INIT_LOADING, LOGGER_ERROR, dispatchEvent } from "./configs/events.ts";
 import { DEFAULT_CDN_HOST, getCDNUrl } from "./utils/cdn-format.ts";
 
-export interface BuildContext extends ESBUILD.BuildContext {
+export interface BuildContext extends ESBUILD.BuildContext, AsyncDisposable, Disposable {
   state: Context<LocalState>;
-  [Symbol.asyncDispose](): Promise<void>;
 };
 
 export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem): Promise<BuildContext> {
@@ -28,6 +27,11 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
     dispatchEvent(INIT_LOADING);
 
   // -- Per-build resource lifecycle -------------------------------------------
+  // Create (or reuse) per-build resources, and ensure abort fires on dispose.
+  //
+  // Note:
+  // - We intentionally connect `abort.abort()` to `scope` disposal so that
+  //   background work can stop when the build finishes.
   const disposables = new AsyncDisposableStack();
   const abortController = new AbortController();
   disposables.defer(() => abortController.abort());
@@ -36,8 +40,9 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
     filesystem: Context.opaque(await filesystem),
     assets: [],
     config: Context.opaque(createConfig("build", opts)),
-    disposables: Context.opaque(disposables),
-    abortSignal: Context.opaque(abortController.signal),
+
+    scope: Context.opaque(disposables),
+    abort: Context.opaque(abortController),
 
     failedExtensionChecks: new Set(),
     failedManifestUrls: new Set(),
@@ -115,9 +120,14 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
       state: StateContext,
       ...context_result,
 
+      // Enable `using ctx = await context(...)` for automatic cleanup
+      [Symbol.dispose]() {
+        void dispose(this as BuildContext);
+      },
+
       // Enable `await using ctx = await context(...)` for automatic cleanup
       [Symbol.asyncDispose]() {
-        return dispose(this as unknown as BuildContext);
+        return dispose(this as BuildContext);
       },
     }
   } catch (e) {
@@ -208,7 +218,7 @@ export async function dispose(build_ctx: BuildContext): Promise<void> {
       await build_ctx?.dispose?.();
 
       // Dispose per-build resources (aborts background fetches, etc.)
-      const disposables = fromContext("disposables", build_ctx.state);
+      const disposables = fromContext("scope", build_ctx.state);
       if (disposables) {
         await disposables.disposeAsync();
       }

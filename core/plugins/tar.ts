@@ -525,8 +525,8 @@ export async function fetchAndExtractTarball<T>(
   if (/^https?:\/\//.test(source)) {
     // HTTP: fetch from network / shared cache.
     dispatchEvent(LOGGER_INFO, `Fetching tarball candidate: ${source}`);
-    const signal = fromContext("abortSignal", StateContext);
-    const result = await fetchWithCache(source, { signal });
+    const abort = fromContext("abort", StateContext);
+    const result = await fetchWithCache(source, { signal: abort?.signal });
     response = result.response;
     
     // Build descriptive log message
