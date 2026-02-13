@@ -201,7 +201,15 @@ CdnPlugin        Bare import → resolve from CDN               ── YES ─�
                   4. Return CDN URL in http-url namespace
 ```
 
-Each plugin has one job; complex behavior emerges from their composition.
+Each plugin has one job; complex behavior emerges from their composition. These six plugins are individually simple, but together they unlock scenarios that no single plugin could handle — keep these in mind as you read through each one:
+
+- **PR preview builds** — TarballPlugin was originally built for this: when a [pkg.pr.new](https://pkg.pr.new) tarball URL appears as a dependency, TarballPlugin fetches and extracts it while CdnPlugin resolves its npm dependencies normally. You can measure the bundle size of an unreleased package in seconds.
+- **React Native bundling** — CDNs like unpkg.com intermittently return 503 errors when fetching files from `react-native` and related packages (the root cause is unclear, but the failures are consistent enough to block bundling). Registry tarball mode (TarballPlugin + CdnPlugin) works around this by fetching the entire package as a `.tgz` from the npm registry in a single request — no individual file fetches that can 503. Separately, `react-native` ships raw [Flow](https://flow.org/)-annotated `.js` files that esbuild cannot parse, so content pre-processing (VFSPlugin and HttpPlugin) strips Flow annotations before esbuild sees them. VFSPlugin's extension probing also handles non-standard suffixes like `.native` and `.fx`. These are independent concerns that combine to make React Native bundleable.
+- **Large-package fetch reduction** — Packages like `lodash-es` or `@aws-sdk/*` have hundreds of internal imports. In CDN mode, each import is a separate HTTP fetch. In registry mode, the entire package downloads as one tarball, and all subsequent resolution is local VFS lookups.
+- **Private registries** — CdnPlugin routes through scoped registries with auth tokens, TarballPlugin extracts the resulting tarballs, and the registry preference propagates through the entire transitive dependency tree automatically — no per-package configuration needed.
+- **Tree-shaking at CDN scale** — CdnPlugin resolves entry points, HttpPlugin fetches only the files esbuild actually follows, and `sideEffects` metadata tells esbuild which unused files are safe to drop. One import from `lodash-es` bundles to ~1 kB instead of ~80 kB.
+
+The following sections walk through each plugin in registration order — the individual descriptions explain *how* each plugin works, but refer back to these scenarios when you want to see the bigger picture.
 
 ---
 
@@ -273,7 +281,10 @@ With `polyfill: false` (default), the same import returns `{ external: true }` �
 
 > **Source:** [core/plugins/tar.ts](../core/plugins/tar.ts)
 
-Handles tarball-based package sources from **three branches**:
+Not all packages live on CDNs. Tarball support was originally built for **PR preview builds** — [pkg.pr.new](https://pkg.pr.new) serves unreleased packages as `.tgz` URLs, and TarballPlugin fetches and extracts them so bundlejs can measure their size before they're published. That same extraction machinery later enabled **registry tarball mode**, which downloads entire packages from the npm registry as tarballs — a workaround for CDN reliability issues (unpkg.com intermittently returns 503 errors on some `react-native` package files) and a performance optimization for large packages with hundreds of internal imports.
+
+The TarballPlugin handles all of these through **three resolution branches**:
+
 1. **HTTP tarball URLs** — `pkg.pr.new`, npm registry tarballs (`registry.npmjs.org/…/-/….tgz`), GitHub release tarballs, or any URL whose pathname contains a tarball extension
 2. **VFS tarball paths** — absolute paths in the in-memory filesystem (e.g., `/packages/my-lib.tgz`)
 3. **Self-reference imports** — when code *inside* an extracted tarball imports its own package name, resolves against the tarball's manifest instead of fetching from CDN
@@ -301,11 +312,7 @@ Handles tarball-based package sources from **three branches**:
 
 **Must be registered before VFS.** Without this ordering, a file like `/packages/my-lib.tgz` would be claimed by the VirtualFileSystemPlugin as a raw blob before the TarballPlugin could intercept and extract it.
 
-**Detection** is delegated to [utils/archive-detect.ts](../utils/archive-detect.ts):
-- `isTarballUrl()` checks for CDN-style origins (`getCDNStyle() === "tarball"`) *or* delegates to `isTarballPath()` for extension-based detection
-- `findTarballSplitInPathname()` walks pathname segments via `detectArchiveFromPathHint()` — the first tarball-like segment is the split point between tarball fetch path and subpath
-
-The tar plugin has **zero extension-matching logic of its own** — add a new tarball extension to `archive-detect` and it's automatically recognized.
+**How the plugin identifies tarballs.** The TarballPlugin itself has zero extension-matching logic — all detection is delegated to [utils/archive-detect.ts](../utils/archive-detect.ts), which means adding a new archive format is a single change in one file. Detection works at two levels: `isTarballUrl()` recognizes tarball-hosting CDNs (like `pkg.pr.new`) and tarball file extensions (like `.tgz`), while `findTarballSplitInPathname()` walks URL segments to split the tarball fetch path from the subpath within the archive:
 
 **Concrete example — URL splitting for a `pkg.pr.new` tarball:**
 
@@ -377,7 +384,7 @@ Input URL: https://registry.npmjs.org/react/-/react-19.0.0.tgz/package/index.js
 
 An edge-case guard handles manifests with `main: "."` — after `normalizeResolvedPath(".")` produces `"/."`, `resolvePackageEntry()` maps `"/"` and `"/."` to `"/index.js"` instead of allowing esbuild to try reading a directory.
 
-**Exclusion behavior:** When `resolveAndProbeEntry()` reports an exclusion (a field-remapping set a package entry to `false`), the TarballPlugin respects the `remapFalse.packageRemapFalse` config: `"error"` (default) produces a build error; `"stub"` routes to an empty export via `EXCLUDED_MODULE_NAMESPACE`. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior).
+When entry resolution encounters an exclusion (a `package.json` field maps the entry to `false`), the TarballPlugin follows the `remapFalse.packageRemapFalse` policy — see [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
 
 ---
 
@@ -441,15 +448,20 @@ Imagine this VFS state after extracting a tarball:
              ▼  Return "/__tarballs__/a1b2c3d4/helpers/index.tsx"
 ```
 
-**Extension probing** in `resolveVfsPath()` follows a three-step algorithm:
+**Extension probing** in `resolveVfsPath()` goes beyond the basic example above. It handles a subtle ecosystem problem: the React Native / Expo ecosystem uses non-standard suffixes like `.fx`, `.types`, and `.native` where the actual files have an additional `.ts` or `.js` extension (e.g., `./Expo.fx` → `./Expo.fx.ts`). Without probing, these imports fail with `Could not resolve` errors. The algorithm is a three-step cascade:
 
 1. **Exact match** — if the file exists at the given path, return it
-2. **Extension probing** — append each of `RESOLVE_EXTENSIONS` (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`). This triggers **not only for extensionless imports** but also for **suffix-style imports** where the extension is *not* a known resolvable one. For example, `./Expo.fx` has extension `.fx` which is not in `RESOLVE_EXTENSIONS`, so probing appends `.ts` → `./Expo.fx.ts` ✓. But `./index.ts` has `.ts` which *is* in `RESOLVE_EXTENSIONS`, so no further probing occurs.
+2. **Extension probing** — append each of `RESOLVE_EXTENSIONS` (`.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`). This fires for extensionless imports *and* for suffix-style imports where the extension is not a known resolvable one — `./Expo.fx` has `.fx` (not in `RESOLVE_EXTENSIONS`), so probing tries `.ts` → `./Expo.fx.ts` ✓. But `./index.ts` already has `.ts`, so no further probing occurs.
 3. **Index fallback** — try `<path>/index.{tsx,ts,jsx,js,css,json}`
 
-> **Why suffix-style probing matters:** The React Native / Expo ecosystem uses non-standard suffixes like `.fx`, `.types`, and `.native` where the real files have an additional `.ts` or `.js` extension. Without this probing, imports like `./Expo.fx` produce `Could not resolve` errors because esbuild trusts the VFS plugin to handle resolution.
+> **Think of it like a file finder with a fallback chain.** If you ask for a file and it’s not there, the VFS tries adding common extensions, then looks for an `index` file in a directory of that name — the same heuristics Node.js and Metro use, but against an in-memory filesystem.
 
-**Content pre-processing** runs in the `onLoad` handler: **Flow type stripping** (removes Flow annotations from React Native ecosystem files) and **JSX loader upgrade** (detects JSX in `.js` files). See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
+**Content pre-processing** runs in the `onLoad` handler before esbuild sees the file. Two transformations handle ecosystem quirks that would otherwise cause parse failures:
+
+- **Flow type stripping** — removes [Flow](https://flow.org/) type annotations from React Native ecosystem files. Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
+- **JSX loader upgrade** — detects JSX syntax in `.js` files and switches the esbuild loader from `js` to `jsx`. Many React Native packages ship JSX in `.js` files because Metro handles it transparently.
+
+Together with suffix-style extension probing, these transformations are what make React Native packages — which were designed for Metro’s permissive parser — work inside esbuild’s stricter world.
 
 ---
 
@@ -522,15 +534,7 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **five roles**:
      ▼  Fetch the browser-specific file instead
 ```
 
-**Per-module exclusion handling:** When a manifest field remapping maps a module to `false`, the HttpPlugin respects `remapFalse.importRemapFalse`:
-
-| Policy | Behavior |
-|:-------|:---------|
-| `"stub"` *(default)* | Return empty export via `EXCLUDED_MODULE_NAMESPACE` — spec-compliant, matches webpack/rollup |
-| `"error"` | Produce a build error |
-| `"external"` | Mark the import as external (preserved verbatim in output) |
-
-The `onLoad` handler for `EXCLUDED_MODULE_NAMESPACE` serves an empty export (`export default {}`) and emits a warning (unless `warnOnStubbedRemapFalse` is `false`). See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior).
+When a remapping resolves to `false` (meaning "this module doesn't exist on this platform"), the HttpPlugin follows the `remapFalse.importRemapFalse` policy — defaulting to an empty stub export that keeps the build alive. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
 
 **Content pre-processing** in the `onLoad` handler runs the same two transformations as VFSPlugin: Flow stripping and JSX loader upgrade. Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers**.
 
@@ -550,18 +554,18 @@ Runs last — by this point, every other strategy has had a chance. This plugin 
 
 Also handles **JSR specifiers** (`jsr:@scope/name`), **npm aliases** (`npm:pkg@version`), and **subpath imports** (`#internal/...`). The full resolution algorithm is detailed in [How Resolution Works](#how-resolution-works).
 
-**Package-level exclusion handling:** When `resolvePackageEntry()` reports a package as excluded (e.g., `browser: false` for the entire package), the CdnPlugin respects `remapFalse.packageRemapFalse`:
-
-| Policy | Behavior |
-|:-------|:---------|
-| `"error"` *(default)* | Produce a build error with a descriptive message based on `ExclusionReason` |
-| `"stub"` | Route to an empty export via `EXCLUDED_MODULE_NAMESPACE` |
-
-See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior).
+When `resolvePackageEntry()` reports a whole-package exclusion (e.g., `"browser": false`), the CdnPlugin follows the `remapFalse.packageRemapFalse` policy — defaulting to a build error that forces the user to address the dependency. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for configuration options.
 
 #### Registry Tarball Mode
 
-When the CDN origin is a **registry** (`getCDNStyle(cdn) === "registry"` — triggered by `cdn: "npm"`, `cdn: "npm.registry"`, or `cdn: "https://registry.npmjs.org"`), the CdnPlugin downloads the **entire package tarball** instead of resolving individual files:
+CDN mode works well for most packages, but it has two weaknesses:
+
+1. **Large packages generate too many HTTP fetches.** Packages like `lodash-es` or `@aws-sdk/*` have hundreds of internal imports. Each import triggers a separate HTTP request to the CDN, which is slow and can hit rate limits.
+2. **CDN reliability issues.** Some CDNs intermittently fail on certain packages. unpkg.com, for example, returns 503 errors when fetching files from `react-native` and related packages — the root cause is unclear, but the failures are consistent enough to make CDN-mode bundling unreliable for those packages.
+
+Registry tarball mode solves both problems. When the CDN origin is a **registry** (`cdn: "npm"`, `cdn: "npm.registry"`, or `cdn: "https://registry.npmjs.org"`), the CdnPlugin downloads the **entire package tarball** in a single HTTP request, extracts it to the VFS, and resolves entry points locally — no per-file CDN fetches, no 503 risk:
+
+> **Why not make this the default?** Downloading full tarballs uses significantly more memory than fetching individual files on demand. Deno Deploy isolates have a **512 MB memory limit**, and a single large tarball (plus its transitive dependencies) can consume a meaningful portion of that budget. CDN mode only fetches the files esbuild actually follows during bundling, keeping memory usage proportional to the *used* code rather than the *entire* package. Registry mode is opt-in (`cdn: "npm.registry"`) for when reliability or fetch count matters more than memory efficiency.
 
 ```
   ┌───── User code ──────┐            ┌──── Registry ─────┐
@@ -579,11 +583,9 @@ When the CDN origin is a **registry** (`getCDNStyle(cdn) === "registry"` — tri
                                       └────────────────────┘
 ```
 
-The flow: resolve version → fetch manifest → construct tarball URL → route through TarballPlugin (which fetches, extracts to VFS, and resolves the entry point).
+The flow: resolve version → fetch manifest → construct tarball URL → route through TarballPlugin (which fetches, extracts to VFS, and resolves the entry point). This also provides exact npm parity — no CDN-specific quirks, and the content pre-processing pipeline handles Flow and JSX issues before esbuild parses anything.
 
-**Why registry mode exists:** Large packages with many internal imports (lodash-es, @aws-sdk/*) generate hundreds of individual HTTP fetches in CDN mode. Registry mode collapses this into a single tarball download + local VFS resolution. It also provides exact npm parity and eliminates CDN-specific quirks.
-
-**Transitive dependency propagation.** All bare imports from within extracted tarballs also resolve through the registry via two complementary mechanisms:
+**Transitive dependency propagation.** Registry mode doesn't just apply to the top-level import — all bare imports from within extracted tarballs also resolve through the registry via two complementary mechanisms:
 
 1. **Global config** — when the user sets `cdn: "npm.registry"`, the CdnPlugin's origin is the registry for *every* bare import, and the HttpPlugin's `REGISTRY_HOST` check ensures HTTP-loaded files also route their deps through the registry.
 
@@ -675,7 +677,7 @@ getAuthHeaderForRegistry("https://registry.npmjs.org/react", config)
 
 ## How Resolution Works
 
-The CdnPlugin and its resolution utilities must faithfully implement the **Node.js module resolution algorithm** — the set of rules Node.js uses to find the actual file behind an `import` statement — but against *CDN-hosted packages* instead of a local `node_modules` directory.
+The plugin pipeline above describes *which* plugin handles each import. This section describes *how* the CdnPlugin and its resolution utilities actually find the right file — by faithfully implementing the **Node.js module resolution algorithm** (the set of rules Node.js uses to find the actual file behind an `import` statement) against *CDN-hosted packages* instead of a local `node_modules` directory.
 
 bundlejs supports multiple CDN sources. The `cdn` config option selects which one — each has its own URL format (from [core/utils/cdn-format.ts](../core/utils/cdn-format.ts)):
 
@@ -1010,7 +1012,9 @@ bundlejs supports [WHATWG import maps](https://html.spec.whatwg.org/multipage/we
 
 ## Remapping and Exclusion Behavior
 
-Path remapping fields (`browser`, `react-native`, `electron`) can map packages or individual modules to `false`, meaning "this doesn't exist on this platform." The `remapFalse` config controls how the bundler reacts.
+The plugin sections above mentioned exclusions in passing — what happens when a `package.json` field maps a module to `false`. This section is the authoritative reference for that behavior.
+
+Path remapping fields (`browser`, `react-native`, `electron`) can map packages or individual modules to `false`, meaning "this doesn't exist on this platform." For example, a package might declare `"browser": { "fs": false }` to signal that its filesystem code has no browser equivalent. The `remapFalse` config controls how the bundler reacts.
 
 ### Two Levels of Exclusion
 
@@ -1096,7 +1100,33 @@ When `"stub"` is active and `warnOnStubbedRemapFalse` is `true` (default), the `
 
 > **Source:** [core/utils/flow-strip.ts](../core/utils/flow-strip.ts)
 
-After a file is resolved and fetched, but *before* esbuild parses it, bundlejs runs content-aware transformations. The most significant is **Flow type stripping** — removing Meta's [Flow](https://flow.org/) type annotations from JavaScript files.
+Flow stripping is an independent concern from tarball/registry support — it is needed regardless of *how* the files arrive (CDN fetch, tarball extraction, or VFS). The files themselves contain [Flow](https://flow.org/) type annotations that esbuild (and every non-Metro bundler) cannot parse.
+
+That said, Flow stripping and registry mode *combine powerfully* for React Native. CDNs like unpkg.com have reliability issues with `react-native` packages (intermittent 503 errors — see [Registry Tarball Mode](#registry-tarball-mode)), so registry mode fetches the entire package as a tarball. Flow stripping then cleans the extracted files before esbuild sees them. Neither feature alone is sufficient — together they make React Native bundleable:
+
+> **The complete React Native pipeline:**
+>
+> ```
+>   import "react-native"    (bare import)
+>      │
+>      ▼  CdnPlugin (registry mode)                     ← works around CDN 503 errors
+>      Fetch entire tarball from registry.npmjs.org
+>      │
+>      ▼  TarballPlugin
+>      Extract to VFS: /__tarballs__/<hash>/
+>      │
+>      ▼  VFSPlugin / HttpPlugin (onLoad)                ← cleans unparseable source
+>      Flow stripping: remove `import typeof`, `opaque type`, etc.
+>      JSX upgrade: detect JSX in .js files
+>      │
+>      ▼  VFSPlugin (onResolve)                          ← handles Metro conventions
+>      Suffix probing: resolve ./Expo.fx → ./Expo.fx.ts
+>      │
+>      ▼  esbuild
+>      Parse clean JavaScript, bundle normally
+> ```
+
+After a file is resolved and fetched, but *before* esbuild parses it, bundlejs runs content-aware transformations. The most significant is **Flow type stripping** — removing Flow type annotations from JavaScript files.
 
 > **Why this exists:** The React Native / Metro / Expo ecosystem ships raw Flow-annotated `.js` files to npm. Metro (React Native's bundler) strips Flow via Babel automatically — but every other bundler (esbuild, webpack, Rollup) chokes on Flow syntax like `import typeof`, `opaque type`, and `$Exact<T>`. The specific trigger: `react-native`'s `index.js` contains `import typeof ActionSheetIOS from '...'` — invalid in both JavaScript and TypeScript.
 
@@ -1157,7 +1187,7 @@ const Platform          /*                  */ = { OS: 'ios' };
 
 ## Plugin Shared State
 
-All six plugins share state through a **`Context`** object — a reactive, hierarchical data container built on `EventTarget` and `Proxy` (defined in [core/context/context.ts](../core/context/context.ts)).
+The six plugins described above need to coordinate: CdnPlugin writes tarballs that VFSPlugin reads, HttpPlugin caches manifests that CdnPlugin reuses, and all plugins share a single VFS. This coordination happens through a **`Context`** object — a reactive, hierarchical data container built on `EventTarget` and `Proxy` (defined in [core/context/context.ts](../core/context/context.ts)).
 
 Every build creates a **`LocalState`** (from [core/types.ts](../core/types.ts)):
 
@@ -1211,7 +1241,7 @@ fromContext("origin", StateContext);  // undefined (isolated to cdnContext)
 
 ## The Edge Runtime
 
-The HTTP API layer lives in `@bundle/edge` and runs on **[Deno Deploy](https://deno.com/deploy)**. The entry point exports a `fetch` handler (in [edge/mod.ts](../edge/mod.ts)):
+Everything described so far — the plugin pipeline, resolution algorithm, content pre-processing — is the `@bundle/core` engine. The **edge runtime** wraps that engine in an HTTP API, deployed on **[Deno Deploy](https://deno.com/deploy)**. The entry point exports a `fetch` handler (in [edge/mod.ts](../edge/mod.ts)):
 
 ```typescript
 export default {
@@ -1266,7 +1296,7 @@ export default {
 
 ## Caching Architecture
 
-bundlejs uses **multi-tiered caching**:
+A single build involves dozens to hundreds of HTTP fetches — package manifests, source files, redirects. Without caching, every request to the bundlejs API would repeat all of that work. bundlejs uses **multi-tiered caching** to avoid it:
 
 ```
   Request
@@ -1447,7 +1477,7 @@ outdir: "/",
 
 ## Resource Lifecycle & Explicit Resource Management
 
-bundlejs implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal. Every `build()`, `transform()`, and `context()` call returns an object that implements `Disposable` and `AsyncDisposable`, enabling the `using` / `await using` syntax for automatic cleanup.
+Each build spins up background fetches, in-flight deduplication, and plugin-scoped resources — all of which must be cleaned up when the build finishes. bundlejs implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal so that cleanup happens automatically. Every `build()`, `transform()`, and `context()` call returns an object that implements `Disposable` and `AsyncDisposable`, enabling the `using` / `await using` syntax.
 
 ### Why this matters
 
@@ -1633,14 +1663,14 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 | Limitation | Details |
 |:-----------|:--------|
 | **WASM esbuild is slower** | ~2–5× slower than native Go. Acceptable for size checks; too slow for build-on-save. |
-| **CDN dependency** | If unpkg goes down, resolution fails. Configurable CDN mitigates; *no automatic failover*. |
+| **CDN dependency** | If unpkg goes down, resolution fails. Configurable CDN mitigates; *no automatic failover*. unpkg intermittently 503s on some `react-native` packages — use `cdn: "npm.registry"` as a workaround. |
 | **Extension probing = HTTP requests** | Up to 18 URL probes per extensionless import. HTTP/2 multiplexing and `failedExtensionChecks` caching help. |
 | **No git/workspace/link deps** | These require local filesystem or git. `file:` specs can use `vfs:`/`virtual:` equivalents. |
 | **Browser field inconsistency** | The dual-form `browser` field is npm's most inconsistent convention. bundlejs follows Node.js spec + esbuild behavior. |
 | **`"module"` condition is non-standard** | bundlejs (via esbuild) injects `"module"`. Matches webpack/Rollup/esbuild; absent from Node.js. |
 | **No dynamic import resolution** | `import(someVariable)` cannot resolve at build time (esbuild limitation). |
 | **Tarball decompression** | Only gzip + uncompressed tars extracted. npm tarballs are 100% gzip. Detection layer is broader. |
-| **Registry mode downloads full tarballs** | `cdn: "npm"` downloads the whole `.tgz`. Content-addressed cache ensures one fetch per package. Faster than hundreds of CDN requests for large packages. |
+| **Registry mode downloads full tarballs** | `cdn: \"npm\"` downloads the whole `.tgz`, using more memory than CDN mode (which fetches only files esbuild follows). Opt-in because Deno Deploy's 512 MB limit makes memory a real constraint. Content-addressed cache ensures one fetch per package per build. |
 | **`.npmrc` auth is opt-in** | Auth tokens are only extracted when `extractAuth: true` is passed. Security boundary for the web-facing bundler. |
 | **Env vars for full functionality** | `UPSTASH_URL`/`UPSTASH_TOKEN` (Redis), `GITHUB_AUTH_TOKEN` (gist links). Degrades gracefully without them. |
 | **`await using` recommended** | Callers should use `await using result = await build(…)` to ensure cleanup. Without it, per-build background fetches may outlive the caller and leak resources. |
