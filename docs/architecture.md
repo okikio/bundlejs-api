@@ -1445,44 +1445,158 @@ outdir: "/",
 > **WASM loading.** esbuild is always loaded as WebAssembly via `getEsbuild()` in [core/utils/get-esbuild.ts](../core/utils/get-esbuild.ts), using **esbuild v0.27.2**. The WASM binary is embedded as an encoded string in [core/wasm.ts](../core/wasm.ts) — no filesystem or network dependency for loading esbuild itself. WASM esbuild is roughly 2–5× slower than the native Go binary, but runs everywhere JavaScript runs.
 
 
+## Resource Lifecycle & Explicit Resource Management
+
+bundlejs implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal. Every `build()`, `transform()`, and `context()` call returns an object that implements `Disposable` and `AsyncDisposable`, enabling the `using` / `await using` syntax for automatic cleanup.
+
+### Why this matters
+
+Each build creates per-build resources that must be torn down when the caller is finished:
+
+- **Background stale-while-revalidate (SWR) fetches** — the caching layer fires `void backgroundRefresh(…)` calls that update the cache for future requests. Without cancellation, these outlive the build and cause resource leaks (Deno's test sanitizer flags them as leaked `fetchCancelHandle` / `op_cache_put` ops).
+- **In-flight request deduplication** — the `inflight` LRU map tracks pending network requests so concurrent builds don't duplicate HTTP calls.
+- **Plugin-registered resources** — plugins can register arbitrary cleanup callbacks on the per-build `AsyncDisposableStack` (workers, WASM runtimes, streams, etc.).
+
+### Per-build lifecycle
+
+Each `build()` and `context()` call creates:
+
+1. An **`AsyncDisposableStack`** (`scope`) — collects cleanup callbacks in LIFO order
+2. An **`AbortController`** (`abort`) — its signal threads through all background fetches
+
+Both are stored on `LocalState` and available to plugins via `fromContext('scope', StateContext)` and `fromContext('abort', StateContext)`.
+
+```
+  build() / context()
+       │
+       ├── Create AsyncDisposableStack (scope)
+       ├── Create AbortController (abort)
+       ├── Register: scope.defer(() => abort.abort())
+       │
+       ├── Run esbuild with plugin pipeline
+       │     ├── HttpPlugin: passes abort.signal to fetchPkg / fetchPkgHeaders
+       │     ├── TarPlugin: passes abort.signal to fetchWithCache
+       │     └── Background SWR refreshes carry abort.signal
+       │
+       └── Return result with [Symbol.asyncDispose] → scope.disposeAsync()
+                                                       ├── abort.abort()
+                                                       └── (any plugin-registered cleanup)
+```
+
+### Usage patterns
+
+**`build()` — one-shot build with automatic cleanup:**
+
+```typescript
+import { build } from '@bundle/core';
+
+{
+  await using result = await build({ entryPoints: ['/index.tsx'] });
+  console.log(result.contents[0].text);
+}
+// ← background fetches aborted, per-build scope disposed
+```
+
+**`context()` — long-lived context for watch/rebuild:**
+
+```typescript
+import { context, rebuild, dispose } from '@bundle/core';
+
+{
+  await using ctx = await context({ entryPoints: ['/index.tsx'] });
+  const r1 = await rebuild(ctx);
+  // … modify VFS …
+  const r2 = await rebuild(ctx);
+}
+// ← esbuild context disposed, background fetches aborted, scope cleaned up
+```
+
+**`transform()` — stateless, dispose is a no-op:**
+
+```typescript
+import { transform } from '@bundle/core';
+
+await using result = await transform('export const x = 1;');
+console.log(result?.code);
+// ← no-op dispose (transform has no per-call resources)
+```
+
+**Releasing the global WASM worker:**
+
+The esbuild WASM worker is a global singleton shared across builds. It is **not** torn down by per-build disposal (since you usually want it alive for subsequent builds). Call `stop()` explicitly when completely done:
+
+```typescript
+import { build, stop } from '@bundle/core';
+
+await using result = await build({ entryPoints: ['/index.tsx'] });
+// … use result …
+
+await stop(); // terminate WASM worker, free memory
+```
+
+### Error handling
+
+If `build()` or `context()` throws during setup (before returning a result), the function itself cleans up the `AsyncDisposableStack` before re-throwing. The caller never receives a disposable object, so no cleanup is needed on their end.
+
+```typescript
+try {
+  await using result = await build({ /* invalid config */ });
+} catch (e) {
+  // Resources already cleaned up by build() — no leak
+}
+```
+
+
 ## Using bundlejs as a Building Block
 
 ### As a library
 
 ```typescript
-import { build, transform } from "@bundle/core";
+import { build, transform, stop } from "@bundle/core";
 
-const result = await build({
-  entryPoints: ["/index.ts"],
-  cdn: "esm.sh",
-  esbuild: { format: "esm", minify: true },
-});
-// result.contents → minified output files
-// result.packageSizeArr → per-package install sizes
+{
+  await using result = await build({
+    entryPoints: ["/index.ts"],
+    cdn: "esm.sh",
+    esbuild: { format: "esm", minify: true },
+  });
+  // result.contents → minified output files
+  // result.packageSizeArr → per-package install sizes
+}
+// ← per-build resources disposed automatically
+
+await stop(); // release esbuild WASM worker when completely done
 ```
 
 ### With a custom VFS
 
 ```typescript
-import { build, useFileSystem, setFile } from "@bundle/core";
+import { build, useFileSystem, setFile, stop } from "@bundle/core";
 
 const fs = useFileSystem();
 const fsInstance = await fs;
 await setFile(fsInstance, "/index.ts", `export { useState } from "react";`);
 
-const result = await build({ entryPoints: ["/index.ts"] }, fs);
+{
+  await using result = await build({ entryPoints: ["/index.ts"] }, fs);
+  // use result.contents…
+}
+
+await stop(); // release WASM worker
 ```
 
 ### With incremental builds
 
 ```typescript
-import { context } from "@bundle/core";
+import { context, rebuild } from "@bundle/core";
 
-const ctx = await context({ entryPoints: ["/index.ts"] });
-const result1 = await ctx.rebuild();  // First build
-// ... modify VFS ...
-const result2 = await ctx.rebuild();  // Incremental, faster
-ctx.dispose();
+{
+  await using ctx = await context({ entryPoints: ["/index.ts"] });
+  const result1 = await rebuild(ctx);  // First build
+  // ... modify VFS ...
+  const result2 = await rebuild(ctx);  // Incremental, faster
+}
+// ← ctx automatically disposed (esbuild context + abort + scope)
 ```
 
 ### In CI pipelines
@@ -1529,6 +1643,7 @@ The event system (in [core/configs/events.ts](../core/configs/events.ts)) uses t
 | **Registry mode downloads full tarballs** | `cdn: "npm"` downloads the whole `.tgz`. Content-addressed cache ensures one fetch per package. Faster than hundreds of CDN requests for large packages. |
 | **`.npmrc` auth is opt-in** | Auth tokens are only extracted when `extractAuth: true` is passed. Security boundary for the web-facing bundler. |
 | **Env vars for full functionality** | `UPSTASH_URL`/`UPSTASH_TOKEN` (Redis), `GITHUB_AUTH_TOKEN` (gist links). Degrades gracefully without them. |
+| **`await using` recommended** | Callers should use `await using result = await build(…)` to ensure cleanup. Without it, per-build background fetches may outlive the caller and leak resources. |
 
 
 ## What to Do Next
