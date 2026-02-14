@@ -224,8 +224,10 @@ async function storeInCache(
   // Note: response.ok is false for 3xx, but fetch with redirect:'follow' 
   // resolves with the final 2xx response, so we're caching the final response
   if (!response.ok) {
-    // Cancel unconsumed body to prevent resource leak
-    void response.body?.cancel();
+    // Cancel unconsumed body to prevent resource leak.
+    // Must be awaited so `CacheResponseResource` handles are released
+    // before the caller's scope closes.
+    await response.body?.cancel();
     return;
   }
 
@@ -233,7 +235,7 @@ async function storeInCache(
   // cache-write, skip the write to avoid starting an `op_cache_put` that
   // would outlive the caller.
   if (signal?.aborted) {
-    void response.body?.cancel();
+    await response.body?.cancel();
     return;
   }
 
@@ -274,7 +276,8 @@ function doFetch(
     if (!response.ok) {
       // Cancel the body before throwing — prevents leaked response streams
       // when the caller never reads the body of a failed request.
-      void response.body?.cancel();
+      // Awaited to ensure `CacheResponseResource` is fully released.
+      await response.body?.cancel();
       throw new Error(`HTTP ${response.status}: ${response.statusText} for ${url}`);
     }
     
@@ -316,7 +319,7 @@ async function backgroundRefresh(
     // Check abort *after* fetch completes but *before* the cache write.
     // Avoids starting an `op_cache_put` that would outlive the caller.
     if (init.signal?.aborted) {
-      void response.body?.cancel();
+      await response.body?.cancel();
       return;
     }
 
@@ -338,7 +341,7 @@ async function backgroundRefresh(
         const response = await doFetch(finalUrl, init, retries);
 
         if (init.signal?.aborted) {
-          void response.body?.cancel();
+          await response.body?.cancel();
           return;
         }
 
@@ -442,8 +445,10 @@ export async function fetchWithCache(
       // Release the original cache response body if we cloned it.
       // Cache API responses from `cacheApi.match()` hold a `CacheResponseResource`;
       // if the original isn't consumed, that resource leaks across test boundaries.
+      // Must be awaited — fire-and-forget `cancel()` may not complete before the
+      // test/build scope closes, leaving the handle open.
       if (returnResponse !== cached) {
-        void cached.body?.cancel();
+        await cached.body?.cancel();
       }
 
       return {
@@ -477,7 +482,8 @@ export async function fetchWithCache(
       const clonedResponse = deduped.clone();
 
       // Release the original cache response to prevent CacheResponseResource leaks.
-      void deduped.body?.cancel();
+      // Awaited to ensure the handle is fully released within the current scope.
+      await deduped.body?.cancel();
 
       return {
         url: finalUrl,
@@ -585,7 +591,7 @@ export async function fetchHeaders(
     const contentType = response.headers.get("content-type");
     
     // Cancel body immediately - we only wanted headers
-    try { void response.body?.cancel(); } catch { /* ignore cancel errors */ }
+    try { await response.body?.cancel(); } catch { /* ignore cancel errors */ }
 
     if (contentType && /text\/html/i.test(contentType)) {
       throw new Error(`Received HTML instead of expected content for ${finalUrl}`);
