@@ -139,6 +139,8 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   // pluginData.cdnOrigin (set by HttpPlugin for CDN-follows-parent).
   const configuredCdn = fromContext("origin", StateContext)! ?? DEFAULT_CDN_HOST;
   const build = fromContext("build", StateContext)!;
+  const cdnScope = fromContext("scope", StateContext);
+  const cdnAbort = fromContext("abort", StateContext);
 
   const failedManifestUrls = fromContext("failedManifestUrls", StateContext) ?? new Set<string>();
   const packageManifestsMap = fromContext("packageManifests", StateContext)
@@ -268,7 +270,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           let resolvedSubpath = jsrSpec.subpath || "/mod.ts";
 
           try {
-            const versionMeta = await getJSRVersionMeta(jsrSpec.scope, jsrSpec.name, resolvedVersion);
+            const versionMeta = await getJSRVersionMeta(jsrSpec.scope, jsrSpec.name, resolvedVersion, {
+              signal: cdnAbort?.signal,
+              scope: cdnScope,
+            });
 
             // If subpath provided, try to resolve through exports
             if (jsrSpec.subpath && versionMeta.exports) {
@@ -520,7 +525,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         try {
           resolvedManifest = packageManifestsMap.get(packageId) ?? null;
           if (!resolvedManifest) {
-            resolvedManifest = await getPackageOfVersion(packageId, registry);
+            resolvedManifest = await getPackageOfVersion(packageId, registry, {
+              signal: cdnAbort?.signal,
+              scope: cdnScope,
+            });
             if (resolvedManifest) {
               packageManifestsMap.set(packageId, resolvedManifest);
             }
@@ -808,7 +816,10 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
       const packageId = `${effectiveName}@${knownVersion}`;
       if (!packageManifestsMap.get(packageId)) {
         try {
-          const _manifest = await getPackageOfVersion(packageId, registry);
+          const _manifest = await getPackageOfVersion(packageId, registry, {
+            signal: cdnAbort?.signal,
+            scope: cdnScope,
+          });
           if (_manifest) packageManifestsMap.set(packageId, _manifest);
         } catch (e) {
           dispatchEvent(LOGGER_WARN, "Could not store the package.json manifests of the dependencies we fetched.");
