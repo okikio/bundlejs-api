@@ -4,6 +4,7 @@ import type { DisposableBuildResult } from "./build.ts";
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
 import { ExternalPlugin } from "./plugins/external.ts";
 import { TarballPlugin } from "./plugins/tar.ts";
+import { PackagePlugin } from "./plugins/package.ts";
 import { AliasPlugin } from "./plugins/alias.ts";
 import { HttpPlugin } from "./plugins/http.ts";
 import { CdnPlugin } from "./plugins/cdn.ts";
@@ -111,6 +112,7 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
           AliasPlugin(StateContext),
           ExternalPlugin(StateContext),
           TarballPlugin(StateContext),
+          PackagePlugin(StateContext),
           VirtualFileSystemPlugin(StateContext),
           HttpPlugin(StateContext),
           CdnPlugin(withContext({ origin: host }, StateContext)),
