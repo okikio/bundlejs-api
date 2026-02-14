@@ -79,7 +79,7 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 4.4 | All-false browser field | *(synthetic)* | [04-browser-field-remapping.md](04-browser-field-remapping.md) |
 | 4.5 | Browser field ignored on non-browser | `readable-stream@4.7.0` | [04-browser-field-remapping.md](04-browser-field-remapping.md) |
 | 4.6 | Edge runtime: `browser` condition ≠ `browserField` | `readable-stream@4.7.0` | [04-browser-field-remapping.md](04-browser-field-remapping.md) |
-| 4.7 | **Relative import remapping (HttpPlugin)** | `@exodus/bytes@1.13.0` | [04-browser-field-remapping.md](04-browser-field-remapping.md) |
+| 4.7 | **Relative import remapping (PackagePlugin)** | `@exodus/bytes@1.13.0` | [04-browser-field-remapping.md](04-browser-field-remapping.md) |
 | 4.8 | Relative import exclusion (`false`) | *(synthetic)* | [04-browser-field-remapping.md](04-browser-field-remapping.md) |
 
 ### Platform-Specific Remapping
