@@ -92,8 +92,6 @@ export interface FetchOptions {
   init?: RequestInit;
   /** Number of retry attempts on failure. Default: 2 */
   retries?: number;
-  /** Whether to clone the response before returning. Default: true */
-  clone?: boolean;
   /** 
    * Cache behavior:
    * - 'normal': Use cache, update in background (stale-while-revalidate)
@@ -385,7 +383,6 @@ export async function fetchWithCache(
   const {
     init = {},
     retries = DEFAULT_RETRIES,
-    clone = true,
     cacheMode = 'normal',
   } = options;
 
@@ -437,19 +434,26 @@ export async function fetchWithCache(
         }
       }
 
-      // Clone response if requested (Cache API responses can be reused, but in-memory ones cannot)
-      const isMemory = !cacheApi;
-      const returnResponse =
-        isMemory ? cached.clone() : (clone ? cached.clone() : cached);
-
-      // Release the original cache response body if we cloned it.
-      // Cache API responses from `cacheApi.match()` hold a `CacheResponseResource`;
-      // if the original isn't consumed, that resource leaks across test boundaries.
-      // Must be awaited — fire-and-forget `cancel()` may not complete before the
-      // test/build scope closes, leaving the handle open.
-      if (returnResponse !== cached) {
-        await cached.body?.cancel();
-      }
+      // Consume-and-reconstruct: read the full body from the cache response,
+      // then build a fresh Response from the consumed bytes.
+      //
+      // Why not clone()?
+      //   Response.clone() uses ReadableStream.tee() internally.  In Deno,
+      //   cancelling one tee branch of a CacheResponseResource-backed stream
+      //   can deadlock when the other branch hasn't been consumed yet.
+      //   By fully consuming the body here we release the native
+      //   CacheResponseResource handle immediately — no tee, no cancel,
+      //   no deadlock.
+      //
+      // Memory cost is negligible: these are source-code files that would
+      // be buffered by tee() anyway, and the consumer reads the full body
+      // shortly after.
+      const body = await cached.arrayBuffer();
+      const returnResponse = new Response(body, {
+        headers: cached.headers,
+        status: cached.status,
+        statusText: cached.statusText,
+      });
 
       return {
         url: finalUrl,
@@ -479,15 +483,20 @@ export async function fetchWithCache(
     const deduped = await lookupCache(url, cacheApi);
     if (deduped) {
       const finalUrl = resolveRedirect(url);
-      const clonedResponse = deduped.clone();
 
-      // Release the original cache response to prevent CacheResponseResource leaks.
-      // Awaited to ensure the handle is fully released within the current scope.
-      await deduped.body?.cancel();
+      // Consume-and-reconstruct (same rationale as the primary cache-hit
+      // path above): fully read the body so the CacheResponseResource
+      // handle is released, then return a fresh Response.
+      const body = await deduped.arrayBuffer();
+      const returnResponse = new Response(body, {
+        headers: deduped.headers,
+        status: deduped.status,
+        statusText: deduped.statusText,
+      });
 
       return {
         url: finalUrl,
-        response: clonedResponse,
+        response: returnResponse,
         fromCache: true,
         redirected: url !== finalUrl,
       };
@@ -570,7 +579,6 @@ export async function fetchHeaders(
     const { url: finalUrl, response, fromCache } = await fetchWithCache(url, {
       init: { ...init, method: 'HEAD' },
       retries: 0,
-      clone: false,
       cacheMode,
       signal,
     });
@@ -583,7 +591,6 @@ export async function fetchHeaders(
     const { url: finalUrl, response, fromCache } = await fetchWithCache(url, {
       init: { ...init, method: 'GET' },
       retries,
-      clone: false,
       cacheMode: 'no-store', // Don't cache partial responses
       signal,
     });
