@@ -181,9 +181,9 @@ Expected: `getRuntimeDefaults("edge-light")` returns `{ conditions: ["edge-light
 **Regression signal:** If Cloudflare Workers builds get browser field remappings applied, the `browserField: false` override is not working. If Vercel Edge builds do NOT get remappings, the `browserField: true` setting is being ignored.
 
 
-## 4.7 — Browser field remapping for relative imports (HttpPlugin)
+## 4.7 — Browser field remapping for relative imports (PackagePlugin)
 
-**What it tests:** The HttpPlugin applies browser field remappings to relative imports *within* a package, not just at entry point resolution.
+**What it tests:** The PackagePlugin applies browser field remappings to relative imports *within* a package, not just at entry point resolution.
 
 > **This is the scenario that caught the original bug.** The CdnPlugin resolved the entry point correctly, but relative imports inside the package were not being remapped.
 
@@ -206,9 +206,9 @@ Expected: `getRuntimeDefaults("edge-light")` returns `{ conditions: ["edge-light
 When `utf8.js` internally imports `"./fallback/platform.js"`:
 
 1. CdnPlugin resolves the entry point (`./index.js` from `main`, since `browser` is an object)
-2. CdnPlugin passes `packageBaseUrl` in `pluginData`
+2. CdnPlugin passes `manifest` and `packageBaseUrl` in `pluginData`
 3. HttpPlugin resolves the relative import: `urlJoin(parentUrl, "../", "./fallback/platform.js")`
-4. HttpPlugin strips `packageBaseUrl` → gets `"./fallback/platform.js"`
+4. PackagePlugin intercepts (onResolve, HTTP namespace) — strips `packageBaseUrl` → gets `"./fallback/platform.js"`
 5. `applyManifestRemappings()` checks `browser` field → remaps to `"./fallback/platform.browser.js"`
 6. URL is reconstructed with the remapped path
 
@@ -219,7 +219,7 @@ When `utf8.js` internally imports `"./fallback/platform.js"`:
 
 ## 4.8 — Browser field exclusion for relative imports
 
-**What it tests:** When a browser field maps an internal relative import to `false`, the HttpPlugin returns an error.
+**What it tests:** When a browser field maps an internal relative import to `false`, the PackagePlugin returns an exclusion result.
 
 **Synthetic test:** A package whose browser field excludes an internal file:
 
@@ -233,6 +233,6 @@ When `utf8.js` internally imports `"./fallback/platform.js"`:
 
 When internal code does `import impl from "./lib/native-impl.js"`:
 
-Expected: `applyManifestRemappings()` returns `{ excluded: true, matchedField: "browser" }` → HttpPlugin returns an esbuild error: `"Module "./lib/native-impl.js" excluded by "browser" field"`.
+Expected: `applyManifestRemappings()` returns `{ excluded: true, matchedField: "browser" }` → PackagePlugin checks `remapFalse.importRemapFalse` policy. With the default `"stub"` policy, it returns the import in the `EXCLUDED_MODULE_NAMESPACE`, replacing it with an empty export stub. With `"error"`, it produces a build error.
 
 **Regression signal:** If the excluded file is silently fetched (and probably 404s or returns wrong content), the `false` exclusion for relative imports is not being enforced.

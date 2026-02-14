@@ -50,7 +50,7 @@ Expected: `react-native` field ignored → `module` → `lib/module/index.js`.
 
 ## 5.2 — React Native object-form path remapping
 
-**What it tests:** The `react-native` top-level field as an object (just like browser field object form). The HttpPlugin applies remappings for relative imports when the `react-native` condition is active.
+**What it tests:** The `react-native` top-level field as an object (just like browser field object form). PackagePlugin applies remappings for relative imports when the `react-native` condition is active.
 
 **Package:** `@exodus/bytes@1.13.0`
 
@@ -191,14 +191,14 @@ Internal imports like `"./fallback/platform.js"` resolve to the original path (t
 
 When internal code imports `"./lib/dom-impl.js"`:
 
-Expected: `react-native` field matches → value is `false` → `applyManifestRemappings()` returns `{ excluded: true, matchedField: "react-native" }` → HttpPlugin returns error: `"Module "./lib/dom-impl.js" excluded by "react-native" field"`.
+Expected: `react-native` field matches → value is `false` → `applyManifestRemappings()` returns `{ excluded: true, matchedField: "react-native" }` → PackagePlugin calls `buildExclusionResult()`, which checks `remapFalse.importRemapFalse` policy. With the default `"stub"` policy, returns the import in the `EXCLUDED_MODULE_NAMESPACE` (empty export stub). With `"error"`, produces a build error mentioning the `react-native` field.
 
 **Regression signal:** If the error message says `"excluded by "browser" field"` when the match came from `react-native`, the `matchedField` is not being propagated correctly.
 
 
 ## 5.7 — Remapping only applies to relative imports, not entry points
 
-**What it tests:** The generalized `applyManifestRemappings()` is only called by the HttpPlugin for relative imports within a package. Entry point resolution follows its own path through `resolveLegacy()`.
+**What it tests:** The generalized `applyManifestRemappings()` is only called by PackagePlugin for relative imports within a package. Entry point resolution follows its own path through `resolveLegacy()`.
 
 **Package:** `@exodus/bytes@1.13.0`
 
@@ -206,11 +206,11 @@ Expected: `react-native` field matches → value is `false` → `applyManifestRe
 /?q=@exodus/bytes@1.13.0
 ```
 
-The *entry point* resolution goes through `resolveLegacy()`, which handles `browser` string/object field for the entry point. The *internal relative imports* go through `applyManifestRemappings()` in the HttpPlugin.
+The *entry point* resolution goes through `resolveLegacy()`, which handles `browser` string/object field for the entry point. The *internal relative imports* go through `applyManifestRemappings()` in PackagePlugin's onResolve handlers.
 
 These are two separate code paths:
 1. `CdnPlugin → resolvePackageEntry() → resolveLegacy()` — entry point
-2. `HttpPlugin → HttpResolution → applyManifestRemappings()` — relative imports
+2. `PackagePlugin → onResolve → applyManifestRemappings()` — relative imports
 
 Both must apply remappings, but through different mechanisms.
 

@@ -193,9 +193,11 @@ Detection is ordered by cost (cheapest first):
 
 Flow stripping hooks into esbuild's `onLoad` phase — after content is fetched/read but before esbuild parses it:
 
-**HttpPlugin** ([core/plugins/http.ts](../../core/plugins/http.ts)):
+**PackagePlugin** ([core/plugins/package.ts](../../core/plugins/package.ts)) — the sole `onLoad` handler for **both** namespaces:
+
+**HTTP namespace** (CDN-fetched files):
 ```
-  CDN fetch → raw bytes
+  CDN fetch → raw bytes (via determineExtension)
        │
        ▼
   maybeStripFlow(content, { url })
@@ -207,7 +209,7 @@ Flow stripping hooks into esbuild's `onLoad` phase — after content is fetched/
   esbuild parse (with inferred loader)
 ```
 
-**VirtualFileSystemPlugin** ([core/plugins/fs.ts](../../core/plugins/fs.ts)):
+**VFS namespace** (tarball-extracted and user-authored files):
 ```
   VFS getFile() → raw bytes
        │
@@ -221,7 +223,7 @@ Flow stripping hooks into esbuild's `onLoad` phase — after content is fetched/
   esbuild parse (with inferred loader)
 ```
 
-**ExternalPlugin** does **not** need Flow stripping — it returns a static `export default {}` stub for builtin modules.
+**ExternalPlugin** does **not** need Flow stripping — it returns a static `export default {}` stub for builtin modules and excluded-module stubs.
 
 > **Ordering with JSX detection:** Flow stripping runs *before* loader inference. The result (cleaned source) is then passed to `inferLoader()`, which may upgrade the loader from `ts` to `tsx` if JSX is detected in the (now Flow-free) content. This ordering is correct: Flow type annotations could theoretically mask JSX patterns, so stripping first ensures accurate JSX detection.
 
@@ -424,14 +426,14 @@ Expected output: `import        Foo from './Foo';` (typeof replaced with spaces,
 Expected: Non-Flow → `{ contents: Uint8Array, wasStripped: false }`. Flow → `{ contents: string, wasStripped: true }`.
 
 
-### 20.12 — HttpPlugin strips Flow from CDN content
+### 20.12 — PackagePlugin strips Flow from CDN content
 
 **What it tests:** End-to-end: a Flow-annotated file fetched from a CDN is stripped before esbuild parses it.
 
 ```
 GET https://esm.sh/react-native@0.74.0/index.js
 → Response contains `import typeof ...`
-→ HttpPlugin.onLoad calls maybeStripFlow({ url: "https://esm.sh/react-native@0.74.0/index.js" })
+→ PackagePlugin.onLoad (HTTP namespace) calls maybeStripFlow({ url: "https://esm.sh/react-native@0.74.0/index.js" })
 → Flow detected (URL heuristic) and stripped
 → Clean JS returned to esbuild
 ```
@@ -439,11 +441,11 @@ GET https://esm.sh/react-native@0.74.0/index.js
 **Regression signal:** `Unexpected "typeof"` error from esbuild when bundling react-native.
 
 
-### 20.13 — VFS plugin strips Flow from tarball-extracted content
+### 20.13 — PackagePlugin strips Flow from tarball-extracted content
 
-**What it tests:** Flow annotations in files extracted from tarballs (via TarballPlugin → VFS) are stripped by VirtualFileSystemPlugin's `onLoad`.
+**What it tests:** Flow annotations in files extracted from tarballs (via TarballPlugin → VFS) are stripped by PackagePlugin's `onLoad` handler for the VFS namespace.
 
-Expected: `maybeStripFlow` is called in VFS `onLoad`, Flow content from tarball-extracted `.js` files is cleaned before esbuild receives it.
+Expected: `maybeStripFlow` is called in PackagePlugin's VFS `onLoad`, Flow content from tarball-extracted `.js` files is cleaned before esbuild receives it.
 
 
 ### 20.14 — Lazy loading of `flow-remove-types`
@@ -561,4 +563,4 @@ Expected: The embedded map's `sourcesContent[0]` is the exact original source te
 
 - **[Scenario 18 — JSX in `.js` Files](18-jsx-in-js-files.md):** Sister feature for the same ecosystem problem. Handles JSX syntax detection; Flow stripping handles type annotations. Both target React Native packages.
 - **[Scenario 12 — Runtime Conditions](12-runtime-conditions.md):** The `react-native` runtime condition (12.6) routes resolution to React Native-specific entry points, which are the files most likely to contain Flow annotations.
-- **[Scenario 19 — Registry Tarballs](19-registry-tarballs.md):** Tarballs extracted into VFS may contain Flow files. The VFS plugin's `onLoad` handler strips Flow from tarball-extracted content (Scenario 20.13).
+- **[Scenario 19 — Registry Tarballs](19-registry-tarballs.md):** Tarballs extracted into VFS may contain Flow files. PackagePlugin's VFS `onLoad` handler strips Flow from tarball-extracted content (Scenario 20.13).

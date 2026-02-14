@@ -190,11 +190,11 @@ Expected: `isRequireContext()` returns `true` (entry-point with CJS format) → 
 **Regression signal:** If the CJS build gets the ESM entry, the import/require dimension is not being derived from format.
 
 
-## 12.12 — Conditions flow through to HttpPlugin remapping
+## 12.12 — Conditions flow through to PackagePlugin remapping
 
-**What it tests:** The conditions computed for CdnPlugin resolution are also available to the HttpPlugin for manifest field remapping.
+**What it tests:** The conditions computed for CdnPlugin resolution are also available to PackagePlugin for manifest field remapping.
 
-This is the end-to-end test: conditions are computed in CdnPlugin, stored implicitly via the `effectiveResolveOpts`, and recomputed in HttpPlugin's `HttpResolution` for the `applyManifestRemappings()` call.
+This is the end-to-end test: conditions are computed in CdnPlugin, stored implicitly via the `effectiveResolveOpts`, and recomputed in PackagePlugin's onResolve handler via `getResolverConditions(args, effectiveResolveOpts)` for the `applyManifestRemappings()` call.
 
 **Package:** `@exodus/bytes@1.13.0` with React Native runtime:
 
@@ -202,6 +202,6 @@ This is the end-to-end test: conditions are computed in CdnPlugin, stored implic
 /?q=@exodus/bytes@1.13.0&config={"resolve":{"runtime":"react-native"}}
 ```
 
-Expected: CdnPlugin resolves the entry point. HttpPlugin resolves relative imports. The HttpPlugin recomputes conditions via `getResolverConditions(args, effectiveResolveOpts)` → includes `"react-native"` → `applyManifestRemappings()` uses the `"react-native"` field.
+Expected: CdnPlugin resolves the entry point. PackagePlugin intercepts relative imports (onResolve, HTTP namespace). PackagePlugin recomputes conditions via `getResolverConditions(args, effectiveResolveOpts)` → includes `"react-native"` → `applyManifestRemappings()` uses the `"react-native"` field.
 
-**Regression signal:** If HttpPlugin produces different conditions than CdnPlugin (e.g., missing the runtime overlay), the `effectiveResolveOpts` propagation is broken. This would manifest as entry-point resolution using React Native paths but internal imports using browser paths.
+**Regression signal:** If PackagePlugin produces different conditions than CdnPlugin (e.g., missing the runtime overlay), the `effectiveResolveOpts` propagation is broken. This would manifest as entry-point resolution using React Native paths but internal imports using browser paths.
