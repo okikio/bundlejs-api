@@ -513,8 +513,7 @@ Imagine this VFS state after extracting a tarball:
 
 Together with suffix-style extension probing (in VFSPlugin) and content pre-processing (in PackagePlugin), these mechanisms are what make React Native packages — which were designed for Metro’s permissive parser — work inside esbuild’s stricter world.
 
-Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
-- **JSX loader upgrade** — detects JSX syntax in `.js` files and switches the esbuild loader from `js` to `jsx`. Many React Native packages ship JSX in `.js` files because Metro handles it transparently.
+Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. JSX loader upgrade (detecting JSX syntax in `.js` files and switching the esbuild loader from `js` to `jsx`) is also handled by PackagePlugin's onLoad. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
 
 ---
 
@@ -653,7 +652,7 @@ The flow: resolve version → fetch manifest → construct tarball URL → route
      │
      ▼  Resolved: /__tarballs__/abc123/index.js  (VFS namespace)
      │
-     ▼  VFSPlugin.onLoad reads file, esbuild finds: import "body-parser"
+     ▼  PackagePlugin.onLoad reads file, esbuild finds: import "body-parser"
      esbuild calls onResolve with SAME pluginData from parent
      │
      ▼  CdnPlugin.onResolve receives pluginData.tarballUrl
@@ -1151,7 +1150,7 @@ When `"stub"` is active and `warnOnStubbedRemapFalse` is `true` (default), the `
     PackagePlugin (onResolve) ─── checks remapFalse.importRemapFalse
 
   Stub serving:
-    HttpPlugin (onLoad)       ─── EXCLUDED_MODULE_NAMESPACE handler
+    ExternalPlugin (onLoad)   ─── EXCLUDED_MODULE_NAMESPACE handler
                                    respects suppressWarning from pluginData
 ```
 
@@ -1175,7 +1174,7 @@ That said, Flow stripping and registry mode *combine powerfully* for React Nativ
 >      ▼  TarballPlugin
 >      Extract to VFS: /__tarballs__/<hash>/
 >      │
->      ▼  VFSPlugin / HttpPlugin (onLoad)                ← cleans unparseable source
+>      ▼  PackagePlugin (onLoad)                         ← cleans unparseable source
 >      Flow stripping: remove `import typeof`, `opaque type`, etc.
 >      JSX upgrade: detect JSX in .js files
 >      │
@@ -1240,7 +1239,7 @@ const Platform          /*                  */ = { OS: 'ios' };
               Does NOT handle inline annotations or opaque type bodies
 ```
 
-**Integration:** Both HttpPlugin (`onLoad`) and VFSPlugin (`onLoad`) call `maybeStripFlow()` on every file. The cost for non-Flow builds is just the `containsFlow()` check — a fast regex test against the first 4 KB per file. The `flow-remove-types` package (based on Meta's `hermes-parser` compiled to WASM) is only imported when Flow is actually detected.
+**Integration:** PackagePlugin's `onLoad` handlers (for both `virtual-filesystem` and `http-url` namespaces) call `maybeStripFlow()` on every file. The cost for non-Flow builds is just the `containsFlow()` check — a fast regex test against the first 4 KB per file. The `flow-remove-types` package (based on Meta's `hermes-parser` compiled to WASM) is only imported when Flow is actually detected.
 
 **Flow + JSX:** React Native packages often contain *both* Flow and JSX in the same `.js` file. Flow stripping runs *before* loader inference, so the stripped content (clean JS) is passed to `inferLoader()`, which may upgrade the loader from `ts` to `tsx` if JSX is detected. See [Scenario 18 — JSX in `.js` Files](scenarios/18-jsx-in-js-files.md).
 
