@@ -413,10 +413,13 @@ export async function fetchWithCache(
       // disposal scope can await its settlement.
       let pending: Promise<void> | undefined;
 
-      if (cacheMode === 'normal') {
-        const refreshInit: RequestInit = options.signal
-          ? { ...init, signal: options.signal }
-          : init;
+      if (cacheMode === 'normal' && options.signal) {
+        // Background refresh requires a signal for lifecycle management.
+        // Without a signal the fetch cannot be cancelled on disposal,
+        // causing `fetchCancelHandle` resources to leak across test/build
+        // boundaries.  Callers that don't provide a signal (e.g. REPL)
+        // simply skip the refresh — stale cached data is returned instead.
+        const refreshInit: RequestInit = { ...init, signal: options.signal };
 
         pending = backgroundRefresh(url, finalUrl, refreshInit, retries, cacheApi);
 
