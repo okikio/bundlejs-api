@@ -63,7 +63,6 @@
  */
 import type { PackageJson, FullPackageVersion } from "@bundle/utils/types";
 import type { LocalState, ESBUILD } from "@bundle/core/types";
-import type { SideEffectsMatchers } from "../utils/side-effects.ts";
 
 import { Context, fromContext, withContext } from "../context/context.ts";
 
@@ -80,13 +79,13 @@ import {
   getUnsupportedSpecError,
   parseNpmSpec,
 } from "@bundle/utils/npm-spec";
-import { computeEsbuildSideEffects } from "../utils/side-effects.ts";
 
 import { extname, isBareImport, join } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 import { deepMerge } from "@bundle/utils/deep-object";
 
-import { determineExtension, HTTP_NAMESPACE, EXCLUDED_MODULE_NAMESPACE } from "./http.ts";
+import { determineExtension, HTTP_NAMESPACE } from "./http.ts";
+import { EXCLUDED_MODULE_NAMESPACE } from "./external.ts";
 import { dispatchEvent, LOGGER_WARN } from "../configs/events.ts";
 
 import { getCDNUrl, getCDNStyle, DEFAULT_CDN_HOST } from "../utils/cdn-format.ts";
@@ -136,14 +135,14 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
 
   const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
 
-  const cdn = fromContext("origin", StateContext)! ?? DEFAULT_CDN_HOST;
+  // The configured CDN origin. Can be overridden per-resolve by
+  // pluginData.cdnOrigin (set by HttpPlugin for CDN-follows-parent).
+  const configuredCdn = fromContext("origin", StateContext)! ?? DEFAULT_CDN_HOST;
   const build = fromContext("build", StateContext)!;
 
   const failedManifestUrls = fromContext("failedManifestUrls", StateContext) ?? new Set<string>();
   const packageManifestsMap = fromContext("packageManifests", StateContext)
     ?? new Map<string, PackageJson | FullPackageVersion>();
-  const sideEffectsMatchersCache = fromContext("sideEffectsMatchersCache", StateContext)
-    ?? new Map<string, SideEffectsMatchers>();
 
   // ── Registry configuration (for scoped registries / .npmrc support) ────
   // Normalize the registry config once at plugin init time.
@@ -153,6 +152,12 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
   const registryConfig = normalizeRegistryConfig(LocalConfig.registry);
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
+    // CDN-follows-parent: when bare imports originate from within an HTTP
+    // namespace file, HttpPlugin passes the parent's CDN origin so that
+    // transitive deps resolve through the same CDN. This overrides the
+    // configured CDN for this specific resolve call.
+    const cdn = args.pluginData?.cdnOrigin ?? configuredCdn;
+
     const conditions = getResolverConditions(args, effectiveResolveOpts);
     let argPath = args.path;
 
@@ -821,29 +826,28 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
         isNpmCdn: NPM_CDN,
       });
 
-      // NEW: Use computeSideEffects utility
-      const computedSideEffects = computeEsbuildSideEffects(
-        resolvedManifest,
-        resultSubpath, // IMPORTANT: package-relative path (e.g. "/dist/index.js")
-        {
-          matcherCache: sideEffectsMatchersCache,
-          packageId,
-        }
-      );
-
+      // Probe for the correct file extension on the CDN.
       const pathWithExt = await determineExtension(url.toString());
-      return {
+
+      // Delegate to PackagePlugin for sideEffects enrichment.
+      // build.resolve() re-enters the plugin chain with HTTP namespace
+      // so PackagePlugin's HTTP handler can compute sideEffects and
+      // apply any additional manifest field remappings.
+      const resolved = await build.resolve(pathWithExt.url, {
         namespace: HTTP_NAMESPACE,
-        path: pathWithExt.url,
-        sideEffects: computedSideEffects,
+        kind: args.kind,
         pluginData: Object.assign({}, args.pluginData, {
           manifest: deepMerge(
             structuredClone(resolvedManifest),
             { peerDependencies: inheritPeerDependencies }
           ),
-          packageBaseUrl: packageBaseUrl.href
-        })
-      };
+          packageBaseUrl: packageBaseUrl.href,
+        }),
+      });
+
+      if (resolved.errors?.length) return { errors: resolved.errors };
+
+      return resolved;
     }
   };
 };

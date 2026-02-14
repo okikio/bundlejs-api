@@ -4,6 +4,7 @@ import type { FullPackageVersion, PackageJson } from "@bundle/utils/types";
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
 import { ExternalPlugin } from "./plugins/external.ts";
 import { TarballPlugin } from "./plugins/tar.ts";
+import { PackagePlugin } from "./plugins/package.ts";
 import { AliasPlugin } from "./plugins/alias.ts";
 import { HttpPlugin } from "./plugins/http.ts";
 import { CdnPlugin } from "./plugins/cdn.ts";
@@ -200,6 +201,7 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
           AliasPlugin(StateContext),
           ExternalPlugin(StateContext),
           TarballPlugin(StateContext),
+          PackagePlugin(StateContext),
           VirtualFileSystemPlugin(StateContext),
           HttpPlugin(StateContext),
           CdnPlugin(withContext({ origin: host }, StateContext)),
@@ -311,11 +313,29 @@ export async function formatBuildResult(_ctx: BuildResultContext) {
     const packageSizeArr: [string, string][] = [];
     let totalInstallSize = 0;
 
+    // Collect tarball mounts for extractedSize fallback
+    const tarballMounts = fromContext('tarballMounts', _ctx.state)
+      ?? new Map();
+
     for (const [name, manifest] of packageManifests) {
-      const unpackedSize: number = manifest?.dist?.unpackedSize;
-      if (typeof unpackedSize === "number") {
-        packageSizeArr.push([name, bytes.format(unpackedSize)]);
-        totalInstallSize += unpackedSize;
+      // Prefer registry-reported unpackedSize; fall back to the actual
+      // bytes extracted from the tarball (pkg.pr.new packages don't have
+      // dist.unpackedSize in their manifest).
+      let size: number | undefined = manifest?.dist?.unpackedSize;
+
+      if (typeof size !== "number") {
+        // Search tarball mounts for a matching package
+        for (const [, mount] of tarballMounts) {
+          if (mount.manifest?.name === manifest?.name && mount.extractedSize > 0) {
+            size = mount.extractedSize;
+            break;
+          }
+        }
+      }
+
+      if (typeof size === "number") {
+        packageSizeArr.push([name, bytes.format(size)]);
+        totalInstallSize += size;
       }
     }
 

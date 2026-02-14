@@ -408,29 +408,44 @@ When entry resolution encounters an exclusion (a `package.json` field maps the e
 
 ---
 
-### 4. PackagePlugin — *Per-file enrichment for sideEffects and remapping*
+### 4. PackagePlugin — *Central hub for enrichment and content loading*
 
 > **Source:** [core/plugins/package.ts](../core/plugins/package.ts)
 
-Before this plugin existed, a recurring problem fragmented the codebase: sideEffects computation and manifest field remapping (the `browser`, `react-native`, and `electron` object-form rewrites) were duplicated across CdnPlugin, HttpPlugin, and TarballPlugin — and still incomplete. Tree-shaking was degraded for registry-mode (tarball-extracted) packages because VFSPlugin returned files without sideEffects hints. Manifest field remappings silently used the wrong file when imports resolved through the VFS path instead of HTTP.
+PackagePlugin is the **central hub** of the plugin pipeline — it owns ALL per-file enrichment (sideEffects computation + manifest field remapping) AND ALL content loading (VFS reads + HTTP fetches). Transport plugins (TarballPlugin, CdnPlugin, HttpPlugin) resolve paths and then **delegate** to PackagePlugin via `build.resolve()`, which re-enters the plugin chain so PackagePlugin can enrich and load the result.
 
-PackagePlugin solves this by centralizing per-file enrichment in a single plugin registered **before** both VFSPlugin and HttpPlugin. When a relative import resolves to a file *inside a known package* (identified by `pluginData.packageRoot` for VFS paths or `pluginData.packageBaseUrl` for HTTP paths), the plugin:
+Before this architecture, sideEffects computation, manifest field remapping, Flow stripping, and content loading were duplicated across CdnPlugin, HttpPlugin, TarballPlugin, and VFSPlugin — and still incomplete. Tree-shaking was degraded for registry-mode (tarball-extracted) packages, and manifest field remappings could silently use the wrong file depending on which resolution path was taken.
+
+PackagePlugin centralizes all of this by registering `onResolve` handlers that fire **before** the downstream VFSPlugin and HttpPlugin, plus `onLoad` handlers for both the `virtual-filesystem` and `http-url` namespaces.
+
+**Resolution (`onResolve`)** — when a relative import resolves to a file *inside a known package* (identified by `pluginData.packageRoot` for VFS paths or `pluginData.packageBaseUrl` for HTTP paths), the plugin:
 
 1. **Normalizes the path** to a package-relative form (e.g., `/__tarballs__/abc123/lib/stream.js` → `./lib/stream.js`)
 2. **Applies manifest field remappings** — checks `react-native`, `electron`, and `browser` fields in priority order, rewriting the path if a match exists (or excluding the module if mapped to `false`)
 3. **Computes sideEffects** for that specific file — boolean `false` means side-effect-free (safe to tree-shake), array patterns are matched against the file path
 
-When no package context exists (user-authored VFS files, direct URL imports without a manifest), the plugin returns `undefined` — the downstream VFSPlugin or HttpPlugin handles it as before.
+**Loading (`onLoad`)** — once a file is resolved, PackagePlugin handles content retrieval and pre-processing for both namespaces:
 
-> **Why a separate plugin instead of fixing it in each existing plugin?** esbuild's plugin architecture is first-match-wins on `onResolve`. Enrichment (sideEffects, remapping) must happen at the *resolution* phase — by the time `onLoad` runs, it's too late to change the resolved path or inject sideEffects hints. Having one plugin responsible for enrichment means a single code path covers both VFS and HTTP, with one set of tests and no duplication drift.
+- **VFS (`virtual-filesystem`)** — reads the file from the in-memory filesystem via `getFile()`, runs Flow type stripping if needed, infers the esbuild loader, and sets `resolveDir` for relative import chains
+- **HTTP (`http-url`)** — probes extensions via `determineExtension()`, fetches the file via `fetchAssets()`, stores it in the VFS, discovers asset references (WASM, workers), runs Flow stripping, and infers the loader
+
+Both onLoad handlers also perform **JSX loader upgrade** — detecting JSX syntax in `.js` files and switching the esbuild loader from `js`/`ts` to `jsx`/`tsx`.
+
+When no package context exists (user-authored VFS files, direct URL imports without a manifest), the onResolve handler returns `undefined` — the downstream VFSPlugin or HttpPlugin handles resolution as before, but content loading still routes through PackagePlugin's onLoad.
+
+**`build.resolve()` delegation pattern** — transport plugins no longer directly return enriched results. Instead they call `build.resolve(resolvedPath, { namespace, kind, pluginData })`, which re-enters the esbuild plugin chain. PackagePlugin's onResolve catches the delegated resolution (via widened filters: `/^[.\/]/` for VFS, `/^(https?:\/\/|[.\/])/` for HTTP), enriches it with sideEffects and remappings, and returns the final result. This eliminates duplication and ensures every resolved file — regardless of how it was discovered — gets the same enrichment.
+
+**`createPluginContext()`** — a shared helper that initializes the common state needed by PackagePlugin: `config`, `effectiveResolveOpts` (condition inputs for the current platform), and `sideEffectsMatchersCache`. This replaces the duplicated initialization that previously existed in CdnPlugin, HttpPlugin, and TarballPlugin.
+
+> **Why a separate plugin instead of fixing it in each existing plugin?** esbuild's plugin architecture is first-match-wins on `onResolve`. Enrichment (sideEffects, remapping) must happen at the *resolution* phase — by the time `onLoad` runs, it's too late to change the resolved path or inject sideEffects hints. Having one plugin responsible for enrichment AND loading means a single code path covers both VFS and HTTP, with one set of tests and no duplication drift.
 
 ---
 
-### 5. VirtualFileSystemPlugin — *In-memory file layer*
+### 5. VirtualFileSystemPlugin — *In-memory file resolution (resolve-only)*
 
 > **Source:** [core/plugins/fs.ts](../core/plugins/fs.ts)
 
-Provides the in‑memory filesystem. This is how the **entry point** (the code the user provides) and any local files are made available to esbuild.
+Provides path resolution against the in-memory filesystem. This is how the **entry point** (the code the user provides) and any local files are resolved for esbuild. VFSPlugin is **resolve-only** — all content loading (reading files, Flow stripping, loader inference) is handled by PackagePlugin's `onLoad` handler for the `virtual-filesystem` namespace.
 
 The plugin registers three `onResolve` handlers with carefully scoped filters:
 
@@ -494,32 +509,31 @@ Imagine this VFS state after extracting a tarball:
 
 > **Think of it like a file finder with a fallback chain.** If you ask for a file and it’s not there, the VFS tries adding common extensions, then looks for an `index` file in a directory of that name — the same heuristics Node.js and Metro use, but against an in-memory filesystem.
 
-**Content pre-processing** runs in the `onLoad` handler before esbuild sees the file. Two transformations handle ecosystem quirks that would otherwise cause parse failures:
+**Content pre-processing** (Flow type stripping, JSX loader upgrade) is handled by **PackagePlugin\u2019s `onLoad` handler** for the `virtual-filesystem` namespace \u2014 not by VFSPlugin itself. VFSPlugin is purely responsible for path resolution and extension probing. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
 
-- **Flow type stripping** — removes [Flow](https://flow.org/) type annotations from React Native ecosystem files. Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
+Together with suffix-style extension probing (in VFSPlugin) and content pre-processing (in PackagePlugin), these mechanisms are what make — React Native packages, which were designed for Metro's permissive parser, work inside esbuild's stricter world. Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
 - **JSX loader upgrade** — detects JSX syntax in `.js` files and switches the esbuild loader from `js` to `jsx`. Many React Native packages ship JSX in `.js` files because Metro handles it transparently.
 
 Together with suffix-style extension probing, these transformations are what make React Native packages — which were designed for Metro’s permissive parser — work inside esbuild’s stricter world.
 
 ---
 
-### 6. HttpPlugin — *Fetch and resolve HTTP/HTTPS URLs*
+### 6. HttpPlugin — *URL routing and relative import resolution (resolve-only)*
 
 > **Source:** [core/plugins/http.ts](../core/plugins/http.ts)
 
-The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles** (manifest field remapping and sideEffects computation are now handled by PackagePlugin):
+Handles all HTTP/HTTPS URL routing and relative import resolution. HttpPlugin is **resolve-only** — all content loading (fetching, Flow stripping, loader inference, asset discovery) is handled by PackagePlugin's `onLoad` handler for the `http-url` namespace. Serves **three roles** (sideEffects computation, manifest field remapping, and content loading are all handled by PackagePlugin):
 
 1. **Direct URL imports** — handles `import "https://esm.sh/react"` directly
 2. **Relative import resolution** — resolves paths like `"./jsx-runtime.js"` against the **final URL** after redirects (critical because CDNs redirect `react@latest` → `react@19.0.0`)
-3. **Extension probing** — when a relative import has no extension, tries **18 combinations** (2 path variants × 9 extensions). Failed probes are cached in `failedExtensionChecks`.
-4. **Registry mode propagation** — when the configured CDN host is a *registry*, bare imports encountered inside HTTP-fetched files are resolved through the registry rather than following the parent file's CDN origin.
+3. **CDN-follows-parent propagation** — when a bare import is encountered inside an HTTP-fetched file, HttpPlugin delegates to `build.resolve()` with `pluginData.cdnOrigin` set to the parent file's CDN origin, so the CdnPlugin can resolve it from the correct CDN
 
 **Concrete trace — resolving a relative import after a CDN redirect:**
 
 ```
   CdnPlugin resolves "react" → https://unpkg.com/react@19.0.0/index.js
      │
-     ▼  HttpPlugin.onLoad fetches the URL
+     ▼  PackagePlugin.onLoad fetches the URL
      HTTP 302: https://unpkg.com/react@19.0.0/index.js
               → https://unpkg.com/react@19.0.0/cjs/react.production.min.js
      │
@@ -559,7 +573,7 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles** (
      │
      ▼  Return { path: "util", namespace: "excluded-module" }
      │
-     ▼  HttpPlugin.onLoad for excluded-module namespace:
+     ▼  ExternalPlugin.onLoad for excluded-module namespace:
      Return { contents: "export default {}", loader: "js" }
      + emit warning: "Module 'util' excluded via browser field"
 
@@ -572,9 +586,9 @@ The workhorse for all HTTP/HTTPS resolution and loading. Serves **four roles** (
      ▼  HttpPlugin fetches the browser-specific file instead
 ```
 
-When a remapping resolves to `false` (meaning "this module doesn't exist on this platform"), PackagePlugin follows the `remapFalse.importRemapFalse` policy — defaulting to an empty stub export that keeps the build alive. The excluded module's `onLoad` handler (still registered by HttpPlugin) serves the actual stub content. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
+When a remapping resolves to `false` (meaning "this module doesn't exist on this platform"), PackagePlugin follows the `remapFalse.importRemapFalse` policy — defaulting to an empty stub export that keeps the build alive. The excluded module's `onLoad` handler (registered by ExternalPlugin) serves the actual stub content. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
 
-**Content pre-processing** in the `onLoad` handler runs the same two transformations as VFSPlugin: Flow stripping and JSX loader upgrade. Also scans fetched source for `new URL("...", import.meta.url)` patterns to discover **WASM files** and **web workers**.
+> **Note:** Extension probing for HTTP paths and content pre-processing (Flow stripping, JSX loader upgrade, asset discovery for WASM files and web workers) all happen in PackagePlugin's `onLoad` handler for the `http-url` namespace — not in HttpPlugin.
 
 ---
 

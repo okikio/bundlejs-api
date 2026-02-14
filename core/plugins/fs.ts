@@ -3,12 +3,10 @@ import type { LocalState, ESBUILD } from "../types.ts";
 import type { IFileSystem } from "../utils/filesystem.ts";
 import type { Context } from "../context/context.ts";
 
-import { fileExists, getFile } from "../utils/filesystem.ts";
+import { fileExists } from "../utils/filesystem.ts";
 import { fromContext, withContext } from "../context/context.ts";
-import { inferLoader, RESOLVE_EXTENSIONS } from "../utils/loader.ts";
-import { maybeStripFlow } from "../utils/flow-strip.ts";
-import { dispatchEvent, LOGGER_INFO } from "../configs/events.ts";
-import { dirname, extname, resolve } from "@bundle/utils/path";
+import { RESOLVE_EXTENSIONS } from "../utils/loader.ts";
+import { extname, resolve } from "@bundle/utils/path";
 
 export const VIRTUAL_FILESYSTEM_NAMESPACE = "virtual-filesystem";
 
@@ -190,8 +188,6 @@ export function VirtualFileSystemPlugin<T = Uint8Array>(
   StateContext: Context<LocalState<T>>,
   opts: VirtualFileSystemPluginOptions = {}
 ): ESBUILD.Plugin {
-  const FileSystem = fromContext("filesystem", StateContext)!;
-
 	const prefixes = opts.prefixes ?? ["vfs:", "virtual:"];
 	const enableIndexFallback = opts.enableIndexFallback ?? true;
 
@@ -242,46 +238,14 @@ export function VirtualFileSystemPlugin<T = Uint8Array>(
 			 */
 			build.onResolve({ filter: /^\.\.?\//, namespace: VIRTUAL_FILESYSTEM_NAMESPACE }, VfsResolution(ctx));
 
-			/**
-			 * onLoad handler for VFS namespace
-			 * 
-			 * Loads file contents from the virtual filesystem.
-			 */
-      build.onLoad({ filter: /.*/, namespace: VIRTUAL_FILESYSTEM_NAMESPACE }, async (args) => {
-        // args.path is canonical (because onResolve returned it).
-        const content = await getFile(FileSystem, args.path, "buffer");
-
-        // `getFile` returns null when missing/invalid; empty files are OK.
-        if (content === null) return;
-
-        // Whether esbuild has source maps enabled — when true we ask
-        // maybeStripFlow to embed an inline source map so esbuild can
-        // fold the Flow transformation into the final bundle map.
-        const enableSourceMaps = !!build.initialOptions.sourcemap;
-
-        // Strip Flow type annotations from files that use Flow syntax.
-        // Tarball-extracted packages (e.g. react-native from npm registry)
-        // land in VFS and may contain raw Flow annotations that esbuild
-        // can't parse. We pre-process these before handing them to the bundler.
-        const { contents: processedContent, wasStripped } = maybeStripFlow(
-          content as Uint8Array,
-          { url: args.path, sourceMap: enableSourceMaps }
-        );
-
-        if (wasStripped) {
-          dispatchEvent(LOGGER_INFO, `Stripped Flow types from ${args.path}`);
-        }
-
-        return {
-          contents: processedContent,
-          loader: inferLoader(args.path, undefined, content),
-          // This is the correct way to enable relative resolution in custom namespaces.
-          resolveDir: dirname(args.path),
-          pluginData: Object.assign({}, args.pluginData, {
-            importer: args.path,
-          }),
-        };
-      });
+			// ────────────────────────────────────────────────────────────
+			// NOTE: No onLoad handler here.
+			//
+			// All VFS content loading (reading files, Flow type stripping,
+			// loader inference) is handled by PackagePlugin, which is
+			// registered before this plugin and owns both onResolve
+			// enrichment and onLoad for the virtual-filesystem namespace.
+			// ────────────────────────────────────────────────────────────
     },
   };
 };

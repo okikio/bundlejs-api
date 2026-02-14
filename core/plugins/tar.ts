@@ -16,11 +16,11 @@
  * ```
  */
 import type { TarStreamEntry } from "@bundle/utils/tar";
-import type { LocalState, ESBUILD } from "../types.ts";
 import type { PackageJson } from "@bundle/utils/types";
-import type { Context } from "../context/context.ts";
 
-import { fromContext, toContext } from "../context/context.ts";
+import type { LocalState, ESBUILD } from "../types.ts";
+
+import { Context, fromContext, toContext, withContext } from "../context/context.ts";
 
 import { UntarStream } from "@bundle/utils/tar";
 
@@ -28,7 +28,7 @@ import { normalize, join, resolve as resolvePath } from "@bundle/utils/path";
 import { fetchWithCache } from "@bundle/utils/fetch-and-cache";
 
 import { VIRTUAL_FILESYSTEM_NAMESPACE, resolveVfsPath } from "./fs.ts";
-import { EXCLUDED_MODULE_NAMESPACE } from "./http.ts";
+import { EXCLUDED_MODULE_NAMESPACE } from "./external.ts";
 import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../configs/events.ts";
 
 import { getResolverConditions, getLegacyMainFields } from "../../utils/resolve-conditions.ts";
@@ -116,6 +116,15 @@ export interface TarballMount {
 	manifest: PackageJson;
 	/** Original tarball URL */
 	sourceUrl: string;
+  /**
+   * Total size in bytes of all extracted files.
+   *
+   * Used as a fallback for install-size reporting when the registry
+   * manifest doesn't include `dist.unpackedSize` (e.g., pkg.pr.new
+   * tarballs). Computed during extraction by summing every file's
+   * `Uint8Array.byteLength`.
+   */
+  extractedSize: number;
 }
 
 /**
@@ -517,7 +526,7 @@ export async function fetchAndExtractTarball<T>(
   source: string,
 	packageRoot: string,
 	StateContext: Context<LocalState<T>>
-): Promise<PackageJson> {
+): Promise<{ manifest: PackageJson; extractedSize: number }> {
 	const FileSystem = fromContext("filesystem", StateContext)!;
 
   let response: Response;
@@ -633,6 +642,7 @@ export async function fetchAndExtractTarball<T>(
   // Extract into VFS.
   const reader = tarEntryStream.getReader();
   let manifest: PackageJson | null = null;
+  let extractedSize = 0;
 
   try {
     while (true) {
@@ -653,6 +663,9 @@ export async function fetchAndExtractTarball<T>(
 			// Read file contents
       const blob = await new Response(entry.readable).blob();
       const fileContent = new Uint8Array(await blob.arrayBuffer());
+
+      // Accumulate total extracted size for install-size reporting.
+      extractedSize += fileContent.byteLength;
 
 			// Write to VFS
       const vfsPath = join(packageRoot, relativePath);
@@ -698,10 +711,10 @@ export async function fetchAndExtractTarball<T>(
 
   dispatchEvent(
     LOGGER_INFO,
-    `Extracted tarball: ${manifest.name}@${manifest.version} -> ${packageRoot} (compression=${detection.compression}, confidence=${detection.confidence})`,
+    `Extracted tarball: ${manifest.name}@${manifest.version} -> ${packageRoot} (compression=${detection.compression}, confidence=${detection.confidence}, size=${extractedSize} bytes)`,
   );
 
-	return manifest;
+  return { manifest, extractedSize };
 }
 
 /**
@@ -855,13 +868,14 @@ export async function getOrCreateMount<T>(
 	// Create new mount
 	const mountPromise = (async () => {
 		const packageRoot = join(TARBALL_ROOT, key);
-		const manifest = await fetchAndExtractTarball(tarballUrl, packageRoot, StateContext);
+    const { manifest, extractedSize } = await fetchAndExtractTarball(tarballUrl, packageRoot, StateContext);
 		
 		const mount: TarballMount = {
 			createdAt: Date.now(),
 			packageRoot,
 			manifest,
-			sourceUrl: tarballUrl
+      sourceUrl: tarballUrl,
+      extractedSize,
 		};
 		
 		mounts.set(key, mount);
@@ -900,6 +914,14 @@ export function findMountForPath<T>(
 }
 
 /**
+ * Extended state for TarResolution that includes the esbuild build API
+ * for delegating enrichment to PackagePlugin via build.resolve().
+ */
+export interface TarResolutionState<T> extends LocalState<T> {
+  build: ESBUILD.PluginBuild;
+}
+
+/**
  * Resolution algorithm for tarball URLs
  * 
  * Handles:
@@ -907,12 +929,15 @@ export function findMountForPath<T>(
  * - Self-reference imports from within extracted packages
  * - Subpath imports
  */
-export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
+export function TarResolution<T>(StateContext: Context<TarResolutionState<T>>) {
 	const LocalConfig = fromContext("config", StateContext)!;
 	const esbuildOpts = LocalConfig.esbuild ?? {};
   const resolveOpts = LocalConfig.resolve ?? {};
   const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
   const FileSystem = fromContext("filesystem", StateContext)!;
+
+  // Access esbuild's build API for delegating enrichment to PackagePlugin.
+  const build = fromContext("build", StateContext)!;
 
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     // ─── Branch 1: HTTP tarball URLs ───────────────────────────────────────
@@ -972,16 +997,20 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
           };
         }
 
-				return {
-					path: resolvedPath,
-					namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+        // Delegate to PackagePlugin for sideEffects enrichment + remapping.
+        // build.resolve() re-enters the plugin chain; PackagePlugin's VFS
+        // handler matches because we set namespace to VFS and pass package
+        // context (manifest, packageRoot) in pluginData.
+				return build.resolve(resolvedPath, {
+          namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+          kind: args.kind,
           pluginData: Object.assign({}, args.pluginData, {
 						manifest: mount.manifest,
 						packageRoot: mount.packageRoot,
 						tarballUrl: packageUrl.toString(),
             pathRemappings,
-					})
-        };
+					}),
+        });
 			} catch (e) {
 				dispatchEvent(LOGGER_ERROR, e as Error);
 				throw e;
@@ -1042,16 +1071,17 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
               };
             }
 
-            return {
-              path: resolvedPath,
+            // Delegate to PackagePlugin for sideEffects enrichment.
+            return build.resolve(resolvedPath, {
               namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+              kind: args.kind,
               pluginData: Object.assign({}, args.pluginData, {
                 manifest: mount.manifest,
                 packageRoot: mount.packageRoot,
                 tarballUrl: split.tarballPath,
                 pathRemappings,
-              })
-            };
+              }),
+            });
           } catch (e) {
             dispatchEvent(LOGGER_ERROR, e as Error);
             throw e;
@@ -1102,16 +1132,17 @@ export function TarResolution<T>(StateContext: Context<LocalState<T>>) {
             };
           }
 
-					return {
-						path: resolvedPath,
-						namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+          // Delegate to PackagePlugin for sideEffects enrichment.
+					return build.resolve(resolvedPath, {
+            namespace: VIRTUAL_FILESYSTEM_NAMESPACE,
+            kind: args.kind,
 						pluginData: Object.assign({}, args.pluginData, {
 							manifest: mount.manifest,
 							packageRoot: mount.packageRoot,
 							tarballUrl: mount.sourceUrl,
               pathRemappings,
-						})
-					};
+						}),
+					});
 				}
 			}
 		}
@@ -1153,14 +1184,16 @@ export function TarballPlugin<T>(StateContext: Context<LocalState<T> & TarballSt
 	return {
 		name: TARBALL_NAMESPACE,
 		setup(build) {
+			const ctx = withContext({ build: Context.opaque(build) }, StateContext);
+
 			// Intercept tarball URLs before HTTP plugin
-			build.onResolve({ filter: /.*/ }, TarResolution(StateContext));
+			build.onResolve({ filter: /.*/ }, TarResolution(ctx));
 			
 			// Also handle resolution within the tarball namespace (for chained resolution)
-			build.onResolve({ filter: /.*/, namespace: TARBALL_NAMESPACE }, TarResolution(StateContext));
+			build.onResolve({ filter: /.*/, namespace: TARBALL_NAMESPACE }, TarResolution(ctx));
 			
 			// Handle self-references from VFS namespace (imports from within extracted packages)
-			build.onResolve({ filter: /.*/, namespace: VIRTUAL_FILESYSTEM_NAMESPACE }, TarResolution(StateContext));
+			build.onResolve({ filter: /.*/, namespace: VIRTUAL_FILESYSTEM_NAMESPACE }, TarResolution(ctx));
 		},
 	};
 }

@@ -25,13 +25,13 @@
  *
  * ## Solution
  *
- * PackagePlugin intercepts relative imports in **both** namespaces
+ * PackagePlugin intercepts imports in **both** namespaces
  * when package context exists (`pluginData.packageRoot` for VFS,
  * `pluginData.packageBaseUrl` for HTTP). It normalizes the resolved
  * path to a package-relative form, then applies the same enrichment:
  *
  * ```
- *   Relative import from within a package
+ *   Relative/absolute/delegated import from within a package
  *      │
  *      ▼
  *   PackagePlugin.onResolve
@@ -74,28 +74,61 @@
  *
  * @module
  */
+import type { ResolverConditionInputs } from '@bundle/utils/resolve-conditions';
 import type { PackageJson, FullPackageVersion } from '@bundle/utils/types';
 import type { SideEffectsMatchers } from '../utils/side-effects.ts';
 import type { LocalState, ESBUILD } from '../types.ts';
 import type { Context } from '../context/context.ts';
 
-import { fromContext } from '../context/context.ts';
+import { fromContext, toContext } from '../context/context.ts';
 
-import { resolve } from '@bundle/utils/path';
-import { urlJoin } from '@bundle/utils/url';
-import { isAbsolute } from '@bundle/utils/path';
+import { resolve, dirname, isAbsolute } from '@bundle/utils/path';
+import { urlJoin, toURLPath } from '@bundle/utils/url';
 
 import { getResolverConditions } from '@bundle/utils/resolve-conditions';
 import { applyManifestRemappings } from '../utils/cdn-resolution.ts';
 import { computeEsbuildSideEffects } from '../utils/side-effects.ts';
 
+import { maybeStripFlow } from '../utils/flow-strip.ts';
+import { getFile, setFile } from '../utils/filesystem.ts';
+
 import { VIRTUAL_FILESYSTEM_NAMESPACE, resolveVfsPath } from './fs.ts';
-import { HTTP_NAMESPACE, EXCLUDED_MODULE_NAMESPACE } from './http.ts';
-import { RESOLVE_EXTENSIONS } from '../utils/loader.ts';
-import { dispatchEvent, LOGGER_INFO } from '../configs/events.ts';
+import { HTTP_NAMESPACE, determineExtension, fetchAssets } from './http.ts';
+import { EXCLUDED_MODULE_NAMESPACE } from './external.ts';
+import { RESOLVE_EXTENSIONS, inferLoader } from '../utils/loader.ts';
+import { dispatchEvent, LOGGER_INFO, LOGGER_WARN } from '../configs/events.ts';
 
 /** Package Plugin namespace (for identification; the plugin itself resolves into VFS/HTTP namespaces). */
 export const PACKAGE_NAMESPACE = 'package-features';
+
+// =============================================================================
+// Shared plugin initialization
+// =============================================================================
+
+/**
+ * Common plugin context values extracted from StateContext.
+ *
+ * Eliminates the repeated initialization boilerplate:
+ * ```ts
+ * const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
+ * const sideEffectsMatchersCache = fromContext('sideEffectsMatchersCache', ...);
+ * ```
+ */
+export interface PluginContext {
+  config: LocalState['config'];
+  effectiveResolveOpts: ResolverConditionInputs;
+  sideEffectsMatchersCache: Map<string, SideEffectsMatchers>;
+}
+
+export function createPluginContext<T>(StateContext: Context<LocalState<T>>): PluginContext {
+  const config = fromContext('config', StateContext)!;
+  return {
+    config,
+    effectiveResolveOpts: Object.assign({}, config.resolve ?? {}, config.esbuild ?? {}) as ResolverConditionInputs,
+    sideEffectsMatchersCache: fromContext('sideEffectsMatchersCache', StateContext)
+      ?? new Map<string, SideEffectsMatchers>(),
+  };
+}
 
 // =============================================================================
 // Shared enrichment
@@ -136,7 +169,7 @@ export function toPackageRelative(resolvedPath: string, base: string): string | 
  * Build the stable package ID used as a cache key for sideEffects
  * matchers and other per-package caches.
  */
-function packageIdFrom(manifest: Partial<PackageJson | FullPackageVersion>): string {
+export function packageIdFrom(manifest: Partial<PackageJson | FullPackageVersion>): string {
   return `${manifest.name ?? 'unknown'}@${manifest.version ?? '0.0.0'}`;
 }
 
@@ -153,7 +186,7 @@ function packageIdFrom(manifest: Partial<PackageJson | FullPackageVersion>): str
  * - `"error"` → hard build failure
  * - `"external"` → preserve import verbatim in output
  */
-function buildExclusionResult(
+export function buildExclusionResult(
   relativePath: string,
   matchedField: string | null,
   manifest: Partial<PackageJson | FullPackageVersion>,
@@ -232,13 +265,8 @@ function buildExclusionResult(
  * ```
  */
 export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plugin {
-  const LocalConfig = fromContext('config', StateContext)!;
-  const esbuildOpts = LocalConfig.esbuild ?? {};
-  const resolveOpts = LocalConfig.resolve ?? {};
-  const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
-
-  const sideEffectsMatchersCache = fromContext('sideEffectsMatchersCache', StateContext)
-    ?? new Map<string, SideEffectsMatchers>();
+  const { config: LocalConfig, effectiveResolveOpts, sideEffectsMatchersCache } =
+    createPluginContext(StateContext);
 
   return {
     name: PACKAGE_NAMESPACE,
@@ -248,15 +276,24 @@ export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.
         ?? RESOLVE_EXTENSIONS.slice()
       );
 
+      // Shared state used by both onResolve and onLoad handlers.
+      const FileSystem = fromContext('filesystem', StateContext);
+      const Assets = fromContext('assets', StateContext) ?? [];
+      const enableSourceMaps = !!build.initialOptions.sourcemap;
+
       // ================================================================
-      // VFS namespace: enrich relative imports within tarball packages
+      // VFS namespace: enrich imports within tarball packages
       //
       // Activates when pluginData.packageRoot exists (set by
-      // TarballPlugin during entry resolution). Uses resolveVfsPath
-      // for file probing, then layers on remapping + sideEffects.
+      // TarballPlugin during entry resolution). Handles:
+      //   • Relative imports (./foo, ../bar)
+      //   • Absolute paths from build.resolve() delegation
+      //
+      // Uses resolveVfsPath for file probing, then layers on
+      // manifest field remapping + sideEffects computation.
       // ================================================================
       build.onResolve(
-        { filter: /^\.\.?\//, namespace: VIRTUAL_FILESYSTEM_NAMESPACE },
+        { filter: /^[.\/]/, namespace: VIRTUAL_FILESYSTEM_NAMESPACE },
         async (args): Promise<ESBUILD.OnResolveResult | undefined> => {
           const packageRoot: string | undefined = args.pluginData?.packageRoot;
           const manifest: Partial<PackageJson | FullPackageVersion> | undefined =
@@ -268,6 +305,8 @@ export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.
           const conditions = getResolverConditions(args, effectiveResolveOpts);
 
           // Resolve the candidate path (same logic VFS would use).
+          // For absolute VFS paths (entry delegation via build.resolve),
+          // resolve() returns them unchanged.
           const baseDir = args.resolveDir && args.resolveDir.length > 0
             ? args.resolveDir
             : '/';
@@ -300,9 +339,8 @@ export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.
           }
 
           // Probe VFS for the actual file (extension probing, index fallback).
-          const FileSystem = fromContext('filesystem', StateContext)!;
           const resolved = await resolveVfsPath(
-            FileSystem, finalCandidate, resolveExtensions, true,
+            FileSystem!, finalCandidate, resolveExtensions, true,
           );
 
           // File not found in VFS → fall through to VFSPlugin (it may
@@ -331,18 +369,20 @@ export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.
       );
 
       // ================================================================
-      // HTTP namespace: enrich relative imports within CDN packages
+      // HTTP namespace: enrich imports within CDN packages
       //
       // Activates when pluginData.packageBaseUrl exists (set by
-      // CdnPlugin during entry resolution). Resolves the URL, then
-      // layers on remapping + sideEffects.
+      // CdnPlugin during entry resolution). Handles:
+      //   • Full HTTP URLs from build.resolve() delegation
+      //   • Relative imports (./foo, ../foo)
+      //   • Absolute paths (/lib/foo)
       //
-      // This replaces the manifest remapping code that was previously
-      // inline in HttpPlugin's HttpResolution function.
+      // Resolves the URL, then layers on manifest field remapping
+      // + sideEffects computation.
       // ================================================================
       build.onResolve(
-        { filter: /^\./, namespace: HTTP_NAMESPACE },
-        async (args): Promise<ESBUILD.OnResolveResult | undefined> => {
+        { filter: /^(https?:\/\/|[.\/])/, namespace: HTTP_NAMESPACE },
+        (args): ESBUILD.OnResolveResult | undefined => {
           const packageBaseUrl: string | undefined = args.pluginData?.packageBaseUrl;
           const manifest: Partial<PackageJson | FullPackageVersion> | undefined =
             args.pluginData?.manifest;
@@ -352,15 +392,20 @@ export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.
 
           const conditions = getResolverConditions(args, effectiveResolveOpts);
 
-          // Resolve URL against the parent's final URL (after redirects).
-          // This is the same urlJoin logic HttpPlugin uses.
+          // Determine the resolved URL based on import shape:
+          //   1. Full HTTP URL (entry delegation from CdnPlugin via build.resolve)
+          //   2. Absolute path (/lib/foo) → resolve against parent URL origin
+          //   3. Relative path (./foo, ../foo) → resolve against parent URL
           let resolvedUrl: string;
-          if (isAbsolute(args.path)) {
-            const parentUrl = new URL(args.pluginData?.url);
+          if (/^https?:\/\//.test(args.path)) {
+            // Full URL — use directly (entry delegation or cross-package link).
+            resolvedUrl = args.path;
+          } else if (isAbsolute(args.path)) {
+            const parentUrl = new URL(args.pluginData?.url ?? packageBaseUrl);
             parentUrl.pathname = args.path;
             resolvedUrl = parentUrl.toString();
           } else {
-            resolvedUrl = urlJoin(args.pluginData?.url, '../', args.path);
+            resolvedUrl = urlJoin(args.pluginData?.url ?? packageBaseUrl, '../', args.path);
           }
 
           // Only apply enrichment when the URL is within this package.
@@ -401,6 +446,120 @@ export function PackagePlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.
             namespace: HTTP_NAMESPACE,
             sideEffects,
             pluginData: args.pluginData,
+          };
+        },
+      );
+
+      // ================================================================
+      // VFS namespace: load and preprocess ALL virtual-filesystem content
+      //
+      // This is the sole content loader for the VFS namespace. Both
+      // tarball-extracted package files and user-authored entry points
+      // flow through here.
+      //
+      // Preprocessing:
+      //   • Flow type stripping (React Native / Expo packages ship
+      //     raw Flow annotations that esbuild can't parse)
+      //   • Loader inference (file extension → esbuild loader)
+      //
+      // The resolveDir is set to the file's directory so that relative
+      // imports within VFS work correctly with esbuild's resolution.
+      // ================================================================
+      build.onLoad(
+        { filter: /.*/, namespace: VIRTUAL_FILESYSTEM_NAMESPACE },
+        async (args) => {
+          // args.path is canonical (set by onResolve).
+          const content = await getFile(FileSystem!, args.path, "buffer");
+
+          // `getFile` returns null when missing/invalid; empty files are OK.
+          if (content === null) return;
+
+          const { contents: processedContent, wasStripped } = maybeStripFlow(
+            content as Uint8Array,
+            { url: args.path, sourceMap: enableSourceMaps },
+          );
+
+          if (wasStripped) {
+            dispatchEvent(LOGGER_INFO, `Stripped Flow types from ${args.path}`);
+          }
+
+          return {
+            contents: processedContent,
+            loader: inferLoader(args.path, undefined, content),
+            resolveDir: dirname(args.path),
+            pluginData: Object.assign({}, args.pluginData, {
+              importer: args.path,
+            }),
+          };
+        },
+      );
+
+      // ================================================================
+      // HTTP namespace: load and preprocess ALL HTTP-fetched content
+      //
+      // This is the sole content loader for the HTTP namespace. Both
+      // CDN package files and direct URL imports flow through here.
+      //
+      // Pipeline:
+      //   1. Extension probing + content fetch (via determineExtension)
+      //   2. Store in VFS for bundle analyzer / install-size reporting
+      //   3. Asset discovery (WASM, Workers via `new URL(...)`)
+      //   4. Flow type stripping
+      //   5. Loader inference
+      //
+      // CRITICAL: The final URL (after redirects) is passed in
+      // pluginData.url so that relative imports resolve correctly.
+      // ================================================================
+      build.onLoad(
+        { filter: /.*/, namespace: HTTP_NAMESPACE },
+        async (args) => {
+          // Probe for correct extension and fetch content.
+          const { url, content, contentType } = await determineExtension(args.path, {
+            headersOnly: false,
+            StateContext,
+          });
+
+          if (!content) return;
+
+          // Store in virtual filesystem for bundle analyzer.
+          if (FileSystem) {
+            const filePath = toURLPath(url);
+            await setFile(FileSystem, filePath, content);
+          }
+
+          // Discover and fetch assets (WASM, Workers, etc.)
+          const assetResults = await fetchAssets(
+            url, content as Uint8Array<ArrayBuffer>, StateContext,
+          );
+
+          const resolvedAssets = assetResults
+            .filter((result): result is PromiseFulfilledResult<ESBUILD.OutputFile> => {
+              if (result.status === "rejected") {
+                dispatchEvent(LOGGER_WARN, `Asset fetch failed for '${url}':\n${result.reason}`);
+                return false;
+              }
+              return true;
+            })
+            .map(result => result.value);
+
+          toContext("assets", Assets.concat(resolvedAssets), StateContext);
+
+          // Strip Flow type annotations from files that use Flow syntax.
+          const { contents: processedContent, wasStripped } = maybeStripFlow(
+            content as Uint8Array,
+            { url, sourceMap: enableSourceMaps },
+          );
+
+          if (wasStripped) {
+            dispatchEvent(LOGGER_INFO, `Stripped Flow types from ${url}`);
+          }
+
+          return {
+            contents: processedContent,
+            loader: inferLoader(url, contentType, content),
+            // CRITICAL: Pass the final URL (after redirects) in pluginData.
+            // This is used as the base for resolving relative imports.
+            pluginData: Object.assign({}, args.pluginData, { url }),
           };
         },
       );

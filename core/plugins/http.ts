@@ -26,40 +26,21 @@
 import type { ESBUILD, LocalState } from "../types.ts";
 
 import { Context, fromContext, toContext, withContext } from "../context/context.ts";
-import { CdnResolution } from "./cdn.ts";
 
 import { fetchContent, fetchHeaders } from "@bundle/utils/fetch-and-cache";
 import { decode } from "@bundle/utils/encode-decode";
 
-import { LOGGER_ERROR, LOGGER_INFO, LOGGER_WARN, dispatchEvent } from "../configs/events.ts";
-import { maybeStripFlow } from "../utils/flow-strip.ts";
+import { LOGGER_ERROR, LOGGER_INFO, dispatchEvent } from "../configs/events.ts";
 
 import { DEFAULT_CDN_HOST, getCDNStyle, getCDNUrl } from "../utils/cdn-format.ts";
-import { applyManifestRemappings } from "../utils/cdn-resolution.ts";
-import { getResolverConditions } from "@bundle/utils/resolve-conditions";
-import { inferLoader } from "../utils/loader.ts";
 import { setFile } from "../utils/filesystem.ts";
 
 import { isBareImport, isAbsolute } from "@bundle/utils/path";
 import { toURLPath, urlJoin } from "@bundle/utils/url";
 import { looksLikeJSRSpec } from "@bundle/utils/jsr-spec";
 
-import { EMPTY_EXPORT } from "./external.ts";
-
 /** HTTP Plugin Namespace */
 export const HTTP_NAMESPACE = "http-url";
-
-/**
- * Namespace for modules excluded by per-module path remappings (e.g.,
- * `browser: { "./some-module.js": false }`). These get served an empty
- * module stub instead of triggering a build error.
- *
- * Per the Node.js spec, when a per-module remapping resolves to `false`,
- * the module should be replaced with an empty object — NOT treated as a
- * hard build failure. Package-level `browser: false` (the string form)
- * is still an error, handled by CdnPlugin.
- */
-export const EXCLUDED_MODULE_NAMESPACE = "excluded-module";
 
 export interface HttpResolutionState<T> extends LocalState<T> {
   build: ESBUILD.PluginBuild
@@ -292,30 +273,25 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
   const host = fromContext("host", StateContext)!;
   const build = fromContext("build", StateContext)!;
 
-  // Extract resolve config for computing conditions (needed for browser field remapping)
-  const LocalConfig = fromContext("config", StateContext)!;
-  const esbuildOpts = LocalConfig.esbuild ?? {};
-  const resolveOpts = LocalConfig.resolve ?? {};
-  const effectiveResolveOpts = Object.assign({}, resolveOpts, esbuildOpts);
-
   return async function (args: ESBUILD.OnResolveArgs): Promise<ESBUILD.OnResolveResult | undefined> {
     const argPath = args.path;
 
     // Non-relative imports
     if (!argPath.startsWith(".") && !isAbsolute(argPath)) {
-      // Direct HTTP URL
+      // Direct HTTP URL — route to HTTP namespace.
+      // sideEffects enrichment is handled by PackagePlugin when
+      // package context exists in pluginData.
       if (/^https?:\/\//.test(argPath)) {
         return {
           path: argPath,
           namespace: HTTP_NAMESPACE,
-          sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
-            ? args.pluginData?.manifest.sideEffects
-            : undefined,
           pluginData: args.pluginData,
         };
       }
 
-      // Determine origin for resolution
+      // Determine origin for CDN-follows-parent behavior:
+      // when a file is loaded from esm.sh, its bare imports should
+      // also resolve through esm.sh (not the configured CDN).
       const pathOrigin = new URL(
         urlJoin(args.pluginData?.url ?? host, "../", argPath)
       ).origin;
@@ -330,20 +306,30 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
       const REGISTRY_HOST = getCDNStyle(host) === "registry";
       const origin = REGISTRY_HOST ? host : (NPM_CDN ? pathOrigin : host);
 
-      // Bare import (e.g., "lodash") → delegate to CDN resolution
-      // Also handle private imports (#internal) and JSR spec imports
+      // Bare import (e.g., "lodash") → delegate through build.resolve()
+      // so CdnPlugin handles resolution with the correct CDN origin.
+      // Also handle private imports (#internal) and JSR spec imports.
+      //
+      // The cdnOrigin is passed in pluginData so CdnPlugin can use
+      // the parent file's CDN rather than the configured default.
+      // This preserves the CDN-follows-parent behavior that was
+      // previously achieved by calling CdnResolution() directly
+      // with a context override.
       if (/^#/.test(argPath) || isBareImport(argPath) || looksLikeJSRSpec(argPath)) {
-        const ctx = withContext({ origin, build: Context.opaque(build) }, StateContext);
-        return await CdnResolution(ctx)(args);
+        return await build.resolve(argPath, {
+          kind: args.kind,
+          resolveDir: args.resolveDir,
+          pluginData: Object.assign({}, args.pluginData, {
+            cdnOrigin: origin,
+          }),
+        });
       }
 
-      // Absolute import (e.g., "/lib/foo") → resolve against CDN origin
+      // Absolute import (e.g., "/lib/foo") → resolve against CDN origin.
+      // sideEffects enrichment is handled by PackagePlugin.
       return {
         path: getCDNUrl(argPath, origin).url.toString(),
         namespace: HTTP_NAMESPACE,
-        sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
-          ? args.pluginData?.manifest.sideEffects
-          : undefined,
         pluginData: args.pluginData,
       };
     }
@@ -361,85 +347,22 @@ export function HttpResolution<T>(StateContext: Context<HttpResolutionState<T>>)
     }
 
     // ========================================================================
-    // Apply manifest field remappings for relative imports within a package
+    // Manifest field remapping + sideEffects computation are now handled by
+    // PackagePlugin (registered before HttpPlugin). It intercepts relative
+    // imports that have package context (pluginData.packageBaseUrl + manifest)
+    // and returns an enriched result with remapped paths and accurate
+    // sideEffects hints.
     //
-    // Several top-level package.json fields ("browser", "react-native",
-    // "electron") act as path-remapping layers. When the active resolve
-    // conditions include one of those fields, matching relative imports
-    // are rewritten to the platform-specific variant.
+    // This handler only fires for relative imports that:
+    //   a) Have no package context (direct URL fetches, non-package origins)
+    //   b) Fall outside the package base URL (escaping the package tree)
     //
-    // Example — @exodus/bytes with browser conditions active:
-    //   manifest.browser = { "./fallback/platform.js": "./fallback/platform.browser.js" }
-    //   "./fallback/platform.js" → "./fallback/platform.browser.js"
-    //
-    // Example — react-native conditions active:
-    //   manifest["react-native"] = { "./utf16.js": "./utf16.native.js" }
-    //   "./utf16.js" → "./utf16.native.js"
-    //
-    // The packageBaseUrl (set by CdnPlugin) lets us convert the resolved
-    // absolute URL back to a package-relative path for field lookup.
+    // In both cases, no remapping or sideEffects enrichment is applicable.
     // ========================================================================
-    const manifest = args.pluginData?.manifest;
-    const packageBaseUrl: string | undefined = args.pluginData?.packageBaseUrl;
-
-    if (packageBaseUrl && manifest && resolvedPath.startsWith(packageBaseUrl)) {
-      const conditions = getResolverConditions(args, effectiveResolveOpts);
-      const packageRelPath = "./" + resolvedPath.slice(packageBaseUrl.length);
-      const { path: remappedPath, excluded, matchedField } = applyManifestRemappings(
-        packageRelPath,
-        manifest,
-        conditions,
-      );
-
-      if (excluded) {
-        // Per-module remap to false → behavior depends on config.
-        // Default is "stub" (spec-compliant empty export, matching webpack/rollup).
-        // Package-level `browser: false` (whole-package exclusion) is
-        // handled by CdnPlugin and defaults to "error".
-        const importPolicy = LocalConfig.remapFalse?.importRemapFalse ?? "stub";
-        const warnOnStub = LocalConfig.remapFalse?.warnOnStubbedRemapFalse ?? true;
-
-        if (importPolicy === "error") {
-          return {
-            errors: [{
-              text: `Module "${packageRelPath}" is excluded for the current environment`,
-              detail: `Excluded by "${matchedField}" field in package.json for "${manifest.name ?? "unknown"}".`,
-            }],
-          };
-        }
-
-        if (importPolicy === "external") {
-          dispatchEvent(LOGGER_INFO, `Marking excluded module "${packageRelPath}" (${matchedField} field) as external in "${manifest.name ?? "unknown"}"`);
-          return {
-            path: args.path,
-            external: true,
-          };
-        }
-
-        // Default: "stub"
-        dispatchEvent(LOGGER_INFO, `Stubbing excluded module "${packageRelPath}" (${matchedField} field) in "${manifest.name ?? "unknown"}"`);
-        return {
-          path: `${manifest.name ?? "unknown"}/${packageRelPath}`,
-          namespace: EXCLUDED_MODULE_NAMESPACE,
-          pluginData: Object.assign({}, args.pluginData, {
-            excludedBy: matchedField,
-            originalPath: packageRelPath,
-            suppressWarning: !warnOnStub,
-          }),
-        };
-      }
-
-      if (remappedPath !== packageRelPath) {
-        resolvedPath = packageBaseUrl + remappedPath.replace(/^\.\//, "");
-      }
-    }
 
     return {
       path: resolvedPath,
       namespace: HTTP_NAMESPACE,
-      sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
-        ? args.pluginData?.manifest.sideEffects
-        : undefined,
       pluginData: args.pluginData,
     };
   };
@@ -463,107 +386,31 @@ export function HttpPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD.Plu
 
   toContext("host", host ?? DEFAULT_CDN_HOST, StateContext);
 
-  const Assets = fromContext("assets", StateContext) ?? [];
-  const FileSystem = fromContext("filesystem", StateContext);
-
   return {
     name: HTTP_NAMESPACE,
     setup(build) {
       const ctx = withContext({ build: Context.opaque(build) }, StateContext);
 
-      // Route HTTP/HTTPS URLs to this plugin
+      // Route HTTP/HTTPS URLs to this plugin.
+      // sideEffects enrichment is handled by PackagePlugin when
+      // package context exists — this handler is a pure router.
       build.onResolve({ filter: /^https?:\/\// }, args => ({
         path: args.path,
         namespace: HTTP_NAMESPACE,
-        sideEffects: typeof args.pluginData?.manifest?.sideEffects === "boolean"
-          ? args.pluginData?.manifest.sideEffects
-          : undefined,
         pluginData: args.pluginData,
       }));
 
       // Route all imports within HTTP namespace through HttpResolution
       build.onResolve({ filter: /.*/, namespace: HTTP_NAMESPACE }, HttpResolution(ctx));
 
-      // ====================================================================
-      // Excluded module stubs
+      // ────────────────────────────────────────────────────────────
+      // NOTE: No onLoad handler here.
       //
-      // When a per-module path remapping (browser, react-native, etc.)
-      // maps a file to `false`, we serve an empty export stub. This is
-      // spec-compliant: the module "doesn't exist" on this platform, so
-      // consumers get `{}` at runtime — exactly like webpack/rollup.
-      // ====================================================================
-      build.onLoad({ filter: /.*/, namespace: EXCLUDED_MODULE_NAMESPACE }, (args) => {
-        const field = args.pluginData?.excludedBy ?? "unknown";
-        const originalPath = args.pluginData?.originalPath ?? args.path;
-        const suppressWarning = args.pluginData?.suppressWarning === true;
-
-        return {
-          contents: EMPTY_EXPORT,
-          loader: "js",
-          warnings: suppressWarning ? [] : [{
-            text: `Module "${originalPath}" stubbed (empty export)`,
-            detail: `Excluded by "${field}" field in package.json. The module is replaced with an empty object for the current platform.`,
-          }],
-        };
-      });
-
-      // Whether esbuild has source maps enabled — when true we ask
-      // maybeStripFlow to embed an inline source map so esbuild can
-      // fold the Flow transformation into the final bundle map.
-      const enableSourceMaps = !!build.initialOptions.sourcemap;
-
-      // Load content from HTTP URLs
-      build.onLoad({ filter: /.*/, namespace: HTTP_NAMESPACE }, async (args) => {
-        // Probe for correct extension and fetch content
-        const { url, content, contentType } = await determineExtension(args.path, {
-          headersOnly: false,
-          StateContext,
-        });
-
-        if (!content) return;
-
-        // Store in virtual filesystem for bundle analyzer
-        if (FileSystem) {
-          const filePath = toURLPath(url);
-          await setFile(FileSystem, filePath, content);
-        }
-
-        // Discover and fetch assets (WASM, Workers, etc.)
-        const assetResults = await fetchAssets(url, content as Uint8Array<ArrayBuffer>, StateContext);
-        
-        const resolvedAssets = assetResults
-          .filter((result): result is PromiseFulfilledResult<ESBUILD.OutputFile> => {
-            if (result.status === "rejected") {
-              dispatchEvent(LOGGER_WARN, `Asset fetch failed for '${url}':\n${result.reason}`);
-              return false;
-            }
-            return true;
-          })
-          .map(result => result.value);
-
-        toContext("assets", Assets.concat(resolvedAssets), StateContext);
-
-        // Strip Flow type annotations from files that use Flow syntax.
-        // React Native and the Metro/Expo ecosystem ship .js files with raw
-        // Flow annotations (e.g. `import typeof`). esbuild can't parse Flow,
-        // so we pre-process these files before handing them to the bundler.
-        const { contents: processedContent, wasStripped } = maybeStripFlow(
-          content as Uint8Array,
-          { url, sourceMap: enableSourceMaps }
-        );
-
-        if (wasStripped) {
-          dispatchEvent(LOGGER_INFO, `Stripped Flow types from ${url}`);
-        }
-
-        return {
-          contents: processedContent,
-          loader: inferLoader(url, contentType, content),
-          // CRITICAL: Pass the final URL (after redirects) in pluginData
-          // This is used as the base URL for resolving relative imports
-          pluginData: { ...args.pluginData, url },
-        };
-      });
+      // All HTTP content loading (fetching, extension probing,
+      // asset discovery, Flow type stripping, loader inference)
+      // is handled by PackagePlugin, which is registered before
+      // this plugin and owns onLoad for the http-url namespace.
+      // ────────────────────────────────────────────────────────────
     },
   };
 }

@@ -53,6 +53,22 @@ import {
 /** External Plugin Namespace */
 export const EXTERNALS_NAMESPACE = "external-globals";
 
+/**
+ * Namespace for modules excluded by per-module path remappings (e.g.,
+ * `browser: { "./some-module.js": false }`). These get served an empty
+ * module stub instead of triggering a build error.
+ *
+ * Per the Node.js spec, when a per-module remapping resolves to `false`,
+ * the module should be replaced with an empty object — NOT treated as a
+ * hard build failure. Package-level `browser: false` (the string form)
+ * is still an error, handled by CdnPlugin.
+ *
+ * The onLoad handler that serves the stub is registered in ExternalPlugin
+ * (this file) because ExternalPlugin is the canonical home for all stub
+ * and exclusion loading logic.
+ */
+export const EXCLUDED_MODULE_NAMESPACE = "excluded-module";
+
 /** An empty export as a Uint8Array */
 export const EMPTY_EXPORT = encode("export default {}");
 
@@ -218,6 +234,34 @@ export function ExternalPlugin<T>(StateContext: Context<LocalState<T>>): ESBUILD
                 : null,
             },
           ],
+        };
+      });
+
+      // ====================================================================
+      // Excluded module stubs
+      //
+      // When a per-module path remapping (browser, react-native, etc.)
+      // maps a file to `false`, we serve an empty export stub. This is
+      // spec-compliant: the module "doesn't exist" on this platform, so
+      // consumers get `{}` at runtime — exactly like webpack/rollup.
+      //
+      // The resolve-side logic lives in PackagePlugin (for child imports)
+      // and TarballPlugin/CdnPlugin (for entry-level exclusions). They
+      // set pluginData.excludedBy so this handler can produce accurate
+      // warning messages.
+      // ====================================================================
+      build.onLoad({ filter: /.*/, namespace: EXCLUDED_MODULE_NAMESPACE }, (args) => {
+        const field = args.pluginData?.excludedBy ?? "unknown";
+        const originalPath = args.pluginData?.originalPath ?? args.path;
+        const suppressWarning = args.pluginData?.suppressWarning === true;
+
+        return {
+          contents: EMPTY_EXPORT,
+          loader: "js",
+          warnings: suppressWarning ? [] : [{
+            text: `Module "${originalPath}" stubbed (empty export)`,
+            detail: `Excluded by "${field}" field in package.json. The module is replaced with an empty object for the current platform.`,
+          }],
         };
       });
     },
