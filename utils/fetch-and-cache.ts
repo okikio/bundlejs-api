@@ -77,6 +77,14 @@ export interface FetchResult {
   fromCache: boolean;
   /** Whether a redirect occurred */
   redirected: boolean;
+  /**
+   * Background stale-while-revalidate refresh promise, if one was fired.
+   *
+   * When a cached response triggers a background refresh, this promise
+   * tracks that work.  Callers can await it for deterministic cleanup,
+   * or ignore it if the `scope` option already adopted the promise.
+   */
+  pending?: Promise<void>;
 }
 
 export interface FetchOptions {
@@ -110,6 +118,21 @@ export interface FetchOptions {
    * @see https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
    */
   signal?: AbortSignal;
+  /**
+   * Per-build disposal scope (`AsyncDisposableStack`).
+   *
+   * When provided, background stale-while-revalidate refresh promises are
+   * **adopted** into this scope via `scope.adopt(bgPromise, awaiter)`.  This
+   * ensures `disposeAsync()` awaits settlement of every in-flight background
+   * operation — including `cache.put()` calls that `AbortSignal` alone
+   * cannot cancel — before the build boundary closes.
+   *
+   * Without this, fire-and-forget `backgroundRefresh` promises can outlive
+   * the build and leak Deno runtime ops (`op_cache_put`, `fetchCancelHandle`).
+   *
+   * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncDisposableStack/adopt
+   */
+  scope?: AsyncDisposableStack;
 }
 
 // ============================================================================
@@ -202,7 +225,7 @@ async function storeInCache(
   // resolves with the final 2xx response, so we're caching the final response
   if (!response.ok) {
     // Cancel unconsumed body to prevent resource leak
-    await response.body?.cancel();
+    void response.body?.cancel();
     return;
   }
 
@@ -210,7 +233,7 @@ async function storeInCache(
   // cache-write, skip the write to avoid starting an `op_cache_put` that
   // would outlive the caller.
   if (signal?.aborted) {
-    await response.body?.cancel();
+    void response.body?.cancel();
     return;
   }
 
@@ -251,7 +274,7 @@ function doFetch(
     if (!response.ok) {
       // Cancel the body before throwing — prevents leaked response streams
       // when the caller never reads the body of a failed request.
-      await response.body?.cancel();
+      void response.body?.cancel();
       throw new Error(`HTTP ${response.status}: ${response.statusText} for ${url}`);
     }
     
@@ -293,7 +316,7 @@ async function backgroundRefresh(
     // Check abort *after* fetch completes but *before* the cache write.
     // Avoids starting an `op_cache_put` that would outlive the caller.
     if (init.signal?.aborted) {
-      await response.body?.cancel();
+      void response.body?.cancel();
       return;
     }
 
@@ -315,7 +338,7 @@ async function backgroundRefresh(
         const response = await doFetch(finalUrl, init, retries);
 
         if (init.signal?.aborted) {
-          await response.body?.cancel();
+          void response.body?.cancel();
           return;
         }
 
@@ -386,11 +409,29 @@ export async function fetchWithCache(
       // When no signal is provided, the refresh is plain fire-and-forget
       // — fine for standalone / REPL usage where leak detection isn't a
       // concern.
+      // Track the background refresh promise (if any) so callers and the
+      // disposal scope can await its settlement.
+      let pending: Promise<void> | undefined;
+
       if (cacheMode === 'normal') {
         const refreshInit: RequestInit = options.signal
           ? { ...init, signal: options.signal }
           : init;
-        void backgroundRefresh(url, finalUrl, refreshInit, retries, cacheApi);
+
+        pending = backgroundRefresh(url, finalUrl, refreshInit, retries, cacheApi);
+
+        // Adopt the background promise into the build's disposal scope.
+        // When `disposeAsync()` runs, the abort signal fires first (LIFO:
+        // abort was registered last → runs first), cancelling in-flight
+        // fetches.  Then the adopt awaiter drains the settling promise,
+        // ensuring `cache.put()` ops that were already in progress
+        // complete before the test/build boundary closes.
+        if (options.scope && !options.scope.disposed) {
+          options.scope.adopt(
+            pending,
+            async (p) => { try { await p; } catch { /* swallow — abort errors are expected */ } },
+          );
+        }
       }
 
       // Clone response if requested (Cache API responses can be reused, but in-memory ones cannot)
@@ -398,11 +439,19 @@ export async function fetchWithCache(
       const returnResponse =
         isMemory ? cached.clone() : (clone ? cached.clone() : cached);
 
+      // Release the original cache response body if we cloned it.
+      // Cache API responses from `cacheApi.match()` hold a `CacheResponseResource`;
+      // if the original isn't consumed, that resource leaks across test boundaries.
+      if (returnResponse !== cached) {
+        void cached.body?.cancel();
+      }
+
       return {
         url: finalUrl,
         response: returnResponse,
         fromCache: true,
         redirected: url !== finalUrl,
+        pending,
       };
     }
   }
@@ -425,9 +474,14 @@ export async function fetchWithCache(
     const deduped = await lookupCache(url, cacheApi);
     if (deduped) {
       const finalUrl = resolveRedirect(url);
+      const clonedResponse = deduped.clone();
+
+      // Release the original cache response to prevent CacheResponseResource leaks.
+      void deduped.body?.cancel();
+
       return {
         url: finalUrl,
-        response: deduped.clone(),
+        response: clonedResponse,
         fromCache: true,
         redirected: url !== finalUrl,
       };
