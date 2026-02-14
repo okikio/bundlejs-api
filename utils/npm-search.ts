@@ -21,6 +21,7 @@
  * ```
  */
 
+import type { FetchOptions } from "./fetch-and-cache.ts";
 import type {
   FullPackage,
   FullPackageVersion,
@@ -344,12 +345,16 @@ export async function getPackage(
  */
 export async function getPackageOfVersion(
   input: string,
-  registry?: string
+  registry?: string,
+  opts: Pick<FetchOptions, 'signal' | 'scope'> = {},
 ): Promise<FullPackageVersion> {
   const { packageVersionURL, name, version } = getRegistryURL(input, registry);
 
   try {
-    const { response } = await fetchWithCache(packageVersionURL);
+    const { response } = await fetchWithCache(packageVersionURL, {
+      signal: opts.signal,
+      scope: opts.scope,
+    });
 
     if (!response.ok) {
       if (response.status === 404) {
