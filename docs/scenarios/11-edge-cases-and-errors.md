@@ -166,7 +166,7 @@ Expected: CDN returns 404 for `react@999.0.0/package.json` → clear error about
 
 With no VFS file at `/index.js`:
 
-Expected: the entry point resolves to a URL → HttpPlugin tries to fetch it → 404 → clear error.
+Expected: the entry point resolves to a URL → PackagePlugin's HTTP `onLoad` handler tries to fetch it → 404 → clear error.
 
 **Regression signal:** If empty packages silently produce empty bundles (no error), the 404 handling for entry point files is missing.
 

@@ -103,7 +103,7 @@ Expected: the bare import `"follow-redirects"` is detected by `isBareImport()` â
 
 ## 6.6 â€” `new URL("...", import.meta.url)` asset discovery
 
-**What it tests:** The HttpPlugin scans fetched source for `new URL("...", import.meta.url)` patterns to discover WASM files and web workers.
+**What it tests:** PackagePlugin's HTTP `onLoad` handler scans fetched source for `new URL("...", import.meta.url)` patterns to discover WASM files and web workers.
 
 **Use case:** Packages that load WASM binaries or web workers at runtime use this pattern. The bundler needs to fetch these assets alongside the module.
 
@@ -114,7 +114,7 @@ const wasmUrl = new URL("./processor.wasm", import.meta.url);
 const worker = new Worker(new URL("./worker.js", import.meta.url));
 ```
 
-Expected: the HttpPlugin extracts `"./processor.wasm"` and `"./worker.js"` from the pattern, resolves them against the module's URL, fetches them, and adds them to the `assets` array.
+Expected: PackagePlugin's HTTP `onLoad` handler extracts `"./processor.wasm"` and `"./worker.js"` from the pattern, resolves them against the module's URL, fetches them, and adds them to the `assets` array.
 
 **Regression signal:** If WASM/worker assets are missing from the build output, the URL pattern scanning is broken.
 

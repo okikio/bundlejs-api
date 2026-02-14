@@ -225,7 +225,7 @@ Each plugin has one job; complex behavior emerges from their composition. These 
 - **React Native bundling** — CDNs like unpkg.com intermittently return 503 errors when fetching files from `react-native` and related packages (the root cause is unclear, but the failures are consistent enough to block bundling). Registry tarball mode (TarballPlugin + CdnPlugin) works around this by fetching the entire package as a `.tgz` from the npm registry in a single request — no individual file fetches that can 503. Separately, `react-native` ships raw [Flow](https://flow.org/)-annotated `.js` files that esbuild cannot parse, so content pre-processing (VFSPlugin and HttpPlugin) strips Flow annotations before esbuild sees them. VFSPlugin's extension probing also handles non-standard suffixes like `.native` and `.fx`. These are independent concerns that combine to make React Native bundleable.
 - **Large-package fetch reduction** — Packages like `lodash-es` or `@aws-sdk/*` have hundreds of internal imports. In CDN mode, each import is a separate HTTP fetch. In registry mode, the entire package downloads as one tarball, and all subsequent resolution is local VFS lookups.
 - **Private registries** — CdnPlugin routes through scoped registries with auth tokens, TarballPlugin extracts the resulting tarballs, and the registry preference propagates through the entire transitive dependency tree automatically — no per-package configuration needed.
-- **Tree-shaking at CDN scale** — CdnPlugin resolves entry points, HttpPlugin fetches only the files esbuild actually follows, and `sideEffects` metadata tells esbuild which unused files are safe to drop. One import from `lodash-es` bundles to ~1 kB instead of ~80 kB.
+- **Tree-shaking at CDN scale** — CdnPlugin resolves entry points, PackagePlugin fetches only the files esbuild actually follows (via its `onLoad` handlers for both VFS and HTTP namespaces), and `sideEffects` metadata tells esbuild which unused files are safe to drop. One import from `lodash-es` bundles to ~1 kB instead of ~80 kB.
 
 The following sections walk through each plugin in registration order — the individual descriptions explain *how* each plugin works, but refer back to these scenarios when you want to see the bigger picture.
 
@@ -582,7 +582,7 @@ Handles all HTTP/HTTPS URL routing and relative import resolution. HttpPlugin is
      applyManifestRemappings("./lib/stream.js", manifest)
      → "./lib/stream-browser.js"  (remapped, not excluded)
      │
-     ▼  HttpPlugin fetches the browser-specific file instead
+     ▼  PackagePlugin's onLoad fetches the browser-specific file instead
 ```
 
 When a remapping resolves to `false` (meaning "this module doesn't exist on this platform"), PackagePlugin follows the `remapFalse.importRemapFalse` policy — defaulting to an empty stub export that keeps the build alive. The excluded module's `onLoad` handler (registered by ExternalPlugin) serves the actual stub content. See [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
@@ -1404,6 +1404,210 @@ Responses are cached under the **final URL** after redirects — not the origina
 Same config + same entry code = same cache key, so identical requests from different users hit the cache.
 
 
+### Per-Fetch Lifecycle: How `fetchWithCache` Works
+
+> **Source:** [utils/fetch-and-cache.ts](../utils/fetch-and-cache.ts)
+
+The `fetchWithCache()` function is the single entry point for all HTTP requests within the build pipeline. Every CDN file fetch, package manifest download, extension probe, and asset discovery goes through this function. Understanding its lifecycle is essential because it creates the background operations that the [Resource Lifecycle](#resource-lifecycle--explicit-resource-management) section describes how to clean up.
+
+#### Request flow
+
+```
+  fetchWithCache(url, { signal, scope, cacheMode, … })
+       │
+       ▼  Can cache?  (method === GET && cacheMode !== 'no-store')
+       │
+       ├─ NO → doFetch(url) → return response
+       │
+       ▼  YES
+       │
+       ▼  Check cacheMode
+       │
+       ├─ 'reload' → skip cache check, fetch fresh, store in cache
+       │
+       ▼  NOT 'reload'
+       │
+       ▼  lookupCache(url)
+       │   ├── Check in-memory LRU (responseCache)
+       │   └── Check Cache API (cacheApi.match)
+       │   Both keyed by final URL (via redirectMap)
+       │
+       ├─ MISS → dedup check (inflight map) → doFetch → storeInCache → return
+       │
+       ▼  HIT
+       │
+       ├─ cacheMode: 'force' → return cached immediately (no refresh)
+       │
+       ▼  cacheMode: 'normal' (default)
+       │
+       ├── Clone cached response → cancel original body
+       ├── Fire backgroundRefresh(originalUrl, finalUrl, …)    ← SWR
+       ├── scope.adopt(bgPromise, awaiter)                     ← lifecycle tracking
+       └── Return { response: clone, pending: bgPromise }
+```
+
+#### Redirect-aware caching
+
+A critical design decision: responses are always cached under the **final URL** after redirects, never the original request URL. This ensures:
+
+1. **Relative imports resolve correctly** — a module fetched from `unpkg.com/react@latest` that redirects to `unpkg.com/react@19.0.0/index.js` must resolve its `./jsx-runtime` import against the *final* URL
+2. **No stale redirect targets** — when `@latest` advances from `19.0.0` to `19.1.0`, the redirect map updates naturally
+3. **Direct hits work** — a request for the already-resolved URL finds the cached content immediately
+
+A separate `redirectMap` LRU (capacity: 500) tracks *original → final* URL mappings so that requests to aliased URLs can find cached content without re-fetching:
+
+```
+  Request: https://esm.sh/lodash@latest
+       │
+       ▼  lookupCache("https://esm.sh/lodash@latest")
+       ▼  redirectMap.get("…@latest") → "…@4.17.21"
+       ▼  responseCache.get("…@4.17.21") → cached Response ✓
+
+  vs. direct request:
+  Request: https://esm.sh/lodash@4.17.21
+       │
+       ▼  lookupCache("…@4.17.21")
+       ▼  redirectMap has no entry (not a redirect URL)
+       ▼  responseCache.get("…@4.17.21") → cached Response ✓
+```
+
+#### Request deduplication
+
+When two concurrent callers request the same URL before the first fetch settles, the second caller **joins the existing promise** instead of issuing a duplicate HTTP request. The `inflight` LRU map (capacity: 200) tracks pending fetches:
+
+```
+  Caller A: fetchWithCache("https://unpkg.com/react@19/index.js")
+       │
+       ▼  Cache miss → start fetch → store promise in inflight map
+       │                              ┌──────────────────────────┐
+       │                              │ inflight["…/index.js"]   │
+  Caller B: fetchWithCache("…")  ───▶ │   = Promise<Response>   │
+       │                              └──────────────────────────┘
+       ▼  inflight.get("…") → existing promise → await it
+       │   then read from cache (each caller gets its own clone)
+       │
+       ▼  When fetch settles: inflight.delete("…/index.js")
+```
+
+The dedup also bounds background refresh concurrency — if a background refresh for URL X is already in progress, the next cache hit simply joins the existing refresh rather than spawning a second one.
+
+#### Stale-while-revalidate (SWR) and background refresh
+
+When a cache hit occurs in `normal` mode, `fetchWithCache` fires a `backgroundRefresh()` — an async function that re-fetches the URL from the network and updates the cache for future requests. This is **fire-and-forget** from the caller's perspective (the cached content is returned immediately), but the background promise must be tracked for lifecycle management.
+
+```
+  backgroundRefresh(originalUrl, finalUrl, init, retries, cacheApi)
+       │
+       ▼  Bail if signal.aborted (build already finished)
+       │
+       ▼  doFetch(originalUrl, { signal, … })
+       │   ├── fetch() with redirect:'follow'
+       │   └── signal cancels in-flight fetch → throws AbortError
+       │
+       ├── AbortError? → return (expected during disposal)
+       │
+       ▼  Check signal.aborted again (between fetch and cache write)
+       │   └── Aborted? → cancel response body, return
+       │
+       ▼  storeInCache(originalUrl, resolvedUrl, response, cacheApi, signal)
+       │   ├── Checks signal.aborted before write (skip if build finished)
+       │   ├── Cache API: cacheApi.put(new Request(finalUrl), response)
+       │   │     → starts Deno op_cache_put (cannot be cancelled once started)
+       │   └── In-memory: responseCache.set(finalUrl, response)
+       │
+       ├── 404 on original URL? → retry with finalUrl (extension probing case)
+       │   └── Same signal checks and cache write
+       │
+       └── All errors swallowed (background operation — must not throw)
+```
+
+The **smart fallback** handles two real-world cases:
+1. **Version aliases** (`@latest`): original URL works, may resolve to newer version
+2. **Extension probing** (`dbcs-codec` → `dbcs-codec.js`): original extensionless URL 404s, use the final (extension-resolved) URL
+
+#### Signal and scope threading: builds → fetch-and-cache
+
+The `FetchOptions` interface exposes two lifecycle parameters that connect the caching layer to the per-build [Resource Lifecycle](#resource-lifecycle--explicit-resource-management):
+
+```typescript
+interface FetchOptions {
+  signal?: AbortSignal;           // Per-build abort signal
+  scope?: AsyncDisposableStack;   // Per-build disposal scope
+  // … other options (init, retries, clone, cacheMode)
+}
+```
+
+**`signal`** — the per-build `AbortController.signal`. When the build finishes and disposal runs, `abort()` fires this signal. Background refreshes that are still fetching receive an `AbortError` and bail early. The signal is **only applied to background refreshes** — primary (awaited) fetches are not affected, so in-progress builds won't be interrupted by disposal of a *previous* build.
+
+**`scope`** — the per-build `AsyncDisposableStack`. Background refresh promises are **adopted** into this scope via `scope.adopt(bgPromise, awaiter)`. When `disposeAsync()` runs, the stack awaits each adopted promise — including any `cacheApi.put()` calls that were already in progress when the abort signal fired. Without adoption, fire-and-forget promises outlive the build and leak Deno runtime ops.
+
+**Threading path** — how signal and scope flow from `build()` through the plugin pipeline to `fetchWithCache`:
+
+```
+  build.ts                core/plugins/          core/plugins/          utils/
+  ─────────               ──────────────         ──────────────         ──────
+  AsyncDisposableStack    PackagePlugin          http.ts                fetch-and-cache.ts
+  AbortController         (onLoad, HTTP)         (fetchPkg wrapper)     (fetchWithCache)
+       │                       │                       │                       │
+       ├── StateContext.scope ─┤                       │                       │
+       ├── StateContext.abort ─┤                       │                       │
+       │                       │                       │                       │
+       │                  determineExtension()         │                       │
+       │                       │                       │                       │
+       │                  fromContext("abort")          │                       │
+       │                  fromContext("scope")          │                       │
+       │                       │                       │                       │
+       │                  fetchPkg(url, {              │                       │
+       │                    signal: abort.signal, ─────┤                       │
+       │                    scope  ─────────────────────┤                       │
+       │                  })                            │                       │
+       │                                          fetchContent(url, {          │
+       │                                            signal, scope ─────────────┤
+       │                                          })                           │
+       │                                                                  fetchWithCache()
+       │                                                                       │
+       │                                                                  backgroundRefresh
+       │                                                                       │
+       │                                                                  scope.adopt(bg)
+       │                                                                       │
+       ▼  [Symbol.asyncDispose]                                                │
+       │                                                                       │
+       ├── defer(abort) ← LIFO: fires FIRST                                   │
+       │   └── abort.abort() → signal fires                                    │
+       │       └── in-flight fetch → AbortError                                │
+       │                                                                       │
+       └── adopt(bgPromise) ← LIFO: fires SECOND                              │
+           └── await bgPromise                                                 │
+               └── storeInCache settles (put completes or throws)              │
+```
+
+#### Resources created by background refresh
+
+Each `backgroundRefresh` call can create up to three Deno runtime resources. These are what Deno's test sanitizer detects as leaks when disposal doesn't fully complete:
+
+| Deno Resource | Created by | How it's cleaned up |
+|:---|:---|:---|
+| `fetchCancelHandle` | `fetch()` in `doFetch()` | AbortSignal cancels the in-flight request; Deno frees the handle on the next macrotask |
+| `op_cache_put` | `cacheApi.put()` in `storeInCache()` | Must run to completion — **cannot be cancelled** once started. The adopt awaiter blocks until the put finishes |
+| `CacheResponseResource` | `cacheApi.match()` in `lookupCache()` | Response body must be consumed (`.arrayBuffer()`) or cancelled (`.body?.cancel()`) |
+
+The `op_cache_put` resource is the trickiest — Deno's Cache API `put()` operation writes the response body to persistent storage. Unlike `fetch()`, it doesn't accept an `AbortSignal`, so once started it must complete naturally. The disposal stack handles this by awaiting the full `backgroundRefresh` promise chain, which includes the `storeInCache` call.
+
+#### Defensive strategies
+
+The caching layer uses several strategies to prevent resource leaks:
+
+1. **Signal checks at every boundary** — `backgroundRefresh` checks `signal.aborted` before the fetch, after the fetch (before cache write), and `storeInCache` checks before calling `cacheApi.put()`. This creates multiple bail-out points.
+
+2. **Response body cancellation** — when bailing early due to abort, the response body is explicitly cancelled via `response.body?.cancel()` to prevent `CacheResponseResource` leaks.
+
+3. **Cache response cleanup on clone** — when `lookupCache` returns a Cache API response, `fetchWithCache` clones it for the caller and cancels the original's body. This ensures the `CacheResponseResource` from `cacheApi.match()` is freed even if the caller doesn't consume the response.
+
+4. **Error swallowing in background** — `backgroundRefresh` catches all errors (AbortError, 404, network failures) and returns silently. Background operations must never throw — they're fire-and-forget from the caller's perspective, with lifecycle management handled by the disposal scope.
+
+5. **Macrotask delay in disposal** — `[Symbol.asyncDispose]` adds a `setTimeout(0)` after `disposeAsync()` completes. This gives Deno's runtime a macrotask to finalize internal resource cleanup (`fetchCancelHandle` teardown) that happens asynchronously after abort + promise settlement.
+
+
 ## Compression
 
 After bundling, `@bundle/compress` compresses the output to report production size numbers. The `compress()` function accepts `Uint8Array` chunks and returns both compressed and uncompressed sizes.
@@ -1554,6 +1758,8 @@ Each build creates per-build resources that must be torn down when the caller is
 - **In-flight request deduplication** — the `inflight` LRU map tracks pending network requests so concurrent builds don't duplicate HTTP calls.
 - **Plugin-registered resources** — plugins can register arbitrary cleanup callbacks on the per-build `AsyncDisposableStack` (workers, WASM runtimes, streams, etc.).
 
+> **Deep dive:** The [Caching Architecture](#caching-architecture) section covers the full `fetchWithCache` lifecycle, including the SWR background refresh flow, request deduplication, redirect-aware caching, and the specific Deno runtime resources that cause leaks when disposal fails.
+
 ### Per-build lifecycle
 
 Each `build()` and `context()` call creates:
@@ -1571,14 +1777,47 @@ Both are stored on `LocalState` and available to plugins via `fromContext('scope
        ├── Register: scope.defer(() => abort.abort())
        │
        ├── Run esbuild with plugin pipeline
-       │     ├── HttpPlugin: passes abort.signal to fetchPkg / fetchPkgHeaders
-       │     ├── TarPlugin: passes abort.signal to fetchWithCache
-       │     └── Background SWR refreshes carry abort.signal
+       │     ├── PackagePlugin (onLoad): passes abort.signal + scope
+       │     │     via determineExtension → fetchPkg → fetchWithCache
+       │     ├── PackagePlugin (onLoad): passes abort.signal + scope
+       │     │     via fetchAssets → fetchPkg → fetchWithCache
+       │     ├── TarballPlugin: passes abort.signal + scope to fetchWithCache
+       │     └── Background SWR refreshes carry abort.signal;
+       │           scope.adopt() tracks their settlement
        │
        └── Return result with [Symbol.asyncDispose] → scope.disposeAsync()
                                                        ├── abort.abort()
                                                        └── (any plugin-registered cleanup)
 ```
+
+### LIFO disposal timing
+
+`AsyncDisposableStack` disposes entries in **last-in, first-out** order. This ordering is critical because `scope.defer(() => abort.abort())` is registered *before* the build runs, placing it near the bottom of the stack. During the build, `scope.adopt(bgPromise, awaiter)` calls push background refresh promises onto the *top* of the stack. At disposal time:
+
+```
+  scope.disposeAsync()                       LIFO order
+       │
+       ├── 1. adopt(bgPromise_N)  ← last adopted, disposed first
+       │       └── await bgPromise_N (storeInCache → cacheApi.put settles)
+       │
+       ├── 2. adopt(bgPromise_N-1)
+       │       └── await bgPromise_N-1
+       │
+       │   … (all adopted promises drain) …
+       │
+       ├── N. adopt(bgPromise_1)  ← first adopted, disposed last among adopts
+       │       └── await bgPromise_1
+       │
+       └── N+1. defer(abort)      ← registered earliest, fires LAST
+                 └── abort.abort()
+                     └── signal fires → in-flight fetches receive AbortError
+```
+
+> **Wait — doesn't that mean abort fires *after* all adopts?** Yes. The `defer(abort)` fires last because it was registered first (LIFO). This means the adopted background refresh promises are awaited *before* the abort signal fires. The background refresh functions themselves check `signal.aborted` at multiple points (before fetch, after fetch, before cache write) — but those checks happen during the *build* phase. By disposal time, the promises that were adopted have either already completed or are still in-flight. The adopt awaiter blocks until they settle, and only then does `defer(abort)` fire. In-flight fetches that were *not* adopted (or that started after adoption) are cancelled by the abort signal last.
+
+> **Design implication:** Because `op_cache_put` operations cannot be cancelled once started, the adopt-then-abort ordering is correct — it ensures that any `cacheApi.put()` calls in progress are awaited to completion before the build scope closes. See [Resources created by background refresh](#resources-created-by-background-refresh) and [Defensive strategies](#defensive-strategies) in the Caching Architecture section for the full resource lifecycle within `fetchWithCache`.
+
+For the detailed flow of how `signal` and `scope` thread from `build()` through plugins into `fetchWithCache`, see [Signal and scope threading](#signal-and-scope-threading-builds--fetch-and-cache) in the Caching Architecture section.
 
 ### Usage patterns
 

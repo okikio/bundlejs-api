@@ -281,12 +281,12 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 20.9 | Full stripping via `flow-remove-types` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.10 | Regex fallback handles `import typeof` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.11 | `maybeStripFlow` conditional processing | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
-| 20.12 | HttpPlugin strips Flow from CDN content | `plugins/http.ts`, `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
-| 20.13 | VFS plugin strips Flow from tarball-extracted content | `plugins/fs.ts`, `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.12 | PackagePlugin strips Flow from CDN content | `plugins/package.ts`, `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.13 | PackagePlugin strips Flow from tarball-extracted content | `plugins/package.ts`, `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.14 | Lazy loading of `flow-remove-types` | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.15 | Block comment `@flow` pragma | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.16 | Flow + JSX co-occurrence | `flow-strip.ts`, `loader.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
-| 20.17 | Source map generated when sourcemaps enabled | `flow-strip.ts`, `plugins/http.ts`, `plugins/fs.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
+| 20.17 | Source map generated when sourcemaps enabled | `flow-strip.ts`, `plugins/package.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.18 | No source map when sourcemaps disabled | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.19 | Regex fallback produces no source map | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.20 | Source map contains original source content | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
