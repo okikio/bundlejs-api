@@ -57,8 +57,10 @@
  * @see https://jsr.io/docs/packages
  */
 
-import { fetchWithCache } from "./fetch-and-cache.ts";
+import type { FetchOptions } from "./fetch-and-cache.ts";
+
 import { compare, maxSatisfying, parse, parseRange, format } from "./semver.ts";
+import { fetchWithCache } from "./fetch-and-cache.ts";
 
 // =============================================================================
 // Types
@@ -758,12 +760,15 @@ export async function getJSRPackage(scope: string, name: string): Promise<JSRPac
 export async function getJSRVersionMeta(
   scope: string,
   name: string,
-  version: string
+  version: string,
+  opts: Pick<FetchOptions, 'signal' | 'scope'> = {},
 ): Promise<JSRVersionMeta> {
   const url = getJSRVersionMetaUrl(scope, name, version);
 
   const { response } = await fetchWithCache(url, {
-    init: { headers: { "Accept": "application/json" }, }
+    init: { headers: { "Accept": "application/json" }, },
+    signal: opts.signal,
+    scope: opts.scope,
   });
 
   if (!response.ok) {
