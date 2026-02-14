@@ -138,17 +138,27 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
   // finishes.
   //
   // IMPORTANT — registration order matters for LIFO disposal:
-  //   1. Plugins `scope.adopt(bgPromise, awaiter)` during build  (registered mid-build)
-  //   2. `defer(() => abortController.abort())`                  (registered LAST, after build)
+  //   1. `defer(() => abortController.abort())`                  (registered FIRST, below)
+  //   2. Plugins `scope.adopt(bgPromise, awaiter)` during build  (registered mid-build)
   //
-  // LIFO disposal runs #2 first (abort cancels in-flight fetches),
-  // then #1 (awaiters drain settling promises incl. cache.put ops).
-  // This prevents leaked `op_cache_put` / `fetchCancelHandle` resources.
+  // LIFO disposal runs #2 first (adopt awaiters drain background
+  // promises, allowing in-flight `cache.put()` ops to complete
+  // naturally), then #1 (abort fires as final cleanup for anything
+  // still lingering).
+  //
+  // This prevents leaked `op_cache_put` / `fetchCancelHandle` /
+  // `CacheResponseResource` handles by ensuring all async work
+  // settles before the build boundary closes.
   const disposables = new AsyncDisposableStack();
   const abortController = new AbortController();
 
-  // NOTE: abort is registered AFTER the build completes (see below)
-  // so it sits at the TOP of the LIFO stack → fires FIRST on dispose.
+  // Register abort FIRST so it sits at the BOTTOM of the LIFO stack
+  // → fires LAST on dispose (after all adopted promises settle).
+  disposables.defer(async () => {
+    abortController.abort();
+    // Yield a microtask to let Deno clean up aborted fetch handles
+    await Promise.resolve();
+  });
 
   const StateContext = new Context<LocalState>({
     filesystem: Context.opaque(await filesystem),
@@ -235,25 +245,6 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
       ...build_result
     });
 
-    // Register abort as the LAST item on the stack.
-    //
-    // LIFO disposal order:
-    //   1. defer(abort)  — fires abort signal, cancelling in-flight fetches
-    //   2. adopt(bg1)    — awaits background promise (settles quickly after abort)
-    //   3. adopt(bg2)    — …
-    //
-    // This ensures abort fires BEFORE we await background promises,
-    // giving `cache.put()` ops time to settle without outliving the build.
-    //
-    // The defer is async with a microtask yield so Deno's runtime has a
-    // chance to clean up internal `fetchCancelHandle` resources after the
-    // abort signal fires but before the stack moves on to adopt awaiters.
-    disposables.defer(async () => {
-      abortController.abort();
-      // Yield a microtask to let Deno clean up aborted fetch handles
-      await Promise.resolve();
-    });
-
     // ── Attach Explicit Resource Management symbols ────────────────────
     //
     // Disposal is idempotent — `AsyncDisposableStack.disposeAsync()`
@@ -270,7 +261,9 @@ export async function build(opts: BuildConfig = {}, filesystem: Promise<IFileSys
       },
     });
   } catch (e) {
-    // Build failed — abort explicitly since defer(abort) wasn't registered yet.
+    // Build failed — abort is already registered in the defer, but we call it
+    // explicitly here for immediate cancellation of any in-flight work.
+    // The subsequent disposeAsync() will no-op on the defer since abort already fired.
     abortController.abort();
     // Caller won't receive a disposable result — clean up before re-throwing.
     try { await disposables.disposeAsync(); } catch { /* don't mask the original error */ }

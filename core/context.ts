@@ -47,16 +47,25 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
   // Create (or reuse) per-build resources, and ensure abort fires on dispose.
   //
   // IMPORTANT — registration order matters for LIFO disposal:
-  //   1. Plugins `scope.adopt(bgPromise, awaiter)` during rebuild  (registered mid-rebuild)
-  //   2. `defer(() => abortController.abort())`                    (registered LAST, below)
+  //   1. `defer(() => abortController.abort())`                    (registered FIRST, below)
+  //   2. Plugins `scope.adopt(bgPromise, awaiter)` during rebuild  (registered mid-rebuild)
   //
-  // LIFO disposal runs #2 first (abort cancels in-flight fetches),
-  // then #1 (awaiters drain settling promises incl. cache.put ops).
+  // LIFO disposal runs #2 first (adopt awaiters drain background
+  // promises, allowing in-flight `cache.put()` ops to complete
+  // naturally), then #1 (abort fires as final cleanup for anything
+  // still lingering).
+  //
+  // This prevents leaked `op_cache_put` / `fetchCancelHandle` /
+  // `CacheResponseResource` handles.
   const disposables = new AsyncDisposableStack();
   const abortController = new AbortController();
 
-  // NOTE: abort is registered AFTER context creation (see below)
-  // so it sits at the TOP of the LIFO stack → fires FIRST on dispose.
+  // Register abort FIRST so it sits at the BOTTOM of the LIFO stack
+  // → fires LAST on dispose (after all adopted promises settle).
+  disposables.defer(async () => {
+    abortController.abort();
+    await Promise.resolve();
+  });
 
   const StateContext = new Context<LocalState>({
     filesystem: Context.opaque(await filesystem),
@@ -139,16 +148,8 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
       } else throw e;
     }
 
-    // Register abort as the LAST item on the stack so LIFO disposal
-    // fires it FIRST — cancelling in-flight fetches before we await
-    // background promises adopted during rebuilds.
-    //
-    // The defer is async with a microtask yield so Deno's runtime has a
-    // chance to clean up internal `fetchCancelHandle` resources.
-    disposables.defer(async () => {
-      abortController.abort();
-      await Promise.resolve();
-    });
+    // abort was already registered at the BOTTOM of the LIFO stack
+    // (see top of function) — no second registration needed here.
 
     return {
       state: StateContext,
@@ -173,7 +174,8 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
       },
     }
   } catch (e) {
-    // Context creation failed — abort explicitly since defer(abort) wasn't registered yet.
+    // Context creation failed — abort is already registered in the defer,
+    // but we call it explicitly here for immediate cancellation.
     abortController.abort();
     // Caller won't receive a disposable context — clean up before re-throwing.
     try { await disposables.disposeAsync(); } catch { /* don't mask the original error */ }
