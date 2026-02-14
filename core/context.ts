@@ -46,12 +46,17 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
   // -- Per-build resource lifecycle -------------------------------------------
   // Create (or reuse) per-build resources, and ensure abort fires on dispose.
   //
-  // Note:
-  // - We intentionally connect `abort.abort()` to `scope` disposal so that
-  //   background work can stop when the build finishes.
+  // IMPORTANT — registration order matters for LIFO disposal:
+  //   1. Plugins `scope.adopt(bgPromise, awaiter)` during rebuild  (registered mid-rebuild)
+  //   2. `defer(() => abortController.abort())`                    (registered LAST, below)
+  //
+  // LIFO disposal runs #2 first (abort cancels in-flight fetches),
+  // then #1 (awaiters drain settling promises incl. cache.put ops).
   const disposables = new AsyncDisposableStack();
   const abortController = new AbortController();
-  disposables.defer(() => abortController.abort());
+
+  // NOTE: abort is registered AFTER context creation (see below)
+  // so it sits at the TOP of the LIFO stack → fires FIRST on dispose.
 
   const StateContext = new Context<LocalState>({
     filesystem: Context.opaque(await filesystem),
@@ -134,6 +139,17 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
       } else throw e;
     }
 
+    // Register abort as the LAST item on the stack so LIFO disposal
+    // fires it FIRST — cancelling in-flight fetches before we await
+    // background promises adopted during rebuilds.
+    //
+    // The defer is async with a microtask yield so Deno's runtime has a
+    // chance to clean up internal `fetchCancelHandle` resources.
+    disposables.defer(async () => {
+      abortController.abort();
+      await Promise.resolve();
+    });
+
     return {
       state: StateContext,
       ...context_result,
@@ -150,11 +166,15 @@ export async function context(opts: BuildConfig = {}, filesystem = TheFileSystem
        * Async dispose — awaits full cleanup (esbuild context + abort + scope).
        * Used by `await using ctx = await context(...)`.
        */
-      [Symbol.asyncDispose]() {
-        return dispose(this as BuildContext);
+      async [Symbol.asyncDispose]() {
+        await dispose(this as BuildContext);
+        // Yield a macrotask for Deno runtime resource finalization.
+        await new Promise<void>(r => setTimeout(r, 0));
       },
     }
   } catch (e) {
+    // Context creation failed — abort explicitly since defer(abort) wasn't registered yet.
+    abortController.abort();
     // Caller won't receive a disposable context — clean up before re-throwing.
     try { await disposables.disposeAsync(); } catch { /* don't mask the original error */ }
 

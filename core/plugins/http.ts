@@ -58,9 +58,9 @@ export interface HttpResolutionState<T> extends LocalState<T> {
  */
 export async function fetchPkg(
   url: string, 
-  opts: { fetchOpts?: RequestInit; retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store'; signal?: AbortSignal } = {}
+  opts: { fetchOpts?: RequestInit; retry?: number; cacheMode?: 'normal' | 'force' | 'reload' | 'no-store'; signal?: AbortSignal; scope?: AsyncDisposableStack } = {}
 ): Promise<{ url: string; content: Uint8Array; contentType: string | null }> {
-  const { fetchOpts, retry, cacheMode = 'normal', signal } = opts;
+  const { fetchOpts, retry, cacheMode = 'normal', signal, scope } = opts;
   
   try {
     const result = await fetchContent(url, {
@@ -68,6 +68,7 @@ export async function fetchPkg(
       retries: retry,
       cacheMode,
       signal,
+      scope,
     });
 
     // Build descriptive log message
@@ -146,7 +147,8 @@ export async function fetchAssets<T>(
 
   const promises = matches.map(async ([, assetURL]) => {
     const abort = fromContext("abort", StateContext);
-    const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL), { signal: abort.signal });
+    const scope = fromContext("scope", StateContext);
+    const { content: asset, url } = await fetchPkg(urlJoin(parentURL, assetURL), { signal: abort.signal, scope });
 
     // Store asset in virtual file system for bundle analyzer
     if (FileSystem) {
@@ -213,6 +215,7 @@ export async function determineExtension<T>(
     : null;
   const failedSet = failedExtChecks ?? new Set<string>();
   const abort = StateContext ? fromContext("abort", StateContext) : undefined;
+  const scope = StateContext ? fromContext("scope", StateContext) : undefined;
 
   let firstError: Error | undefined;
 
@@ -231,7 +234,7 @@ export async function determineExtension<T>(
         const { url, contentType } = await fetchPkgHeaders(testUrl, { cacheMode: 'reload', signal: abort?.signal });
         return { url, contentType };
       } else {
-        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal', signal: abort?.signal });
+        const { url, contentType, content } = await fetchPkg(testUrl, { cacheMode: 'normal', signal: abort?.signal, scope });
         return { url, contentType, content };
       }
     } catch (e) {
