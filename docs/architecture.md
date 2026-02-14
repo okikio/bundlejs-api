@@ -511,10 +511,10 @@ Imagine this VFS state after extracting a tarball:
 
 **Content pre-processing** (Flow type stripping, JSX loader upgrade) is handled by **PackagePlugin\u2019s `onLoad` handler** for the `virtual-filesystem` namespace \u2014 not by VFSPlugin itself. VFSPlugin is purely responsible for path resolution and extension probing. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
 
-Together with suffix-style extension probing (in VFSPlugin) and content pre-processing (in PackagePlugin), these mechanisms are what make — React Native packages, which were designed for Metro's permissive parser, work inside esbuild's stricter world. Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
-- **JSX loader upgrade** — detects JSX syntax in `.js` files and switches the esbuild loader from `js` to `jsx`. Many React Native packages ship JSX in `.js` files because Metro handles it transparently.
+Together with suffix-style extension probing (in VFSPlugin) and content pre-processing (in PackagePlugin), these mechanisms are what make React Native packages — which were designed for Metro’s permissive parser — work inside esbuild’s stricter world.
 
-Together with suffix-style extension probing, these transformations are what make React Native packages — which were designed for Metro’s permissive parser — work inside esbuild’s stricter world.
+Without this, `import typeof` and `opaque type` in `react-native`’s source cause esbuild syntax errors. See [Content Pre-Processing](#content-pre-processing-flow-type-stripping).
+- **JSX loader upgrade** — detects JSX syntax in `.js` files and switches the esbuild loader from `js` to `jsx`. Many React Native packages ship JSX in `.js` files because Metro handles it transparently.
 
 ---
 
