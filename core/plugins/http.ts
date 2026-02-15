@@ -24,6 +24,7 @@
  * ```
  */
 import type { ESBUILD, LocalState } from "../types.ts";
+import type { AsyncDisposableStack } from "@bundle/utils/dispose";
 
 import { Context, fromContext, toContext, withContext } from "../context/context.ts";
 

@@ -1,3 +1,4 @@
+import type { AsyncDisposableStack } from "@bundle/utils/dispose";
 import { LruCache } from "./lru.ts";
 
 /**

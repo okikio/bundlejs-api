@@ -3,6 +3,7 @@ export * from "./async.ts";
 export * from "./deep-object.ts";
 export * from "./encode-decode.ts";
 export * from "./fetch-and-cache.ts";
+export * from "./dispose.ts";
 
 export * as lzstring from "./lz-string.ts";
 export * from "./npm-search.ts";

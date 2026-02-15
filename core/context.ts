@@ -1,4 +1,5 @@
 import type { BuildConfig, ESBUILD, LocalState } from "./types.ts";
+import type { Disposable, AsyncDisposable } from "@bundle/utils/dispose";
 import type { DisposableBuildResult } from "./build.ts";
 
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
@@ -18,6 +19,8 @@ import { init } from "./init.ts";
 
 import { BUILD_ERROR, INIT_LOADING, LOGGER_ERROR, dispatchEvent } from "./configs/events.ts";
 import { DEFAULT_CDN_HOST, getCDNUrl } from "./utils/cdn-format.ts";
+
+import { AsyncDisposableStack } from "@bundle/utils/dispose";
 
 /**
  * Long-lived build context with Explicit Resource Management support.

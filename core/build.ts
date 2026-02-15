@@ -1,5 +1,6 @@
 import type { BuildConfig, ESBUILD, LocalState } from "./types.ts";
 import type { FullPackageVersion, PackageJson } from "@bundle/utils/types";
+import type { Disposable, AsyncDisposable } from "@bundle/utils/dispose";
 
 import { VirtualFileSystemPlugin } from "./plugins/fs.ts";
 import { ExternalPlugin } from "./plugins/external.ts";
@@ -21,6 +22,8 @@ import { createNotice } from "./utils/create-notice.ts";
 
 import { init } from "./init.ts";
 import { bytes } from "@bundle/utils/fmt";
+
+import { AsyncDisposableStack } from "@bundle/utils/dispose";
 
 /**
  * Default build config

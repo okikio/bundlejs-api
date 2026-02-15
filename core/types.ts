@@ -8,6 +8,7 @@ import type { IFileSystem } from "./utils/filesystem.ts";
 import type { TarballState } from "./plugins/tar.ts";
 import type { ResolverConditionInputs } from "../utils/resolve-conditions.ts";
 import type { SideEffectsMatchers } from "./utils/side-effects.ts";
+import type { AsyncDisposableStack } from "@bundle/utils/dispose";
 import type { RegistryConfig } from "@bundle/utils/npmrc";
 
 export type { ESBUILD, ESBUILD_WASM };

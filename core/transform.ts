@@ -34,7 +34,7 @@ export const TRANSFORM_CONFIG: TransformConfig = {
 /**
  * Transforms source code using esbuild (minify, format conversion, etc.).
  *
- * Returns a {@link DisposableTransformResult} for API consistency with
+ * Returns a {@link ESBUILD.TransformResult} for API consistency with
  * `build()` and `context()`. The dispose methods are no-ops since
  * `transform()` is stateless — there are no background fetches or
  * per-call resources to clean up.
