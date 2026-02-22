@@ -76,9 +76,33 @@ When acting as an agent on multi-step work:
 - Do not store secrets, tokens, or private URLs in `.agents/memory/`
 - Keep scratch notes in `.agents/memory/SESSIONS/` (gitignored)
 
-## Where to look for more targeted rules
-This repo uses path-specific instructions under `.github/instructions/`.
-Follow the applicable file-based rules when working in:
-- TypeScript
-- `edge/` and `endpoints/`
-- `core/`
+## Where to look
+
+### Instructions (always-on rules, auto-loaded by `applyTo`)
+
+Targeted rules live under `.github/instructions/`. These are prescriptive —
+follow them whenever you work on a matching file.
+
+| File                              | Applies to                       |
+| --------------------------------- | -------------------------------- |
+| `typescript.instructions.md`      | `**/*.ts`, `**/*.tsx`            |
+| `markdown-writing.instructions.md`| `**/*.md`, `**/*.ts`             |
+| `ascii-diagrams.instructions.md`  | `**/*.ts`, `**/*.md`             |
+| `core.instructions.md`            | `core/**`                        |
+| `edge-shared.instructions.md`     | `edge/_shared/**`                |
+| `endpoints.instructions.md`       | `edge/endpoints/**`              |
+
+### Guides (situational reference, read on demand)
+
+Reference material lives under `.agents/guides/`. These are descriptive —
+read them when the task calls for it, not necessarily on every edit.
+
+| File                        | When to read                                              |
+| --------------------------- | --------------------------------------------------------- |
+| `endpoint-architecture.md`  | Before adding or changing an endpoint                     |
+| `stack-and-conventions.md`  | Quick runtime/formatting reference                        |
+| `code-review.md`            | When reviewing a PR or diff                               |
+| `pull-requests.md`          | When writing a PR title or description                    |
+| `commit-messages.md`        | When crafting a commit message                            |
+| `ascii-diagrams.md`         | When adding diagrams to docs or comments                  |
+| `rfc-style-writing.md`      | When writing a design doc or spec for a non-trivial change|
