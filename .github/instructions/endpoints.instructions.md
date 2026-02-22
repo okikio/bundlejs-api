@@ -1,4 +1,5 @@
 ---
+description: Endpoint development rules
 applyTo: "edge/endpoints/**"
 ---
 

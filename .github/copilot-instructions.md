@@ -23,6 +23,14 @@ Workspace:
 - `utils/`     — shared utilities (often re-exports from `@std`)
 - `compress/`  — compression algorithms
 
+## Commands
+
+```bash
+deno task test          # run core test suite
+deno task bench         # run benchmarks (if configured)
+deno doc --lint mod.ts  # validate JSDoc on public exports (per-module)
+```
+
 ## Philosophy (how to write code here)
 
 ### Standards, specs, conventions
@@ -66,7 +74,19 @@ When networking/infra is involved:
 
 - Default to least privilege.
 - Avoid unsafe patterns (string-built SQL, unsafe eval, weak crypto).
-- Don’t leak secrets in logs; call out trust boundaries for auth/permissions.
+- Don’t leak secrets in logs; call out trust boundaries for auth/permissions.## Breaking changes
+
+When making a behavioral change, touch all of these before closing the task:
+
+1. **Confirm all behavioral changes with user** — ask for confirmation on the
+   proposed change and its scope before implementing.
+2. **Tests** — update or add assertions that reflect the new behavior.
+3. **TSDoc** — update behavior explanations including `@example` blocks on the
+   affected functions and types.
+4. **Docs** — update any relevant architecture or endpoint documentation.
+5. **Instructions** — if the change affects how tests, benchmarks, commits, or
+   documentation should be written, update the relevant file in
+   `.github/instructions/`.
 
 ## Agent memory (file-based)
 When acting as an agent on multi-step work:
@@ -83,26 +103,25 @@ When acting as an agent on multi-step work:
 Targeted rules live under `.github/instructions/`. These are prescriptive —
 follow them whenever you work on a matching file.
 
-| File                              | Applies to                       |
-| --------------------------------- | -------------------------------- |
-| `typescript.instructions.md`      | `**/*.ts`, `**/*.tsx`            |
-| `markdown-writing.instructions.md`| `**/*.md`, `**/*.ts`             |
-| `ascii-diagrams.instructions.md`  | `**/*.ts`, `**/*.md`             |
-| `core.instructions.md`            | `core/**`                        |
-| `edge-shared.instructions.md`     | `edge/_shared/**`                |
-| `endpoints.instructions.md`       | `edge/endpoints/**`              |
+| File                                | Applies to                       |
+| ----------------------------------- | -------------------------------- |
+| `typescript.instructions.md`        | `**/*.ts`, `**/*.tsx`            |
+| `markdown-writing.instructions.md`  | `**/*.md`, `**/*.ts`, `**/*.tsx` |
+| `ascii-diagrams.instructions.md`    | `**/*.ts`, `**/*.md`             |
+| `testing.instructions.md`           | `**/*test*.ts`, `**/*.test.ts`   |
+| `benchmarking.instructions.md`      | `**/*bench*.ts`, `**/*_bench.ts` |
+| `changelog-commits.instructions.md` | `**` (all files)                 |
+| `pull-requests.instructions.md`     | `**` (all files)                 |
+| `code-review.instructions.md`       | `**` (all files)                 |
+| `core.instructions.md`              | `core/**`                        |
+| `edge-shared.instructions.md`       | `edge/_shared/**`                |
+| `endpoints.instructions.md`         | `edge/endpoints/**`              |
 
 ### Guides (situational reference, read on demand)
 
 Reference material lives under `.agents/guides/`. These are descriptive —
 read them when the task calls for it, not necessarily on every edit.
 
-| File                        | When to read                                              |
-| --------------------------- | --------------------------------------------------------- |
-| `endpoint-architecture.md`  | Before adding or changing an endpoint                     |
-| `stack-and-conventions.md`  | Quick runtime/formatting reference                        |
-| `code-review.md`            | When reviewing a PR or diff                               |
-| `pull-requests.md`          | When writing a PR title or description                    |
-| `commit-messages.md`        | When crafting a commit message                            |
-| `ascii-diagrams.md`         | When adding diagrams to docs or comments                  |
-| `rfc-style-writing.md`      | When writing a design doc or spec for a non-trivial change|
+| File                        | When to read                                  |
+| --------------------------- | --------------------------------------------- |
+| `endpoint-architecture.md`  | Before adding or changing an endpoint          |

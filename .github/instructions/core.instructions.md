@@ -1,4 +1,5 @@
 ---
+description: Core bundle engine rules
 applyTo: "core/**"
 ---
 

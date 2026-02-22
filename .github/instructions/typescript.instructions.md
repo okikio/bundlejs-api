@@ -18,17 +18,15 @@ applyTo: "**/*.ts,**/*.tsx"
 - Opening braces on the same line as declarations.
 
 ## Imports
-- Group imports by purpose (stdlib/external/internal/types).
-- Separate type imports from value imports (`import type { ... }`).
-- Prefer workspace aliases when the repo uses them (e.g. `@bundle/*`, `#shared/*`).
-- Use explicit file extensions in imports when the codebase does.
-- Separate type imports from runtime imports.
-- Group imports by role:
-  1) types
-  2) framework/runtime
-  3) shared/internal modules
-  4) local modules
 
+- Separate type imports from value imports using `import type { ... }`.
+- Use explicit file extensions as the codebase does.
+- Prefer workspace aliases when the repo uses them (e.g. `@bundle/*`, `#shared/*`).
+- Group imports by role and purpose, in this order:
+  1. types
+  2. framework/runtime (stdlib/external)
+  3. shared/internal modules
+  4. local modules
 
 ## Export style
 - Prefer `function` for exported functions (avoid exporting arrow functions).
@@ -47,22 +45,56 @@ applyTo: "**/*.ts,**/*.tsx"
 - Prefer `Object.assign` over spread for object copying when practical.
   - Use spread only when it materially improves readability.
 
-## Docs quality bar (public surfaces)
-For exported/public APIs:
-- Add TSDoc in plain English.
-- Include at least two examples when the API is non-trivial:
+## TSDoc quality bar (public surfaces)
+
+For every exported function, interface, type alias, and constant:
+
+- Write TSDoc in plain English — explain _why_ it exists, not just _what_ it is.
+  Ground the reasoning in the problem being solved, the approach taken, and the
+  assumptions/edge cases.
+- Every `@example` block must have a descriptive name that clarifies the
+  scenario and behaviour being demonstrated:
+  ````ts
+  // bad — fails deno doc --lint
+  * @example
+  * ```ts
+  * align("hello");
+  * ```
+
+  // good — named
+  * @example Aligning a multi-line value at its insertion column
+  * ```ts
+  * align("hello");
+  * ```
+  ````
+- Include at least two examples for non-trivial APIs:
   - Example A: common path
-  - Example B: edge case (failure/cancellation/invalid input)
+  - Example B: edge case or configuration variant
+- Every field of an exported interface or type needs its own JSDoc comment.
+- Any type referenced in a public function signature or interface must itself be
+  exported — otherwise `deno doc --lint` reports a `private-type-ref` error.
 
-If logic is complex:
-- add a docstring summarizing intent, problem, reasoning & logic, purpose + assumptions,
-- include a step-by-step algorithm explanation,
-- add ASCII diagrams if it improves comprehension.
+For complex logic, include:
 
-
-For tricky logic, include a short “walkthrough” comment and (when helpful) ASCII structure.
+- a docstring summarizing intent, problem, reasoning & logic, purpose +
+  assumptions,
+- a step-by-step algorithm explanation (with a walkthrough of the example
+  inputs/outputs),
+- make clear what abstract technical codes mean, e.g. binary represents
+  character "C" or keycode represents "Enter", etc...,
+- an ASCII diagram if it improves comprehension.
 
 ## Error handling
 - Make failure modes explicit.
 - Prefer typed errors or discriminated union results when appropriate.
 - Don’t swallow errors; either handle explicitly or propagate with context.
+### Validate with deno doc
+
+Run this after any public API or documentation change:
+
+```bash
+deno doc --lint mod.ts
+```
+
+This catches missing JSDoc, `private-type-ref` errors, and unnamed `@example`
+blocks. Fix all reported errors before closing a task.

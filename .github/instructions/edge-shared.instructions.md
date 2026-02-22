@@ -1,4 +1,5 @@
 ---
+description: Edge shared module rules
 applyTo: "edge/_shared/**"
 ---
 

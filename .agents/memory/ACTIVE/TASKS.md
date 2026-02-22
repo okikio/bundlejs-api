@@ -2,20 +2,16 @@
 
 Rules:
 - Each task is small enough to complete in one iteration.
-- Each task has clear acceptance checks.
+- Each task has clear, verifiable acceptance checks.
 
 ## Queue
 
 - [ ] T01: <task title>
   - Why: <one sentence>
   - Done when:
-    - [ ] <verifiable condition>
-    - [ ] <verifiable condition>
-
-- [ ] T02: <task title>
-  - Why: <one sentence>
-  - Done when:
-    - [ ] <verifiable condition>
+    - [ ] `deno task test` passes
+    - [ ] <additional verifiable condition>
 
 ## Parking lot
+
 - [ ] P01: <deferred idea>

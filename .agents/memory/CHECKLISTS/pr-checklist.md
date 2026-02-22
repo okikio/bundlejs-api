@@ -1,16 +1,23 @@
 # PR Checklist
 
 ## Intent
-- [ ] The PR title and description explain outcome, problem, and intent.
+
+- [ ] The PR title and description explain outcome, problem, and motivation.
+- [ ] The title follows Conventional Commit format (see
+      `pull-requests.instructions.md`).
 
 ## Changes
+
 - [ ] Changes are scoped to the stated intent.
-- [ ] Risky behavior changes are called out.
+- [ ] Risky or breaking behavior changes are called out explicitly.
 
 ## Verification
-- [ ] Tests or manual checks are listed and reproducible.
+
+- [ ] `deno task test` passes.
 - [ ] Failure modes and error paths were considered.
 
 ## Documentation
-- [ ] User-facing behavior is documented when needed.
-- [ ] Decisions are captured in ADRs when they affect contracts.
+
+- [ ] TSDoc is updated for any changed public API.
+- [ ] Architecture or endpoint docs updated if user-facing behavior changed.
+- [ ] Decisions that affect contracts are captured in an ADR.
