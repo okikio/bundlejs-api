@@ -14,8 +14,14 @@
 ## Validation
 
 - [ ] `deno task test` passes on the release commit.
-- [ ] Key flows are verified in the target environment.
+- [ ] `deno task bench` passes on the release commit.
+- [ ] `deno lint` passes.
+- [ ] `deno doc --lint mod.ts` passes for all public modules.
+- [ ] Key flows are verified in the target environment (e.g.,
+      `supabase functions serve` smoke test for edge functions).
 
 ## Rollback
 
 - [ ] Rollback plan is clear if a regression is found post-deploy.
+- [ ] Yanked/reverted releases are marked in release notes with an
+      explanation and a pointer to the replacement version.

@@ -18,3 +18,5 @@
   - <path>
 - Verification to run:
   - `deno task test`
+  - `deno lint`
+  - `deno doc --lint mod.ts` (per affected module)

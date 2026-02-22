@@ -65,3 +65,14 @@ Example shape:
 ## Educational clarity
 
 - If you implement non-trivial request parsing (encoding, compression, regex), explain it step-by-step with a small ASCII flow.
+
+## Related instructions
+
+- `edge-shared.instructions.md` — rules for shared modules used by endpoints
+- `testing.instructions.md` — test conventions and edge cases
+- `typescript.instructions.md` — type and style conventions
+
+## Related guides
+
+- `.agents/guides/endpoint-architecture.md` — architectural reference for
+  endpoint patterns, middleware, response envelopes, and query processing

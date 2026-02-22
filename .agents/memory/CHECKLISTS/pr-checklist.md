@@ -14,6 +14,9 @@
 ## Verification
 
 - [ ] `deno task test` passes.
+- [ ] `deno task bench` passes (if benchmarks exist for the changed area).
+- [ ] `deno lint` passes.
+- [ ] `deno doc --lint mod.ts` passes for affected modules.
 - [ ] Failure modes and error paths were considered.
 
 ## Documentation

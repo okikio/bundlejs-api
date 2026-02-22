@@ -19,4 +19,6 @@
 ## Verification
 
 - [ ] `deno task test` passes.
+- [ ] `deno lint` passes.
+- [ ] `deno doc --lint mod.ts` passes for affected modules.
 - [ ] Verification steps are adequate for the stated change.

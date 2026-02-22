@@ -33,3 +33,10 @@ When adding/modifying a plugin:
 
 - Emit meaningful events for build lifecycle and errors.
 - Include enough context to diagnose issues without leaking secrets.
+
+## Related instructions
+
+- `testing.instructions.md` — test conventions and edge cases for core
+- `benchmarking.instructions.md` — benchmark rules for performance-sensitive
+  core code
+- `typescript.instructions.md` — type and style conventions

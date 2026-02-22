@@ -131,3 +131,52 @@ These are often missed but expose real bugs:
   internal modules exercise their real code paths.
 - **Asserting implementation details**: don't test internal function signatures,
   private method calls, or cache internals. Test the observable output.
+
+## Domain-specific invariants
+
+Hand-written examples only cover cases you imagined. Where feasible, verify
+structural invariants that should hold for any input:
+
+**Resolution determinism** — resolving the same package with the same
+conditions always produces the same path:
+
+```ts
+const a = resolveModern(pkg, ".", conds);
+const b = resolveModern(pkg, ".", conds);
+expect(a).toEqual(b);
+```
+
+**Build idempotence** — building the same entry point twice with the same
+config produces identical output (ignoring timing metadata):
+
+```ts
+const r1 = await buildPackage("pkg", manifest, opts);
+const r2 = await buildPackage("pkg", manifest, opts);
+expect(r1.code).toBe(r2.code);
+```
+
+**Compression roundtrip** — compress then decompress returns the original
+bytes:
+
+```ts
+const original = new Uint8Array([1, 2, 3]);
+const compressed = await compress(original, "gzip");
+const decompressed = await decompress(compressed, "gzip");
+expect(decompressed).toEqual(original);
+```
+
+**Non-negative sizes** — compressed output size and bundle size are always
+non-negative numbers:
+
+```ts
+expect(result.size).toBeGreaterThanOrEqual(0);
+expect(result.compressedSize).toBeGreaterThanOrEqual(0);
+```
+
+These invariants catch regressions that scenario-specific tests miss.
+
+## Related instructions
+
+- `core.instructions.md` — plugin chain and context patterns
+- `endpoints.instructions.md` — endpoint edge cases to cover
+- `benchmarking.instructions.md` — performance measurement rules

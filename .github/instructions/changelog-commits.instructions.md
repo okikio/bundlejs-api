@@ -160,3 +160,71 @@ tooling reliably detects the change.
 One logical change per commit. If you are fixing a bug and refactoring unrelated
 code, split them. A commit that cannot be summarized in 50 characters is
 probably doing too much.
+
+---
+
+## Changelogs
+
+The changelog is a communication contract with users. Write for human impact,
+not technical accuracy.
+
+### Writing changelog entries
+
+Reference the user-visible symptom and the result of the fix, not the
+implementation mechanism:
+
+```md
+<!-- Bad — implementation detail -->
+- Fix async loop timing in build pipeline
+
+<!-- Good — user-visible impact -->
+- Fix builds hanging when the input package has circular subpath exports
+```
+
+### Calling out breaking changes
+
+Prefix every breaking change entry with **Breaking:** and explain both what
+breaks and what the migration path is:
+
+```md
+### Changed
+
+- **Breaking:** The `/size` response no longer includes the `rawSize` field.
+  Clients that read `rawSize` should use `uncompressedSize` instead.
+```
+
+### Subject line as changelog entry
+
+The commit subject often feeds changelog generation verbatim. Write it as if it
+describes **user-visible impact**, not implementation detail:
+
+```
+# Bad — implementation detail as subject
+fix(core): Correct WeakMap lookup for cached build configs
+
+# Good — user-visible symptom as subject
+fix(core): Prevent stale results when rebuilding the same package
+```
+
+### Yanked releases
+
+If a deployed version is reverted or rolled back, mark it explicitly rather
+than deleting the entry:
+
+```md
+## [0.8.1] — 2025-01-15 [YANKED]
+
+Rolled back due to a regression in tarball extraction. Use 0.8.2 instead.
+```
+
+---
+
+## Release workflow
+
+This section describes the deploy process at a high level. For current CI
+details, check `.github/workflows/deploy.yml`.
+
+1. Verify all checks pass: `deno task test`, `deno lint`
+2. Review pending changelog entries
+3. Merge to the deploy branch (triggers CI)
+4. Verify the deployment in the target environment

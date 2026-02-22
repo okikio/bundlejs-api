@@ -21,7 +21,11 @@ survives context resets.
 - Update `ACTIVE/PROGRESS.md` after meaningful progress.
 - Mark tasks done only when acceptance checks pass.
 - Promote architectural decisions to ADRs in `DECISIONS/`.
-- Run `deno task test` before marking any task complete.
+- Run all relevant checks before marking any task complete:
+  - `deno task test` — core test suite
+  - `deno task bench` — benchmarks (if configured)
+  - `deno lint` — lint compliance
+  - `deno doc --lint mod.ts` — validate JSDoc on public exports (per-module)
 
 ## Edge cases
 
