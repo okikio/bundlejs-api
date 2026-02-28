@@ -291,6 +291,16 @@ curl "http://localhost:8000/?q=solid-js@1.9.4&config={\"resolve\":{\"runtime\":\
 | 20.19 | Regex fallback produces no source map | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 | 20.20 | Source map contains original source content | `flow-strip.ts` | [20-flow-type-stripping.md](20-flow-type-stripping.md) |
 
+### Concurrent Initialization Race Condition
+
+| # | Scenario | Key modules | File |
+|:--|:---------|:------------|:-----|
+| 21.1 | Concurrent init() from cold state | `init.ts`, `context.ts` | [21-concurrent-init-race.md](21-concurrent-init-race.md) |
+| 21.2 | Concurrent build() cold start (server sim) | `init.ts`, `build.ts` | [21-concurrent-init-race.md](21-concurrent-init-race.md) |
+| 21.3 | Interleaved init/stop stress test | `init.ts` | [21-concurrent-init-race.md](21-concurrent-init-race.md) |
+| 21.4 | Re-init after stop | `init.ts` | [21-concurrent-init-race.md](21-concurrent-init-race.md) |
+| 21.5 | initPromise context lifecycle | `init.ts`, `context.ts` | [21-concurrent-init-race.md](21-concurrent-init-race.md) |
+
 
 ## Coverage Map
 
@@ -338,6 +348,9 @@ This table maps each scenario to the source file and function it exercises:
 | Flow source maps | `flow-strip.ts` | `sourceMapToDataUrl()`, `appendInlineSourceMap()` | 20.17–20.20 |
 | Flow lazy loading | `flow-strip.ts` | `loadFlowRemoveTypes()` | 20.14 |
 | Flow regex fallback | `flow-strip.ts` | `regexStripFlow()` | 20.10 |
+| Init race condition guard | `init.ts` | `init()` singleton promise | 21.1–21.5 |
+| Init/stop lifecycle | `init.ts` | `stop()`, `init()` | 21.3–21.4 |
+| initPromise context field | `context/context.ts` | `GlobalState.initPromise` | 21.5 |
 
 ## What Would Have Caught the Browser Remapping Bug
 
