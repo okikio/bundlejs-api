@@ -687,6 +687,19 @@ export interface GlobalState extends record {
    * Instance of esbuild being used
    */
   esbuild: typeof ESBUILD | typeof ESBUILD_WASM | null;
+
+  /**
+   * In-flight initialization promise.
+   *
+   * Guards against the race where multiple concurrent callers all see
+   * `initialized === false` and each try to call `esbuild.initialize()`,
+   * which only allows a single invocation. The first caller stores its
+   * promise here; all subsequent callers await the same promise.
+   *
+   * Reset to `null` once initialization settles (success or failure) and
+   * when {@link stop} tears everything down.
+   */
+  initPromise: Promise<typeof ESBUILD | typeof ESBUILD_WASM | null> | null;
 }
 
 /**
@@ -746,6 +759,7 @@ export interface GlobalState extends record {
 export const GlobalContext = new Context<GlobalState>({
   initialized: false,
   esbuild: null,
+  initPromise: null,
 });
 
 /**
