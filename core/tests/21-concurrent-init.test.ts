@@ -51,7 +51,9 @@ function expectAllInitialized(
   for (const r of results) {
     expect(r.status).toBe("fulfilled");
     if (r.status === "fulfilled") {
-      expect(r.value).not.toBeNull();
+      // Don't pass the esbuild module namespace to expect() directly —
+      // it can't be converted to a primitive for error formatting.
+      expect(r.value != null).toBe(true);
       expect(typeof (r.value as Record<string, unknown>).build).toBe(
         "function",
       );
@@ -202,7 +204,7 @@ describe("21 · Concurrent Initialization Race Condition", () => {
       // Now verify clean recovery
       await stop();
       const esbuild = await init();
-      expect(esbuild).not.toBeNull();
+      expect(esbuild != null).toBe(true);
       expect(typeof (esbuild as Record<string, unknown>).build).toBe("function");
 
       // Verify a full build works
