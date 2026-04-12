@@ -1,2 +1,2 @@
-export * from "outdent";
-export { default } from "outdent";
+export * from "@okikio/undent";
+export { default } from "@okikio/undent";

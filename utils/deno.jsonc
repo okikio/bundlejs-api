@@ -58,7 +58,7 @@
     "@std/path": "jsr:@std/path@^1",
     "@std/semver": "jsr:@std/semver@^1",
     "@std/tar": "jsr:@std/tar@^0",
-    "outdent": "jsr:@cspotcode/outdent@^0",
+    "@okikio/undent": "jsr:@okikio/undent@^0",
     "resolve.exports": "npm:resolve.exports@^2",
     "json5": "npm:json5@^2"
   }

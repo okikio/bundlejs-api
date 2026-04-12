@@ -1,0 +1,6 @@
+packages:
+  - core
+  - compress
+  - utils
+  - edge
+  - cloudflare

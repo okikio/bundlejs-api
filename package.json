@@ -1,0 +1,20 @@
+{
+  "name": "bundlejs-api",
+  "private": true,
+  "packageManager": "pnpm@10.8.1",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "core",
+    "compress",
+    "utils",
+    "edge",
+    "cloudflare"
+  ],
+  "scripts": {
+    "dev:cloudflare": "pnpm --dir cloudflare dev",
+    "typecheck:cloudflare": "pnpm --dir cloudflare typecheck",
+    "deploy:cloudflare": "pnpm --dir cloudflare deploy"
+  }
+}
