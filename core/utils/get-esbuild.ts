@@ -6,9 +6,9 @@ import { resolveVersion } from "@bundle/utils/npm-search";
 import { PLATFORM_AUTO } from "../configs/platform.ts";
 // import pkg from "esbuild-wasm/package.json" with { type: "json" };
 // export const { version: defaultVersion } = pkg;
-export const defaultVersion = "0.27.2";
+export const defaultVersion = "0.28.0";
 
-import * as ESBUILD_DENO_WASM from "esbuild"
+import * as ESBUILD_DENO_WASM from "esbuild-wasm"
 
 /**
  * Determines which esbuild skew to use depending on the platform option supplied, 

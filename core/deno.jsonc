@@ -41,7 +41,7 @@
     "@logtape/logtape": "jsr:@logtape/logtape@^2",
     "flow-remove-types": "npm:flow-remove-types@^2",
     "@std/tar": "jsr:@std/tar@^0",
-    "esbuild-wasm": "npm:esbuild-wasm",
-    "esbuild": "https://deno.land/x/esbuild/wasm.js"
+    "esbuild-wasm": "https://deno.land/x/esbuild@v0.28.0/wasm.js",
+    "esbuild": "https://deno.land/x/esbuild@v0.28.0/mod.js"
   }
 }
