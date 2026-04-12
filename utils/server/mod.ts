@@ -12,6 +12,8 @@
  */
 
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
+import type { LogLevel, LogRecord } from '@logtape/logtape'
+import type { HonoContext } from '@logtape/hono'
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 
@@ -21,7 +23,6 @@ import { HTTPException } from 'hono/http-exception'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
-import type { LogLevel, LogRecord } from '@logtape/logtape'
 import { configure, getConsoleSink, getLogger as logtapeGetLogger } from '@logtape/logtape'
 import { getPrettyFormatter } from "@logtape/pretty";
 
@@ -163,20 +164,7 @@ function remapHttpLogRecord(record: LogRecord): LogRecord {
   })
 }
 
-function formatHttpRequestLog(c: {
-  req: {
-    method: string
-    path: string
-    url: string
-    header(name: string): string | undefined
-  }
-  res: {
-    status: number
-    headers: {
-      get(name: string): string | null
-    }
-  }
-}, responseTime: number): Record<string, unknown> {
+function formatHttpRequestLog(c: HonoContext, responseTime: number): Record<string, unknown> {
   return {
     method: c.req.method,
     path: c.req.path,
@@ -194,13 +182,7 @@ const formatter = getPrettyFormatter({
   timestamp: "none",  // "time" | "date-time" | "date" | "rfc3339" | etc.
 
   // Customize icons
-  icons: {
-    trace: '🔹',
-    debug: '↪',
-    info: "ℹ️",
-    warning: '⚠️',
-    error: "🔥"
-  },
+  icons: false,
 
   levelColors: {
     trace: 'rgb(56,189,248)',
@@ -215,15 +197,14 @@ const formatter = getPrettyFormatter({
   colors: true,
 
   // Category display
-  categoryWidth: 20,
-  categoryTruncate: "middle",  // "middle" | "end" | false
+  categoryWidth: 10,
+  categoryTruncate: "end",  // "middle" | "end" | false
 
   // Word wrapping
   wordWrap: false,  // true | false | number
 
   // Show properties
   properties: false,
-
   messageStyle: "italic"
 });
 

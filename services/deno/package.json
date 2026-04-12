@@ -1,0 +1,29 @@
+{
+  "name": "@services/deno",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+  ".": "./mod.ts",
+  "./constants": "./constants.ts",
+  "./execute": "./execute.ts",
+  "./parse-query": "./parse-query.ts",
+  "./request": "./request.ts",
+  "./types": "./types.ts"
+  },
+  "dependencies": {
+    "@bundle/compress": "workspace:*",
+    "@bundle/core": "workspace:*",
+    "@bundle/utils": "workspace:*",
+    "@utils/server": "workspace:*",
+    "@octokit/core": "latest",
+    "@octokit/plugin-throttling": "^11.0.3",
+    "@octokit/rest": "^22.0.1",
+    "@std/encoding": "npm:@jsr/std__encoding@^1",
+    "@std/path": "npm:@jsr/std__path@^1",
+    "@upstash/redis": "^1.37.0"
+  },
+  "scripts": {
+    "dev": "deno serve -A --watch mod.ts"
+  }
+}
