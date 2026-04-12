@@ -49,7 +49,7 @@ Example shape:
 
 ## Responses
 
-- Use response helpers from `#shared/response/mod.ts`.
+- Use response helpers from `@utils/response`.
 - Helpers return tuples intended to be spread into `c.json(...)`:
   - `return c.json(...ok(data))`
   - `return c.json(...badRequest(path, message))`
