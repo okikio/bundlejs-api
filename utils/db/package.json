@@ -1,0 +1,31 @@
+{
+  "name": "@utils/db",
+  "version": "1.0.0",
+  "description": "Drizzle schema and PostgreSQL client utilities for backend services",
+  "type": "module",
+  "exports": {
+    ".": "./mod.ts",
+    "./client": "./client.ts",
+    "./env": "./env.ts",
+    "./schema": "./schemas/mod.ts",
+    "./types": "./client.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.32.1",
+  "dependencies": {
+    "@logtape/drizzle-orm": "npm:@jsr/logtape__drizzle-orm@^2.0.5",
+    "@logtape/logtape": "npm:@jsr/logtape__logtape@^2.0.5",
+    "@utils/env": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10"
+  }
+}

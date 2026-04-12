@@ -1,0 +1,17 @@
+{
+  "name": "@utils/server",
+  "version": "1.0.0",
+  "tasks": {
+    "test": "deno test"
+  },
+  "exports": {
+    "./": "./mod.ts"
+  },
+  "imports": {
+    "@logtape/hono": "jsr:@logtape/hono@2",
+    "@logtape/logtape": "jsr:@logtape/logtape@2",
+    "@logtape/pretty": "jsr:@logtape/pretty@2",
+    "hono": "jsr:@hono/hono@4",
+    "hono/": "jsr:/@hono/hono@4/"
+  }
+}

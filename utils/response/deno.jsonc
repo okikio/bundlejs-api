@@ -1,0 +1,19 @@
+{
+  "name": "@utils/response",
+  "version": "1.0.0",
+  "tasks": {
+    "test": "deno test"
+  },
+  "exports": {
+    "./": "./mod.ts",
+    "./schemas": "./schemas.ts",
+    "./success": "./success.ts",
+    "./errors": "./errors.ts",
+    "./status-codes": "./status-codes.ts"
+  },
+  "imports": {
+    "hono": "jsr:@hono/hono@4",
+    "hono/": "jsr:/@hono/hono@4/",
+    "zod": "jsr:@zod/zod@4"
+  }
+}

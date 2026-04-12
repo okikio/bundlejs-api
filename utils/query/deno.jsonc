@@ -1,0 +1,20 @@
+{
+  "name": "@utils/query",
+  "version": "1.0.0",
+  "tasks": {
+    "test": "deno test"
+  },
+  "exports": {
+    ".": "./mod.ts",
+    "./schemas": "./schemas.ts",
+    "./fields": "./fields.ts",
+    "./filtering": "./filtering.ts",
+    "./sorting": "./sorting.ts",
+    "./pagination": "./pagination.ts",
+    "./query": "./query.ts"
+  },
+  "imports": {
+    "@std/encoding": "jsr:@std/encoding@1",
+    "zod": "jsr:@zod/zod@4"
+  }
+}

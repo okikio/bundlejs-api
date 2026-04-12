@@ -1,0 +1,16 @@
+{
+  "name": "@utils/server",
+  "type": "module",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./mod.ts"
+  },
+  "dependencies": {
+    "@logtape/hono": "npm:@jsr/logtape__hono@^2.0.5",
+    "@logtape/logtape": "npm:@jsr/logtape__logtape@^2.0.5",
+    "@logtape/pretty": "npm:@jsr/logtape__pretty@^2.0.5",
+    "@utils/middleware": "workspace:*",
+    "@utils/response": "workspace:*",
+    "hono": "^4.12.12"
+  }
+}

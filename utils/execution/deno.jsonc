@@ -1,0 +1,15 @@
+{
+  "name": "@utils/execution",
+  "version": "1.0.0",
+  "tasks": {
+    "test": "deno test"
+  },
+  "exports": {
+    "./": "./mod.ts",
+    "./db": "./db.ts"
+  },
+  "imports": {
+    "drizzle-orm": "npm:drizzle-orm@0",
+    "drizzle-orm/": "npm:/drizzle-orm@0/"
+  }
+}

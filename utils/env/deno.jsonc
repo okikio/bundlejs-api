@@ -1,0 +1,10 @@
+{
+  "name": "@utils/env",
+  "version": "1.0.0",
+  "tasks": {
+    "test": "deno test"
+  },
+  "exports": {
+    ".": "./mod.ts"
+  }
+}

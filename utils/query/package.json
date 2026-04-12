@@ -1,0 +1,20 @@
+{
+  "name": "@utils/query",
+  "type": "module",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./schemas": "./schemas.ts",
+    "./fields": "./fields.ts",
+    "./filtering": "./filtering.ts",
+    "./sorting": "./sorting.ts",
+    "./pagination": "./pagination.ts",
+    "./query": "./query.ts"
+  },
+  "dependencies": {
+    "@std/encoding": "npm:@jsr/std__encoding@^1.0.10",
+    "@utils/endpoint": "workspace:*",
+    "@utils/response": "workspace:*",
+    "zod": "^4.3.6"
+  }
+}

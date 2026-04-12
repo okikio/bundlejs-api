@@ -1,0 +1,15 @@
+{
+  "name": "@utils/execution",
+  "type": "module",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./db": "./db.ts"
+  },
+  "dependencies": {
+    "@utils/db": "workspace:*",
+    "@utils/query": "workspace:*",
+    "@utils/response": "workspace:*",
+    "drizzle-orm": "^0.45.2"
+  }
+}

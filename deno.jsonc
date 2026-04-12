@@ -1,17 +1,49 @@
 {
   "workspace": [
-    "./core",
-    "./edge",
-    "./utils",
-    "./compress"
+    "packages/*",
+    "utils/*",
+    "services/*"
   ],
+  "exports": {},
   "imports": {
+    "@okikio/sparql": "jsr:@okikio/sparql@^0",
+    "@okikio/undent": "jsr:@okikio/undent@0",
     "@std/testing": "jsr:@std/testing@1.0.19",
     "@std/expect": "jsr:@std/expect@1.0.19",
-    "@libs/testing": "jsr:@libs/testing@5.2.3"
+    "@std/encoding": "jsr:@std/encoding@1",
+    "@libs/testing": "jsr:@libs/testing@5.2.3",
+    "@logtape/pretty": "jsr:@logtape/pretty@2",
+    "@logtape/logtape": "jsr:@logtape/logtape@2",
+    "@logtape/hono": "jsr:@logtape/hono@2",
+    "hono/": "jsr:/@hono/hono@4/",
+    "hono": "jsr:@hono/hono@4",
+    "zod": "jsr:@zod/zod@4",
+    "@standard-schema/spec": "jsr:@standard-schema/spec@1",
+    "@standard-schema/utils": "jsr:@standard-schema/utils@0",
+    "@hono/standard-validator": "jsr:@hono/standard-validator@0",
+    "hono-rate-limiter": "jsr:@hono-rate-limiter/hono-rate-limiter@0",
+    "@hono-rate-limiter/redis": "jsr:@hono-rate-limiter/redis@0",
+    "@hono/otel": "jsr:@hono/otel@1"
+  },
+  "tasks": {
+    "test:utils": "deno test utils",
+    "test:services": "deno test services",
+    "test:workspace": "deno task test:utils && deno task test:services"
+  },
+  "compilerOptions": {
+    "lib": [
+      "deno.window"
+    ],
+    "types": [
+      "npm:@types/node"
+    ],
+    "strict": true
+  },
+  "fmt": {
+    "semiColons": false,
+    "singleQuote": true
   },
   "deploy": {
-    "project": "bundlejs",
     "exclude": [
       "**/node_modules"
     ],
@@ -20,6 +52,12 @@
   },
   "allowScripts": {
     "allow": ["npm:esbuild@0.28.0"],
-    "deny": ["npm:esbuild@0.25.4", "npm:esbuild@0.27.3", "npm:fsevents@2.3.3", "npm:sharp@0.33.5", "npm:workerd@1.20250906.0"]
+    "deny": [
+      "npm:esbuild@0.25.4",
+      "npm:esbuild@0.27.3",
+      "npm:fsevents@2.3.3",
+      "npm:sharp@0.33.5",
+      "npm:workerd@1.20250906.0"
+    ]
   }
 }

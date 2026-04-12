@@ -1,6 +1,4 @@
 packages:
-  - core
-  - compress
-  - utils
-  - edge
-  - cloudflare
+  - packages/*
+  - utils/*
+  - services/*

@@ -1,0 +1,16 @@
+{
+  "name": "@utils/response",
+  "type": "module",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./schemas": "./schemas.ts",
+    "./success": "./success.ts",
+    "./errors": "./errors.ts",
+    "./status-codes": "./status-codes.ts"
+  },
+  "dependencies": {
+    "hono": "^4.12.12",
+    "zod": "^4.3.6"
+  }
+}

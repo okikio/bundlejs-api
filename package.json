@@ -6,15 +6,13 @@
     "node": ">=20.0.0"
   },
   "workspaces": [
-    "core",
-    "compress",
-    "utils",
-    "edge",
-    "cloudflare"
+    "packages/*",
+    "utils/*",
+    "services/*"
   ],
   "scripts": {
-    "dev:cloudflare": "pnpm --dir cloudflare dev",
-    "typecheck:cloudflare": "pnpm --dir cloudflare typecheck",
-    "deploy:cloudflare": "pnpm --dir cloudflare deploy"
+    "dev:cloudflare": "pnpm --filter cloudflare dev",
+    "typecheck:cloudflare": "pnpm --filter cloudflare typecheck",
+    "deploy:cloudflare": "pnpm --filter cloudflare deploy"
   }
 }

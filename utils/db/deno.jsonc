@@ -1,0 +1,20 @@
+{
+	"name": "@utils/db",
+	"tasks": {
+		"test": "deno test"
+	},
+	"exports": {
+		".": "./mod.ts",
+		"./client": "./client.ts",
+		"./env": "./env.ts",
+		"./schema": "./schemas/mod.ts"
+	},
+	"imports": {
+		"drizzle-orm": "npm:drizzle-orm@0",
+		"drizzle-orm/": "npm:/drizzle-orm@0/",
+		"drizzle-kit": "npm:drizzle-kit@0",
+		"postgres": "npm:postgres@3",
+		"@logtape/drizzle-orm": "jsr:@logtape/drizzle-orm@2",
+		"@logtape/logtape": "jsr:@logtape/logtape@2"
+	}
+}
