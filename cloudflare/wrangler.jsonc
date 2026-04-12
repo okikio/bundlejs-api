@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "bundlejs-api-cloudflare",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-12",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "kv_namespaces": [
+    {
+      "binding": "BUNDLE_CACHE",
+      "id": "REPLACE_WITH_BUNDLE_CACHE_NAMESPACE_ID",
+      "preview_id": "REPLACE_WITH_BUNDLE_CACHE_PREVIEW_ID"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUNDLE_ARTIFACTS",
+      "bucket_name": "bundlejs-api-artifacts",
+      "preview_bucket_name": "bundlejs-api-artifacts-preview"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BUNDLE_COORDINATOR",
+        "class_name": "BundleCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "BundleCoordinator"
+      ]
+    }
+  ]
+}
