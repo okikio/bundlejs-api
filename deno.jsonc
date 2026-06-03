@@ -6,9 +6,9 @@
     "./compress"
   ],
   "imports": {
-    "@std/testing": "jsr:@std/testing",
-    "@std/expect": "jsr:@std/expect",
-    "@libs/testing": "jsr:@libs/testing"
+    "@std/testing": "jsr:@std/testing@1.0.19",
+    "@std/expect": "jsr:@std/expect@1.0.19",
+    "@libs/testing": "jsr:@libs/testing@5.2.3"
   },
   "deploy": {
     "project": "bundlejs",
@@ -17,5 +17,9 @@
     ],
     "include": [],
     "entrypoint": "edge/mod.ts"
+  },
+  "allowScripts": {
+    "allow": ["npm:esbuild@0.28.0"],
+    "deny": ["npm:esbuild@0.25.4", "npm:esbuild@0.27.3", "npm:fsevents@2.3.3", "npm:sharp@0.33.5", "npm:workerd@1.20250906.0"]
   }
 }

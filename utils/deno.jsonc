@@ -45,7 +45,7 @@
     "@opentf/obj-diff": "jsr:@opentf/obj-diff@^0",
     "@nick/dispose": "jsr:@nick/dispose@^1",
     "@std/assert": "jsr:@std/assert@^1",
-    "@std/async": "jsr:@std/async@^1",
+    "@std/async": "jsr:@std/async@1.2",
     "@std/bytes": "jsr:@std/bytes@^1",
     "@std/cache": "jsr:@std/cache@^0",
     "@std/collections": "jsr:@std/collections@^1",

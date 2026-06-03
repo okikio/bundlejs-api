@@ -6,7 +6,7 @@
     "dev": "deno serve -A --watch mod.ts"
   },
   "imports": {
-    "@std/async": "jsr:@std/async",
+    "@std/async": "jsr:@std/async@1.2",
     "@std/path": "jsr:@std/path",
     "@std/encoding": "jsr:@std/encoding",
     "json5": "npm:json5@^2",

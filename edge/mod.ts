@@ -12,8 +12,18 @@ import { dirname, fromFileUrl, join, extname, basename } from "@std/path/posix";
 import { decodeBase64 } from "@std/encoding/base64";
 
 import { createCompressConfig } from "@bundle/compress";
-import { deepMerge, resolveVersion, parsePackageName } from "@bundle/utils";
+import {
+  deepMerge,
+  looksLikeJSRSpec,
+  parseJSRSpec,
+  parsePackageName,
+  resolveJSRVersion,
+  resolveVersion,
+} from "@bundle/utils";
+import { getRegistryForPackage, normalizeRegistryConfig } from "@bundle/utils/npmrc";
 import { dispatchEvent, LOGGER_INFO, BUILD_CONFIG } from "@bundle/core";
+
+import { getCDNStyle, getPureImportPath } from "@bundle/core/utils/cdn-format";
 
 import { parseShareURLQuery, parseConfig, parseTreeshakeExports } from "./parse-query.ts";
 import { generateHTMLMessages, generateResult } from "./generate-result.ts";
@@ -218,6 +228,14 @@ export default {
           : initialConfig?.esbuild?.sourcemap
       );
 
+      const cdnQuery = url.searchParams.has("cdn");
+      const cdnResult = url.searchParams.get("cdn")?.trim();
+      const cdn = cdnResult?.length ? cdnResult : null;
+
+      const registryQuery = url.searchParams.has("registry");
+      const registryResult = url.searchParams.get("registry")?.trim();
+      const registry = registryResult?.length ? registryResult : null;
+
       const formatQuery = url.searchParams.has("format");
       const format = initialConfig?.esbuild?.format || url.searchParams.get("format");
 
@@ -233,6 +251,8 @@ export default {
           initialConfig,
         ),
         {
+          ...(cdn ? { cdn } : {}),
+          ...(registry ? { registry } : {}),
           esbuild: Object.assign(
             {},
             enableMetafile ? { metafile: enableMetafile } : {},
@@ -265,9 +285,10 @@ export default {
       // All the queries that will affect the final result
       const mutationQueries =
         shareQuery || textQuery || minifyQuery || prettyQuery || polyfill || tsxQuery ||
-        formatQuery || configQuery || badgeQuery || sourcemapQuery || analysisQuery || metafileQuery;
+        formatQuery || cdnQuery || registryQuery || configQuery || badgeQuery || sourcemapQuery || analysisQuery || metafileQuery;
       const rootPkg = earlyConfigObj["package.json"] ?? {} as PackageJson;
       const dependecies = Object.assign({}, rootPkg.devDependencies, rootPkg.peerDependencies, rootPkg.dependencies)
+      const registryConfig = normalizeRegistryConfig(earlyConfigObj.registry);
 
       const versionsList = await Promise.allSettled(
         !hasQuery && (shareQuery || textQuery) ? [] :
@@ -280,8 +301,64 @@ export default {
             .filter(x => !/^https?\:\/\//.exec(x[0]))
             .map(async (x) => {
               const [pkgName, imported] = x;
-              const { name = pkgName, version, path } = parsePackageName(pkgName, { ignoreError: true })
-              return [name, await resolveVersion(dependecies[name] ? `${name}@${dependecies[name]}` : pkgName) ?? version, path, imported]
+
+              // Avoid routing protocol specifiers through the npm resolver.
+              // - jsr:* uses the JSR registry
+              // - npm-CDN protocols (esm:, unpkg:, etc.) are treated as npm packages
+              // - anything else (node:, deno:, github:, etc.) is ignored for version tracking
+              const isJsrRegistryAlias = pkgName.startsWith("jsr.registry:");
+
+              if (looksLikeJSRSpec(pkgName) || isJsrRegistryAlias) {
+                const jsrInput = isJsrRegistryAlias
+                  ? `jsr:${pkgName.slice("jsr.registry:".length)}`
+                  : pkgName;
+
+                const jsrSpec = parseJSRSpec(jsrInput);
+                if (!jsrSpec) return null;
+
+                const resolved = await resolveJSRVersion({
+                  scope: jsrSpec.scope,
+                  name: jsrSpec.name,
+                  version: jsrSpec.version,
+                });
+
+                const fallback = jsrSpec.version && !/^latest$/i.test(jsrSpec.version)
+                  ? jsrSpec.version
+                  : null;
+                const ver = resolved ?? fallback;
+                if (!ver) return null;
+                const name = `jsr:${jsrSpec.fullName}`;
+                const path = jsrSpec.subpath;
+                return [name, ver, path, imported] as const;
+              }
+
+              const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(pkgName);
+              const scheme = schemeMatch?.[1] ?? null;
+              const hasScheme = Boolean(scheme);
+
+              // If this is an explicit protocol/scheme, only treat known npm-ish
+              // schemes as versionable. Everything else is ignored to avoid noisy
+              // npm registry lookups.
+              if (hasScheme) {
+                const style = getCDNStyle(pkgName);
+                if (style !== "npm" && style !== "registry") return null;
+              }
+
+              const normalizedPkgName = hasScheme ? getPureImportPath(pkgName) : pkgName;
+              if (/^[a-z][a-z0-9+.-]*:/i.test(normalizedPkgName)) return null;
+
+              const { name = normalizedPkgName, version, path } = parsePackageName(normalizedPkgName, { ignoreError: true });
+
+              const registryForPkg = getRegistryForPackage(name, registryConfig);
+              const resolved = await resolveVersion(
+                dependecies[name] ? `${name}@${dependecies[name]}` : normalizedPkgName,
+                registryForPkg,
+              ) ?? version;
+
+              if (!resolved) return null;
+
+              const finalName = hasScheme ? `${scheme}:${name}` : name;
+              return [finalName, resolved, path, imported] as const;
             })
       );
 
