@@ -145,6 +145,7 @@ pnpm-debug.log*
 
 core.*
 **/deno.lock
+.pnpm-store
 
 packages/core/lib/
 packages/core/@types/
