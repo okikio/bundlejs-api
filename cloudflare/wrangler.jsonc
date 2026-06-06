@@ -46,11 +46,11 @@
     },
     "traces": {
       "enabled": true
-    },
-    "limits": {
-      "cpu_ms": 300000,
-      "subrequests": 10000
     }
+  },
+  "limits": {
+    "cpu_ms": 300000,
+    "subrequests": 10000000
   },
   "migrations": [
     {
