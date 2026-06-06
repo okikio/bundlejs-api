@@ -182,7 +182,7 @@ export async function fetchAssets<T>(
 export const FilePaths = ["", "/index"];
 
 /** File extensions to probe */
-export const FileEndings = ["", ".js", ".mjs", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts"];
+export const FileEndings = ["", ".js", ".mjs", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts", ".json"];
 
 /** All combinations of path + extension to try */
 export const AllEndingVariants = Array.from(
