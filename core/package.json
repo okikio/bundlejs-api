@@ -35,6 +35,7 @@
     "./plugins/tar": "./plugins/tar.ts"
   },
   "dependencies": {
+    "@bundle/compress": "workspace:*",
     "@bundle/utils": "workspace:*",
     "@logtape/logtape": "npm:@jsr/logtape__logtape@^2",
     "@std/tar": "npm:@jsr/std__tar@^0",

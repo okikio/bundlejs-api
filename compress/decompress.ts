@@ -76,7 +76,7 @@ export async function decompress(inputs: Uint8Array[] | string[] = [], opts: Com
 
   // Compress all binary contents according to the compression map
   const compressedContent = await Promise.all(
-    contents.map((content) => compressionMap(content))
+    contents.map((content) => compressionMap(content as Uint8Array<ArrayBuffer>))
   );
 
   // Convert sizes to human readable formats, e.g. 10000 bytes to 10MB

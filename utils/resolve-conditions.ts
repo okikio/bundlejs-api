@@ -199,8 +199,9 @@ export function detectRuntime(): ResolveRuntime | null {
   }
 
   // Check for Node.js with Electron
-  if (typeof globalThis?.process !== "undefined" && globalThis?.process?.versions) {
-    if (globalThis?.process?.versions?.electron) {
+  const processLike = (globalThis as unknown as { process?: any }).process;
+  if (typeof processLike !== "undefined" && processLike?.versions) {
+    if (processLike?.versions?.electron) {
       // Check if we're in main or renderer
       if (typeof window !== "undefined") {
         return "electron-renderer";
