@@ -1,7 +1,6 @@
 import type { createDefaultFileSystem, ESBUILD } from "@bundle/core";
-import type { Config } from "./mod.ts";
-import { headers } from "./mod.ts";
-import { setFile as setGist } from "./gist.ts";
+import type { Config } from "./types.ts";
+import { headers } from "./constants.ts";
 
 
 import { compress } from "@bundle/compress";

@@ -23,31 +23,7 @@ export function stringify(value: any, replacer?: ((this: any, key: string, value
   return JSON5_MOD.stringify(value, replacer, (space ? parseInt(`${space}`) || undefined : undefined));
 }
 
-/**
- * Loads JSON5 from file synchronously
- * @param path File path or url
- */
-export function require(path: string | URL): any {
-  const data = Deno.readFileSync(path);
-  const decoder = new TextDecoder("utf8");
-  const raw = decoder.decode(data);
-
-  return JSON5_MOD.parse(raw, null);
-}
-
-/**
- * Loads JSON5 from file asynchronously
- * @param path File path or url
- */
-export async function requireAsync(path: string | URL): Promise<any> {
-  const data = await Deno.readFile(path);
-  const decoder = new TextDecoder("utf8");
-  const raw = decoder.decode(data);
-
-  return JSON5_MOD.parse(raw, null);
-}
-
 // defaults
-const JSON5 = { parse, stringify, require, requireAsync };
+const JSON5 = { parse, stringify };
 
 export default JSON5;
