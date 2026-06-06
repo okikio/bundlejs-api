@@ -6,6 +6,7 @@ import { ansi } from "@bundle/utils";
 import { LOGGER_INFO, dispatchEvent, getEsbuild } from "@bundle/core";
 import { headers } from "../../edge/constants.ts";
 import styleText from "../../edge/style.ts";
+import { docs } from "../../edge/docs.ts";
 import type { Env } from "./types.ts";
 import { getBundleArtifactText, putCachedBadge } from "./storage.ts";
 
@@ -50,6 +51,8 @@ export async function generateWorkerResult(
   duration: number,
   artifactKey?: string | null
 ) {
+  // This function intentionally mirrors `edge/generate-result.ts`.
+  // Any divergence here is observable by clients, so treat changes as API changes.
   const noCache = ["/no-cache", "/clear-cache", "/delete-cache"].includes(url.pathname);
   const analysisQuery = url.searchParams.has("analysis") ||
     url.searchParams.has("analyze") ||
@@ -118,7 +121,7 @@ export async function generateWorkerResult(
     }
 
     const imgShield = badgeRasterQuery ? new Uint8Array(await imgFetch.arrayBuffer()) : await imgFetch.text();
-    await putCachedBadge(env, badgeID, {
+    await putCachedBadge(env, badgeKey, badgeID, {
       body: typeof imgShield === "string" ? imgShield : encodeBase64(imgShield),
       contentType: badgeRasterQuery ? "image/png" : "image/svg+xml",
       encoding: typeof imgShield === "string" ? "text" : "base64"
@@ -135,6 +138,8 @@ export async function generateWorkerResult(
   }
 
   if (fileQuery) {
+    // Deno Deploy uses a stored gist id (`value.fileId`) for `?file`.
+    // Workers store the raw bundle text in R2 under `artifactKey`.
     const fileResult = resultText ?? (artifactKey ? await getBundleArtifactText(env, artifactKey) : null);
 
     if (fileResult === null || fileResult === undefined) {
@@ -209,7 +214,9 @@ export async function generateWorkerResult(
   }
 
   const { metafile: _metafile, warnings: _warnings, ...usefulInfo } = value;
+  const addDocs = (url.search === "" ? docs : "");
   const finalResult = Object.assign({}, usefulInfo,
+    addDocs,
     cached ? {
       time: timeFormatter.format(duration / 1000, "seconds"),
       rawTime: duration

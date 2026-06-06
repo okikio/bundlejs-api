@@ -3,13 +3,49 @@ import { headers } from "../../edge/constants.ts";
 import type { Env } from "./types.ts";
 
 const BUNDLE_CACHE_TTL_SECONDS = 60 * 60 * 24;
-const BADGE_CACHE_TTL_SECONDS = 60 * 60 * 24;
+const KV_KEY_BYTE_LIMIT = 512;
+
+const kvKeyEncoder = new TextEncoder();
+
+function utf8ByteLength(value: string): number {
+  return kvKeyEncoder.encode(value).byteLength;
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]!);
+  }
+
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", kvKeyEncoder.encode(value));
+  return toBase64Url(new Uint8Array(digest));
+}
+
+function keyDebugPrefix(key: string): string {
+  // Keeps keys somewhat inspectable when listed, without risking non-ascii bytes.
+  return key.slice(0, 32).replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+async function toKvSafeKey(key: string): Promise<string> {
+  if (utf8ByteLength(key) <= KV_KEY_BYTE_LIMIT) return key;
+  const hash = await sha256Base64Url(key);
+  return `h:${hash}:${keyDebugPrefix(key)}`;
+}
 
 export type StoredBadge = {
   body: string;
   contentType: string;
   encoding: "text" | "base64";
 };
+
+type BadgeHash = Record<string, StoredBadge>;
 
 function decodeBase64(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -32,36 +68,57 @@ export function getArtifactKey(bundleKey: string): string {
   return `bundles/${bundleKey}/index.js`;
 }
 
-export function getBadgeCacheKey(badgeID: string): string {
-  return `badge/${badgeID}`;
-}
-
 export async function getCachedBundleResult(env: Env, key: string): Promise<BundleResult | null> {
-  return await env.BUNDLE_CACHE.get<BundleResult>(key, "json");
+  return await env.BUNDLE_CACHE.get<BundleResult>(await toKvSafeKey(key), "json");
 }
 
-export async function putCachedBundleResult(env: Env, key: string, value: BundleResult): Promise<void> {
-  await env.BUNDLE_CACHE.put(key, JSON.stringify(value), {
-    expirationTtl: BUNDLE_CACHE_TTL_SECONDS
-  });
+export async function putCachedBundleResult(
+  env: Env,
+  key: string,
+  value: BundleResult,
+  options: { permanent?: boolean } = {}
+): Promise<void> {
+  // Deno Deploy:
+  // - stores the primary `jsonKey` entry with a 24h TTL
+  // - stores the per-package permanent entry without expiry
+  await env.BUNDLE_CACHE.put(
+    await toKvSafeKey(key),
+    JSON.stringify(value),
+    options.permanent
+      ? undefined
+      : {
+          expirationTtl: BUNDLE_CACHE_TTL_SECONDS,
+        }
+  );
 }
 
 export async function deleteCachedBundleResult(env: Env, key: string): Promise<void> {
-  await env.BUNDLE_CACHE.delete(key);
+  await env.BUNDLE_CACHE.delete(await toKvSafeKey(key));
 }
 
-export async function deleteCachedBadge(env: Env, badgeID: string): Promise<void> {
-	await env.BUNDLE_CACHE.delete(getBadgeCacheKey(badgeID));
+export async function deleteCachedBadgeKey(env: Env, badgeKey: string): Promise<void> {
+  // Mirrors `redis.del(badgeKey)` in the Deno handler.
+  // This wipes all badge variants for the bundle in one operation.
+  await env.BUNDLE_CACHE.delete(await toKvSafeKey(badgeKey));
 }
 
-export async function getCachedBadge(env: Env, badgeID: string): Promise<StoredBadge | null> {
-  return await env.BUNDLE_CACHE.get<StoredBadge>(getBadgeCacheKey(badgeID), "json");
+async function getBadgeHash(env: Env, badgeKey: string): Promise<BadgeHash | null> {
+  return await env.BUNDLE_CACHE.get<BadgeHash>(await toKvSafeKey(badgeKey), "json");
 }
 
-export async function putCachedBadge(env: Env, badgeID: string, badge: StoredBadge): Promise<void> {
-  await env.BUNDLE_CACHE.put(getBadgeCacheKey(badgeID), JSON.stringify(badge), {
-    expirationTtl: BADGE_CACHE_TTL_SECONDS
-  });
+export async function getCachedBadge(env: Env, badgeKey: string, badgeID: string): Promise<StoredBadge | null> {
+  // Equivalent to `redis.hget(badgeKey, badgeID)`.
+  const hash = await getBadgeHash(env, badgeKey);
+  if (!hash || typeof hash !== "object") return null;
+  return hash[badgeID] ?? null;
+}
+
+export async function putCachedBadge(env: Env, badgeKey: string, badgeID: string, badge: StoredBadge): Promise<void> {
+  // Equivalent to `redis.hset(badgeKey, { [badgeID]: ... })`.
+  // KV doesn't support hash fields natively, so we store a JSON object.
+  const hash = (await getBadgeHash(env, badgeKey)) ?? {};
+  hash[badgeID] = badge;
+  await env.BUNDLE_CACHE.put(await toKvSafeKey(badgeKey), JSON.stringify(hash));
 }
 
 export async function putBundleArtifact(env: Env, artifactKey: string, content: string): Promise<void> {

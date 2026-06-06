@@ -1,11 +1,13 @@
 import { executePreparedBundle } from "../../edge/execute.ts";
 import type { BundleResult } from "../../edge/bundle.ts";
-import { getPackageResultKey, prepareBundleRequest } from "../../edge/request.ts";
+import { prepareBundleRequest } from "../../edge/request.ts";
+import { getPackageResultKey, headers } from "../../edge/constants.ts";
 import { generateWorkerResult } from "./result.ts";
 import type { Env } from "./types.ts";
+import ESBUILD_WASM_MODULE from "../../core/esbuild.wasm";
 import {
   createCachedBadgeResponse,
-  deleteCachedBadge,
+  deleteCachedBadgeKey,
   deleteBundleArtifact,
   deleteCachedBundleResult,
   getArtifactKey,
@@ -17,152 +19,184 @@ import {
 
 export { BundleCoordinator } from "./durable-objects/bundle-coordinator.ts";
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
-} as const;
+/**
+ * Cloudflare Workers entrypoint that aims to mirror `edge/mod.ts` (Deno Deploy)
+ * as closely as practical.
+ *
+ * Design goals:
+ * - Preserve the observable behavior of the Deno handler (routes, status codes,
+ *   cache semantics, headers), but implement persistence using Workers bindings
+ *   (KV for JSON/badge cache; R2 for bundle artifacts).
+ * - Keep runtime-specific logic *thin* here; shared request parsing + execution
+ *   live in `edge/request.ts` and `edge/execute.ts`.
+ */
 
-function isStaticRoute(pathname: string): boolean {
-  return pathname.startsWith("/.well-known/") || ["/favicon.ico", "/robots.txt", "/llms.txt", "/sw.js"].includes(pathname);
+async function deleteAllKv(env: Env): Promise<number> {
+  let deleted = 0;
+  let cursor: string | undefined = undefined;
+
+  do {
+    const page = await env.BUNDLE_CACHE.list({ cursor });
+    const keys = page.keys.map((entry) => entry.name);
+
+    await Promise.all(keys.map((name) => env.BUNDLE_CACHE.delete(name)));
+    deleted += keys.length;
+
+    cursor = page.cursor;
+  } while (cursor);
+
+  return deleted;
 }
 
-function json(data: unknown, init: ResponseInit = {}): Response {
-  return Response.json(data, {
-    ...init,
-    headers: {
-      ...CORS_HEADERS,
-      ...(init.headers ?? {})
-    }
-  });
+async function deleteAllArtifacts(env: Env): Promise<number> {
+  let deleted = 0;
+  let cursor: string | undefined = undefined;
+
+  do {
+    const page = await env.BUNDLE_ARTIFACTS.list({ cursor });
+    const keys = page.objects.map((obj) => obj.key);
+
+    await Promise.all(keys.map((key) => env.BUNDLE_ARTIFACTS.delete(key)));
+    deleted += keys.length;
+
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  return deleted;
 }
 
-function isBundleRoute(pathname: string): boolean {
-  return [
-    "/",
-    "/analysis",
-    "/analyze",
-    "/badge",
-    "/badge/raster",
-    "/badge-raster",
-    "/bundle",
-    "/delete-cache",
-    "/file",
-    "/metafile",
-    "/no-cache",
-    "/raw",
-    "/warnings"
-  ].includes(pathname);
+function contentTypeForWellKnown(ext: string): string {
+  if (ext === ".png") return "image/png";
+  if (ext === ".yaml") return "text/yaml";
+  return "application/json";
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: CORS_HEADERS
-      });
-    }
-
     const url = new URL(request.url);
 
-    if (isStaticRoute(url.pathname)) {
-      return env.ASSETS.fetch(request);
+    if (url.pathname === "/favicon.ico") {
+      return Response.redirect("https://bundlejs.com/favicon/favicon-api.ico");
+    }
+
+    if (url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png") {
+      return Response.redirect("https://bundlejs.com/favicon/apple-touch-icon.png");
+    }
+
+    if (url.pathname === "/sw.js" || url.pathname === "/robots.txt" || url.pathname === "/llms.txt") {
+      return Response.json({ message: "no" });
+    }
+
+    if (url.pathname.startsWith("/.well-known/")) {
+      const assetResponse = await env.ASSETS.fetch(request);
+      const ext = url.pathname.includes(".") ? `.${url.pathname.split(".").pop()}` : "";
+
+      return new Response(await assetResponse.arrayBuffer(), {
+        status: assetResponse.status,
+        headers: [
+          ...headers,
+          ["Cache-Control", "max-age=180, public"],
+          ["Content-Type", contentTypeForWellKnown(ext)],
+        ],
+      });
     }
 
     if (url.searchParams.has("docs")) {
       return Response.redirect("https://blog.okikio.dev/documenting-an-online-bundler-bundlejs#heading-configuration");
     }
 
-    if (url.pathname === "/healthz") {
-      return json({
-        ok: true,
-        runtime: "cloudflare-workers",
-        mode: "bundle-execution"
-      });
-    }
+    const badgeQuery = url.searchParams.has("badge") || ["/badge", "/badge/raster", "/badge-raster"].includes(url.pathname);
+    const badgeResult = url.searchParams.get("badge");
+    const badgeStyle = url.searchParams.get("badge-style");
+    const badgeRasterQuery =
+      url.searchParams.has("badge-raster") ||
+      url.searchParams.has("png") ||
+      ["/badge/raster", "/badge-raster"].includes(url.pathname);
 
-    if (url.pathname.startsWith("/jobs/")) {
-      const bundleKey = url.pathname.slice("/jobs/".length).trim();
+    const fileCheck = url.searchParams.has("file") || url.pathname === "/file";
 
-      if (!bundleKey) {
-        return json({ message: "Missing bundle key." }, { status: 400 });
-      }
+    const preparedRequest = await prepareBundleRequest(url);
+    const {
+      badgeID,
+      badgeKey,
+      bundleKey,
+      exportAll,
+      jsonKey,
+      modules,
+      mutationQueries,
+      shareQuery,
+      textQuery,
+    } = preparedRequest;
 
-      const stub = env.BUNDLE_COORDINATOR.get(env.BUNDLE_COORDINATOR.idFromName(bundleKey));
-      const status = await stub.getStatus(bundleKey);
+    const artifactKey = getArtifactKey(bundleKey);
+    const startedAt = Date.now();
 
-      if (!status) {
-        return json({ bundleKey, status: "unknown" }, { status: 404 });
-      }
+    if (url.pathname === "/clear-all-cache-123") {
+      const clearArtifacts = url.searchParams.has("gist") || url.searchParams.has("gists");
 
-      return json(status);
-    }
-
-    if (isBundleRoute(url.pathname)) {
-      const preparedRequest = await prepareBundleRequest(url);
-      const {
-        badgeID,
-        badgeKey,
-        bundleKey,
-        exportAll,
-        initialValue,
-        jsonKey,
-        modules,
-        mutationQueries,
-        query,
-        shareQuery,
-        textQuery,
-        versions
-      } = preparedRequest;
-      const artifactKey = getArtifactKey(bundleKey);
-      const stub = env.BUNDLE_COORDINATOR.get(env.BUNDLE_COORDINATOR.idFromName(bundleKey));
-      const existingStatus = await stub.getStatus(bundleKey);
-      const fileQuery = url.searchParams.has("file") || url.pathname === "/file";
-      const badgeQuery = url.searchParams.has("badge") || ["/badge", "/badge/raster", "/badge-raster"].includes(url.pathname);
-      const packageCacheKey = modules.length === 1 && exportAll && !mutationQueries && modules[0]?.[1] === "export"
-        ? `${getPackageResultKey(modules[0][0])}/${jsonKey}`
-        : null;
-      const startedAt = Date.now();
-
-      if (url.pathname === "/delete-cache") {
-        await deleteCachedBundleResult(env, jsonKey);
-
-        if (packageCacheKey) {
-          await deleteCachedBundleResult(env, packageCacheKey);
-        }
-
-        await deleteCachedBadge(env, badgeID);
-        await deleteBundleArtifact(env, artifactKey);
-
-        await stub.clear();
-
-        return json({
-          message: "Deleted bundle cache entries.",
-          bundleKey,
-          jsonKey,
-          packageCacheKey,
-          artifactKey
+      if (clearArtifacts) {
+        await deleteAllKv(env);
+        await deleteAllArtifacts(env);
+        return new Response("Started clearing cache including gists!\n\nCleared entire cache + gists...careful now.", {
+          headers: {
+            "Content-Type": "text/plain",
+            "x-content-type-options": "nosniff",
+          },
         });
       }
 
-      let cachedResult = null as BundleResult | null;
+      await deleteAllKv(env);
+      return new Response("Started clearing cache!\nCleared entire cache", {
+        headers: {
+          "Content-Type": "text/plain",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
 
+    if (url.pathname === "/delete-cache") {
+      try {
+        const packageCacheKey = modules.length === 1 && exportAll && !mutationQueries && modules[0]?.[1] === "export"
+          ? `${getPackageResultKey(modules[0][0])}/${jsonKey}`
+          : null;
+
+        await deleteCachedBundleResult(env, jsonKey);
+        if (packageCacheKey) await deleteCachedBundleResult(env, packageCacheKey);
+        await deleteCachedBadgeKey(env, badgeKey);
+        await deleteBundleArtifact(env, artifactKey);
+
+        // Intentionally matches the Deno handler's plain-text response.
+        return new Response("Deleted from cache!");
+      } catch (error) {
+        console.warn(error);
+        return new Response("Error, deleting from cache");
+      }
+    }
+
+    try {
       if (url.pathname !== "/no-cache") {
-        cachedResult = await getCachedBundleResult(env, jsonKey);
+        const packageCacheKey = modules.length === 1 && exportAll && !mutationQueries && modules[0]?.[1] === "export"
+          ? `${getPackageResultKey(modules[0][0])}/${jsonKey}`
+          : null;
+
+        let cachedResult: BundleResult | null = await getCachedBundleResult(env, jsonKey);
 
         if (!cachedResult && packageCacheKey) {
           cachedResult = await getCachedBundleResult(env, packageCacheKey);
         }
 
         if (badgeQuery && cachedResult) {
-          const cachedBadge = await getCachedBadge(env, badgeID);
-
+          const cachedBadge = await getCachedBadge(env, badgeKey, badgeID);
           if (cachedBadge) {
             return createCachedBadgeResponse(cachedBadge);
           }
+        } else if (badgeQuery && !cachedResult) {
+          await deleteCachedBadgeKey(env, badgeKey);
         }
 
-        if (cachedResult) {
+        const fileAvailable = !fileCheck ? true : Boolean(await env.BUNDLE_ARTIFACTS.head(artifactKey));
+
+        if (cachedResult && fileAvailable) {
           return await generateWorkerResult(
             env,
             [badgeKey, badgeID],
@@ -174,67 +208,45 @@ export default {
           );
         }
       }
-
-      if (existingStatus?.status === "running") {
-        return json({
-          message: "A bundle build is already running for this bundle key.",
-          bundleKey,
-          query,
-          initialValue,
-          jsonKey,
-          modules,
-          versions,
-          coordinatorStatus: existingStatus
-        }, { status: 202 });
-      }
-
-      if (!existingStatus) {
-        await stub.initialize(bundleKey, jsonKey);
-      }
-
-      await stub.markRunning(bundleKey);
-
-      try {
-        const [response, resultText] = await executePreparedBundle(url, preparedRequest);
-
-        if (!response.ok) {
-          const errorMessage = await response.clone().text();
-          await stub.markFailed(bundleKey, errorMessage || `Bundle request failed with status ${response.status}.`);
-          return response;
-        }
-
-        const value = await response.clone().json() as BundleResult;
-
-        await putBundleArtifact(env, artifactKey, resultText);
-        await putCachedBundleResult(env, jsonKey, value);
-        await deleteCachedBadge(env, badgeID);
-
-        if (packageCacheKey) {
-          await putCachedBundleResult(env, packageCacheKey, value);
-        }
-
-        await stub.markComplete(bundleKey, artifactKey, jsonKey);
-
-        return await generateWorkerResult(
-          env,
-          [badgeKey, badgeID],
-          [value, resultText],
-          url,
-          false,
-          Date.now() - startedAt,
-          artifactKey
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await stub.markFailed(bundleKey, message);
-
-        return json({
-          bundleKey,
-          error: message
-        }, { status: 500 });
-      }
+    } catch (error) {
+      console.warn("error-using-cache:", error);
     }
 
-    return env.ASSETS.fetch(request);
+    const [response, resultText] = await executePreparedBundle(url, preparedRequest, { wasmModule: ESBUILD_WASM_MODULE });
+
+    if (!response.ok) {
+      const responseHeaders = response.headers;
+      const status = response.status;
+      return new Response(await response.arrayBuffer(), {
+        headers: responseHeaders,
+        status,
+      });
+    }
+
+    const value: BundleResult = await response.json();
+
+    try {
+      await putBundleArtifact(env, artifactKey, resultText);
+      await putCachedBundleResult(env, jsonKey, value);
+
+      if (modules.length === 1 && exportAll && !(shareQuery || textQuery) && modules[0]?.[1] === "export") {
+        const packageCacheKey = `${getPackageResultKey(modules[0][0])}/${jsonKey}`;
+        await putCachedBundleResult(env, packageCacheKey, value, { permanent: true });
+      }
+
+      await deleteCachedBadgeKey(env, badgeKey);
+    } catch (error) {
+      console.warn(error);
+    }
+
+    return await generateWorkerResult(
+      env,
+      [badgeKey, badgeID],
+      [value, resultText],
+      url,
+      false,
+      Date.now() - startedAt,
+      artifactKey
+    );
   }
 } satisfies ExportedHandler<Env>;

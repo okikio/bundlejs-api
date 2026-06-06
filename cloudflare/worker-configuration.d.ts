@@ -20,6 +20,24 @@ declare interface KVNamespacePutOptions {
   metadata?: unknown;
 }
 
+declare interface KVNamespaceListKey {
+  name: string;
+  expiration?: number;
+  metadata?: unknown;
+}
+
+declare interface KVNamespaceListResult {
+  keys: KVNamespaceListKey[];
+  list_complete: boolean;
+  cursor?: string;
+}
+
+declare interface KVNamespaceListOptions {
+  prefix?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 declare interface KVNamespace {
   get(key: string): Promise<string | null>;
   get<T>(key: string, type: "json"): Promise<T | null>;
@@ -27,6 +45,7 @@ declare interface KVNamespace {
   get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
   put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream, options?: KVNamespacePutOptions): Promise<void>;
   delete(key: string): Promise<void>;
+  list(options?: KVNamespaceListOptions): Promise<KVNamespaceListResult>;
 }
 
 declare interface R2HTTPMetadata {
@@ -56,8 +75,16 @@ declare interface R2ObjectBody extends R2Object {
   json<T>(): Promise<T>;
 }
 
+declare interface R2Objects {
+  objects: R2Object[];
+  truncated: boolean;
+  cursor?: string;
+}
+
 declare interface R2Bucket {
   get(key: string, options?: unknown): Promise<R2ObjectBody | R2Object | null>;
+  head(key: string): Promise<R2Object | null>;
+  list(options?: { prefix?: string; limit?: number; cursor?: string; delimiter?: string }): Promise<R2Objects>;
   put(key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob, options?: R2PutOptions): Promise<R2Object | null>;
   delete(key: string | string[]): Promise<void>;
 }
@@ -90,4 +117,9 @@ declare abstract class DurableObject {
 
 declare interface ExportedHandler<Env = unknown> {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response>;
+}
+
+declare module "*.wasm" {
+  const module: WebAssembly.Module;
+  export default module;
 }

@@ -30,9 +30,11 @@ function mapRow(row: CoordinatorRow | null | undefined): CoordinatorRecord | nul
   };
 }
 
-export class BundleCoordinator extends DurableObject {
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env);
+export class BundleCoordinator {
+  ctx: DurableObjectState;
+
+  constructor(ctx: DurableObjectState, _env: unknown) {
+    this.ctx = ctx;
 
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(`

@@ -3,6 +3,13 @@
   "name": "bundlejs-api-cloudflare",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"]
+    }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
