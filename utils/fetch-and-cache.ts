@@ -588,6 +588,10 @@ export async function fetchHeaders(
     });
     
     const contentType = response.headers.get("content-type");
+
+    // We only need headers from the HEAD probe. Explicitly cancel the response
+    // so Cloudflare does not keep the request counted as in-flight.
+    try { await response.body?.cancel(); } catch { /* ignore cancel errors */ }
     
     return { url: finalUrl, contentType, fromCache };
   } catch (_) {
