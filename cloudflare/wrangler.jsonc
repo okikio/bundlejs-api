@@ -46,6 +46,9 @@
     },
     "traces": {
       "enabled": true
+    },
+    "limits": {
+      "subrequests": 10000
     }
   },
   "migrations": [
