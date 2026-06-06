@@ -26,10 +26,14 @@ export { BundleCoordinator } from "./durable-objects/bundle-coordinator.ts";
  * Design goals:
  * - Preserve the observable behavior of the Deno handler (routes, status codes,
  *   cache semantics, headers), but implement persistence using Workers bindings
- *   (KV for JSON/badge cache; R2 for bundle artifacts).
+ *   (KV for JSON/badge cache; optional R2 for bundle artifacts).
  * - Keep runtime-specific logic *thin* here; shared request parsing + execution
  *   live in `edge/request.ts` and `edge/execute.ts`.
  */
+
+function hasArtifactStorage(env: Env): env is Env & { BUNDLE_ARTIFACTS: R2Bucket } {
+  return Boolean(env.BUNDLE_ARTIFACTS);
+}
 
 async function deleteAllKv(env: Env): Promise<number> {
   let deleted = 0;
@@ -49,6 +53,10 @@ async function deleteAllKv(env: Env): Promise<number> {
 }
 
 async function deleteAllArtifacts(env: Env): Promise<number> {
+  if (!hasArtifactStorage(env)) {
+    return 0;
+  }
+
   let deleted = 0;
   let cursor: string | undefined = undefined;
 
@@ -163,7 +171,9 @@ export default {
         await deleteCachedBundleResult(env, jsonKey);
         if (packageCacheKey) await deleteCachedBundleResult(env, packageCacheKey);
         await deleteCachedBadgeKey(env, badgeKey);
-        await deleteBundleArtifact(env, artifactKey);
+        if (hasArtifactStorage(env)) {
+          await deleteBundleArtifact(env, artifactKey);
+        }
 
         // Intentionally matches the Deno handler's plain-text response.
         return new Response("Deleted from cache!");
@@ -194,7 +204,11 @@ export default {
           await deleteCachedBadgeKey(env, badgeKey);
         }
 
-        const fileAvailable = !fileCheck ? true : Boolean(await env.BUNDLE_ARTIFACTS.head(artifactKey));
+        const fileAvailable = !fileCheck
+          ? true
+          : hasArtifactStorage(env)
+            ? Boolean(await env.BUNDLE_ARTIFACTS.head(artifactKey))
+            : false;
 
         if (cachedResult && fileAvailable) {
           return await generateWorkerResult(
@@ -226,7 +240,9 @@ export default {
     const value: BundleResult = await response.json();
 
     try {
-      await putBundleArtifact(env, artifactKey, resultText);
+      if (hasArtifactStorage(env)) {
+        await putBundleArtifact(env, artifactKey, resultText);
+      }
       await putCachedBundleResult(env, jsonKey, value);
 
       if (modules.length === 1 && exportAll && !(shareQuery || textQuery) && modules[0]?.[1] === "export") {
@@ -246,7 +262,7 @@ export default {
       url,
       false,
       Date.now() - startedAt,
-      artifactKey
+      hasArtifactStorage(env) ? artifactKey : null
     );
   }
 } satisfies ExportedHandler<Env>;

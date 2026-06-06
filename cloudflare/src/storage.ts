@@ -2,6 +2,10 @@ import type { BundleResult } from "../../edge/bundle.ts";
 import { headers } from "../../edge/constants.ts";
 import type { Env } from "./types.ts";
 
+type ArtifactEnv = Env & {
+  BUNDLE_ARTIFACTS: R2Bucket;
+};
+
 const BUNDLE_CACHE_TTL_SECONDS = 60 * 60 * 24;
 const KV_KEY_BYTE_LIMIT = 512;
 
@@ -121,7 +125,7 @@ export async function putCachedBadge(env: Env, badgeKey: string, badgeID: string
   await env.BUNDLE_CACHE.put(await toKvSafeKey(badgeKey), JSON.stringify(hash));
 }
 
-export async function putBundleArtifact(env: Env, artifactKey: string, content: string): Promise<void> {
+export async function putBundleArtifact(env: ArtifactEnv, artifactKey: string, content: string): Promise<void> {
   await env.BUNDLE_ARTIFACTS.put(artifactKey, content, {
     httpMetadata: {
       contentType: "text/javascript; charset=utf-8"
@@ -129,7 +133,7 @@ export async function putBundleArtifact(env: Env, artifactKey: string, content: 
   });
 }
 
-export async function getBundleArtifactText(env: Env, artifactKey: string): Promise<string | null> {
+export async function getBundleArtifactText(env: ArtifactEnv, artifactKey: string): Promise<string | null> {
   const object = await env.BUNDLE_ARTIFACTS.get(artifactKey);
 
   if (!object || !("text" in object) || typeof object.text !== "function") {
@@ -139,7 +143,7 @@ export async function getBundleArtifactText(env: Env, artifactKey: string): Prom
   return await object.text();
 }
 
-export async function deleteBundleArtifact(env: Env, artifactKey: string): Promise<void> {
+export async function deleteBundleArtifact(env: ArtifactEnv, artifactKey: string): Promise<void> {
   await env.BUNDLE_ARTIFACTS.delete(artifactKey);
 }
 

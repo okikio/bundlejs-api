@@ -42,6 +42,10 @@ function toBodyInit(value: string | Uint8Array): BodyInit {
   return typeof value === "string" ? value : toArrayBuffer(value);
 }
 
+function hasArtifactStorage(env: Env): env is Env & { BUNDLE_ARTIFACTS: R2Bucket } {
+  return Boolean(env.BUNDLE_ARTIFACTS);
+}
+
 export async function generateWorkerResult(
   env: Env,
   [badgeKey, badgeID]: string[],
@@ -140,7 +144,11 @@ export async function generateWorkerResult(
   if (fileQuery) {
     // Deno Deploy uses a stored gist id (`value.fileId`) for `?file`.
     // Workers store the raw bundle text in R2 under `artifactKey`.
-    const fileResult = resultText ?? (artifactKey ? await getBundleArtifactText(env, artifactKey) : null);
+    const fileResult = resultText ?? (
+      artifactKey && hasArtifactStorage(env)
+        ? await getBundleArtifactText(env, artifactKey)
+        : null
+    );
 
     if (fileResult === null || fileResult === undefined) {
       throw new Error("The stored bundle artifact was empty. Please try again later or rebuild the bundle.");

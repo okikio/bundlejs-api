@@ -23,7 +23,7 @@ export type BundleCoordinatorStub = {
 
 export type Env = {
   ASSETS: Fetcher;
-  BUNDLE_ARTIFACTS: R2Bucket;
+  BUNDLE_ARTIFACTS?: R2Bucket;
   BUNDLE_CACHE: KVNamespace;
   BUNDLE_COORDINATOR: DurableObjectNamespace<BundleCoordinatorStub>;
 };
