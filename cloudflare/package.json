@@ -19,6 +19,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:preview": "wrangler versions upload",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }

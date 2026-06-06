@@ -32,6 +32,13 @@ Bindings you still need to provision before deploy:
 - Replace the placeholder `BUNDLE_CACHE` namespace IDs in [wrangler.jsonc](./wrangler.jsonc)
 - Create the `bundlejs-api-artifacts` R2 bucket or rename the binding to match your actual bucket names in [wrangler.jsonc](./wrangler.jsonc)
 
+Cloudflare Git deployment settings:
+
+- Path: `/cloudflare`
+- Build command: leave blank
+- Deploy command: `npx wrangler deploy`
+- Non-production branch deploy command: `npx wrangler versions upload`
+
 Implementation notes:
 
 - The current scaffold keeps the Deno deploy target intact while creating a clean place for Cloudflare-specific runtime adapters.

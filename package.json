@@ -13,8 +13,11 @@
     "cloudflare"
   ],
   "scripts": {
-    "dev:cloudflare": "pnpm --dir cloudflare dev",
+    "dev": "pnpm --dir cloudflare dev",
+    "deploy": "pnpm --dir cloudflare deploy",
+    "deploy:preview": "pnpm --dir cloudflare deploy:preview",
+    "dev:cloudflare": "pnpm run dev",
     "typecheck:cloudflare": "pnpm --dir cloudflare typecheck",
-    "deploy:cloudflare": "pnpm --dir cloudflare deploy"
+    "deploy:cloudflare": "pnpm run deploy"
   }
 }
