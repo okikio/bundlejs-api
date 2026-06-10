@@ -64,6 +64,8 @@ import {
   FileEndings,
   AllEndingVariants,
   EndingVariantsLength,
+  hasRecognizedExplicitExtension,
+  getEndingVariants,
   HTTP_NAMESPACE,
 } from "../plugins/http.ts";
 
@@ -107,19 +109,12 @@ describe("http: AllEndingVariants generation", () => {
   test("FileEndings include empty string and common extensions", () => {
     expect(FileEndings).toContain("");
     expect(FileEndings).toContain(".js");
-    expect(FileEndings).toContain(".mjs");
-    expect(FileEndings).toContain(".ts");
-    expect(FileEndings).toContain(".tsx");
-    expect(FileEndings).toContain(".cjs");
-    expect(FileEndings).toContain(".jsx");
-    expect(FileEndings).toContain(".mts");
-    expect(FileEndings).toContain(".cts");
+    expect(FileEndings).toContain(".json");
   });
 
   test("AllEndingVariants is a Set-deduplicated cross product", () => {
-    // The raw cross product is 2 × 9 = 18 entries.
-    // But "" + "" = "" and "/index" + "" = "/index" are unique,
-    // so the only possible collision is ("", "") and it appears once.
+    // The probe table is the deduplicated cross product of package-root path
+    // variants and the bounded implicit-entry suffixes.
     const rawProduct = FilePaths.flatMap(p => FileEndings.map(e => p + e));
     const unique = [...new Set(rawProduct)];
 
@@ -136,8 +131,27 @@ describe("http: AllEndingVariants generation", () => {
     expect(AllEndingVariants).toContain("/index.js");
   });
 
-  test("contains /index.ts for directory fallback", () => {
-    expect(AllEndingVariants).toContain("/index.ts");
+  test("contains /index.json for directory fallback", () => {
+    expect(AllEndingVariants).toContain("/index.json");
+  });
+
+  test("explicit index.js URLs should not widen into nested index probes", () => {
+    expect(getEndingVariants("https://unpkg.com/pkg@1.0.0/index.js")).toEqual([""]);
+  });
+
+  test("explicit style.module.css URLs stay exact", () => {
+    expect(hasRecognizedExplicitExtension("https://unpkg.com/pkg@1.0.0/styles.module.css")).toBe(true);
+    expect(getEndingVariants("https://unpkg.com/pkg@1.0.0/styles.module.css")).toEqual([""]);
+  });
+
+  test("explicit native addon URLs stay exact", () => {
+    expect(hasRecognizedExplicitExtension("https://unpkg.com/pkg@1.0.0/addon.node")).toBe(true);
+    expect(getEndingVariants("https://unpkg.com/pkg@1.0.0/addon.node")).toEqual([""]);
+  });
+
+  test("unknown suffix-style paths still broaden for probing", () => {
+    expect(hasRecognizedExplicitExtension("https://unpkg.com/pkg@1.0.0/Expo.fx")).toBe(false);
+    expect(getEndingVariants("https://unpkg.com/pkg@1.0.0/Expo.fx")).toEqual(AllEndingVariants);
   });
 
   test("length matches EndingVariantsLength constant", () => {

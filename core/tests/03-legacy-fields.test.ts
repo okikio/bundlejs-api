@@ -20,6 +20,7 @@ import {
   importArgs,
   resolveOpts,
   buildPackage,
+  buildWithEntry,
 } from "./helpers.ts";
 
 // =============================================================================
@@ -104,6 +105,25 @@ describe("03 · Legacy Field Resolution", () => {
       });
 
       expect(result.path).toBe("./index.js");
+      expect(result.usedDefaultRootFallback).toBe(true);
+    });
+  });
+
+  describe("3.4b — Explicit JSON entry remains explicit", () => {
+    const pkg = manifest({ main: "./index.json" });
+
+    test("resolvePackageEntry does not mark explicit JSON main as default fallback", () => {
+      const conds = getResolverConditions(importArgs(), resolveOpts());
+      const fields = getLegacyMainFields(pkg, importArgs(), resolveOpts());
+      const result = resolvePackageEntry({
+        manifest: pkg,
+        subpath: ".",
+        conditions: conds,
+        legacyFields: fields,
+      });
+
+      expect(result.path).toBe("./index.json");
+      expect(result.usedDefaultRootFallback).toBe(false);
     });
   });
 
@@ -186,6 +206,16 @@ describe("03 · Legacy Field Resolution", () => {
 
     test("ms@2.1.3 builds with extensionless main", async () => {
       await using result = await buildPackage("ms@2.1.3");
+
+      expect(result.contents.length).toBeGreaterThan(0);
+      expect(result.errors.length).toBe(0);
+    });
+
+    test("spdx-exceptions builds from implicit root index.json", async () => {
+      await using result = await buildWithEntry(
+        `import exceptions from "spdx-exceptions";
+         export default exceptions;`,
+      );
 
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.errors.length).toBe(0);

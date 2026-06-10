@@ -119,12 +119,46 @@ export interface LegacyResolutionResult {
   error?: Error;
 }
 
-/** Combined resolution result */
+/**
+ * Combined package-entry resolution result.
+ *
+ * There are two distinct kinds of successful results in this structure:
+ *
+ * 1. **Explicit result**
+ *    `path` names the actual entry selected by `exports`, `main`, `module`,
+ *    browser string entry, or literal subpath handling.
+ *    Examples: `./dist/index.js`, `./index.json`, `./feature`, `./index.cjs`
+ *
+ * 2. **Implicit root fallback result**
+ *    `path === "./index.js"` and `usedDefaultRootFallback === true` means
+ *    legacy resolution found no declared entry point and the resolver is
+ *    signaling "treat the package root like a CommonJS package directory".
+ *
+ *    That signal is intentionally stronger than the literal string `./index.js`:
+ *    consumers must not treat it as an explicit request for the concrete file
+ *    `index.js`. Instead, downstream loaders may apply Node-style implicit
+ *    package-entry probing from the package root, currently `.js` and `.json`
+ *    in bundlejs.
+ *
+ * Why this exists:
+ * - The string fallback keeps the high-level resolver API compatible with the
+ *   long-standing `./index.js` default.
+ * - The boolean distinguishes "explicit `index.js`" from "implicit package
+ *   root fallback" so downstream code can preserve the correct probing rules.
+ */
 export interface PackageResolutionResult {
   /** Resolved path (normalized) */
   path: string | null;
   /** Whether modern exports was used */
   usedModern: boolean;
+  /**
+   * Whether resolution fell back to the implicit package-root entry contract.
+   *
+   * When true, `path` is the legacy placeholder `./index.js`, but downstream
+   * consumers should interpret that as "probe from the package root using the
+   * implicit fallback rules" rather than "fetch exactly ./index.js".
+   */
+  usedDefaultRootFallback: boolean;
   /** Whether a path remapping field (browser, react-native, electron) was applied */
   appliedPathRemapping: boolean;
   /** Path remappings collected from manifest fields (for child resolution) */
@@ -528,6 +562,19 @@ export interface PackageResolutionOptions {
 /**
  * Combined resolution: modern exports first, then legacy fallback.
  *
+ * Mechanism summary:
+ * - Prefer `exports` when present.
+ * - Otherwise use legacy entry fields (`browser` string, `module`, `main`,
+ *   unpkg/bin fallbacks) for root package resolution.
+ * - If no declared entry exists and this is still the package root, return the
+ *   legacy placeholder `./index.js` plus `usedDefaultRootFallback = true`.
+ *
+ * Why the placeholder still exists:
+ * - Historical callers already understand `./index.js` as the last-resort root
+ *   entry marker.
+ * - The separate boolean lets callers preserve the old shape while handling the
+ *   result with more precise Node-style fallback semantics downstream.
+ *
  * @param options Resolution options
  * @returns Resolution result with normalized path
  */
@@ -537,6 +584,7 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
   const result: PackageResolutionResult = {
     path: null,
     usedModern: false,
+    usedDefaultRootFallback: false,
     appliedPathRemapping: false,
     pathRemappings: null,
     excluded: false,
@@ -606,9 +654,15 @@ export function resolvePackageEntry(options: PackageResolutionOptions): PackageR
     return result;
   }
 
-  // 4. Last resort: common defaults
+  // 4. Last resort: implicit package-root CommonJS fallback.
+  //
+  // We intentionally return the historical `./index.js` marker here, but also
+  // set `usedDefaultRootFallback` so downstream loaders know this was not an
+  // explicit manifest choice. They may probe from the package root using the
+  // bounded implicit fallback rules instead of fetching `./index.js` literally.
   if (isRootOrEmpty) {
     result.path = "./index.js";
+    result.usedDefaultRootFallback = true;
   }
 
   return result;

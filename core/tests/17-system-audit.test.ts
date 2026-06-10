@@ -804,7 +804,8 @@ describe("17.9 — Tree-shaking quality", () => {
 // 17.10 — Extension Probing Completeness
 //
 // AllEndingVariants is tested for content in test 16, but the mathematical
-// completeness (2 × 9 = 18) from the architecture doc should be verified.
+// completeness of the bounded Node-style package-entry probe table should be
+// verified here as well.
 // =============================================================================
 
 describe("17.10 — Extension probing completeness", () => {
@@ -812,22 +813,14 @@ describe("17.10 — Extension probing completeness", () => {
     expect(FilePaths).toEqual(["", "/index"]);
   });
 
-  test("FileEndings has exactly 9 extensions", () => {
-    expect(FileEndings.length).toBe(9);
+  test("FileEndings has exactly 3 Node-style variants", () => {
+    expect(FileEndings.length).toBe(3);
     expect(FileEndings).toContain("");
     expect(FileEndings).toContain(".js");
-    expect(FileEndings).toContain(".mjs");
-    expect(FileEndings).toContain(".ts");
-    expect(FileEndings).toContain(".tsx");
-    expect(FileEndings).toContain(".cjs");
-    expect(FileEndings).toContain(".jsx");
-    expect(FileEndings).toContain(".mts");
-    expect(FileEndings).toContain(".cts");
+    expect(FileEndings).toContain(".json");
   });
 
-  test("AllEndingVariants is 2 × 9 = 18 (after dedup)", () => {
-    // The raw cartesian product is 18, but "" + "" is the same as "/index" + "" 
-    // might not collide. Let's verify the actual deduplicated count.
+  test("AllEndingVariants matches the FilePaths × FileEndings product", () => {
     const raw = FilePaths.flatMap(path => FileEndings.map(ext => path + ext));
     const deduped = new Set(raw);
     expect(AllEndingVariants.length).toBe(deduped.size);
@@ -839,7 +832,6 @@ describe("17.10 — Extension probing completeness", () => {
 
   test("/index variants come after direct variants", () => {
     const firstIndexVariant = AllEndingVariants.findIndex(v => v.startsWith("/index"));
-    const lastDirectVariant = AllEndingVariants.findIndex(v => v === ".cts");
     // /index.* should come after trying direct extension probes
     expect(firstIndexVariant).toBeGreaterThan(0);
   });

@@ -5,10 +5,26 @@ import { extension } from "@bundle/utils/media-types";
 /** Based on https://github.com/egoist/play-esbuild/blob/main/src/lib/esbuild.ts */
 export const RESOLVE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
 
+/**
+ * Implicit package-entry probing modeled after Node's CommonJS `require()`.
+ *
+ * Confirmed automatic fallbacks in Node's documented resolver are:
+ * - `.js`
+ * - `.json`
+ * - `.node`
+ *
+ * bundlejs intentionally omits `.node` here because native addons are not
+ * loadable in this browser-oriented bundling flow. Files like `.cjs` or `.mjs`
+ * are still supported when they are referenced explicitly by the import
+ * specifier or by manifest metadata, but they are not part of implicit
+ * fallback probing.
+ */
+export const PACKAGE_ENTRY_RESOLVE_EXTENSIONS = [".js", ".json"];
+
 export const _knownExtensions = [
   // Remove period `.tsx` -> `tsx`
   ...RESOLVE_EXTENSIONS.map(x => x.slice(1)),
-  "mjs", "cjs", "mts", "cts", "scss",
+  "mjs", "cjs", "mts", "cts", "node", "scss",
   "png", "jpeg", "ttf", "svg",
   "html", "txt", "wasm"
 ];

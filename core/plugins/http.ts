@@ -35,8 +35,9 @@ import { LOGGER_ERROR, LOGGER_INFO, dispatchEvent } from "../configs/events.ts";
 
 import { DEFAULT_CDN_HOST, getCDNStyle, getCDNUrl } from "../utils/cdn-format.ts";
 import { setFile } from "../utils/filesystem.ts";
+import { PACKAGE_ENTRY_RESOLVE_EXTENSIONS, _knownExtensions } from "../utils/loader.ts";
 
-import { isBareImport, isAbsolute } from "@bundle/utils/path";
+import { extname, isBareImport, isAbsolute } from "@bundle/utils/path";
 import { toURLPath, urlJoin } from "@bundle/utils/url";
 import { looksLikeJSRSpec } from "@bundle/utils/jsr-spec";
 
@@ -178,13 +179,39 @@ export async function fetchAssets<T>(
 // Extension Probing
 // ============================================================================
 
-/** Path variants to try when extension is missing */
+/**
+ * Path suffixes used for package-root probing when a URL is extensionless.
+ *
+ * `""` tries the path as-is first.
+ * `"/index"` is the Node/CommonJS-style directory fallback used for package roots.
+ *
+ * Example for `https://unpkg.com/pkg@1.0.0`:
+ * - `""`      -> `https://unpkg.com/pkg@1.0.0`
+ * - `"/index"` -> `https://unpkg.com/pkg@1.0.0/index`
+ */
 export const FilePaths = ["", "/index"];
 
-/** File extensions to probe */
-export const FileEndings = ["", ".js", ".mjs", ".ts", ".tsx", ".cjs", ".jsx", ".mts", ".cts", ".json"];
+/**
+ * File suffixes used only for implicit package-entry probing.
+ *
+ * This intentionally models the part of Node's CommonJS `require()` fallback
+ * that bundlejs can safely emulate here: `index.js` and `index.json`.
+ *
+ * Not included on purpose:
+ * - `.node`: Node supports it for native addons, but bundlejs cannot load it
+ * - `.cjs` / `.mjs`: supported only when explicit, not as automatic fallback
+ */
+export const FileEndings = ["", ...PACKAGE_ENTRY_RESOLVE_EXTENSIONS];
 
-/** All combinations of path + extension to try */
+/**
+ * Cross-product of package-root path variants and entry extensions.
+ *
+ * This is intentionally used only when the input URL is acting like an
+ * extensionless package entry candidate. It must not be applied blindly to
+ * URLs that already name a concrete file such as `style.module.css` or
+ * `dist/index.js`, otherwise we would incorrectly probe paths like
+ * `style.module.css/index.js`.
+ */
 export const AllEndingVariants = Array.from(
   new Set(
     FilePaths.flatMap(path => FileEndings.map(ext => path + ext))
@@ -194,10 +221,73 @@ export const AllEndingVariants = Array.from(
 export const EndingVariantsLength = AllEndingVariants.length;
 
 /**
- * Probes for the correct file extension when not explicitly provided.
+ * Determine whether a URL already names a concrete file with a recognized
+ * extension, and therefore should be fetched exactly as-is.
  *
- * TypeScript files often don't have file extensions in imports, but servers
- * require the full path. This function tries multiple extensions until one works.
+ * Why this exists:
+ * - `determineExtension()` is used for both package-root entry probing and
+ *   ordinary HTTP file loads.
+ * - Extensionless package roots such as `https://unpkg.com/spdx-exceptions@2.5.0`
+ *   should broaden into `index.js` and `index.json`.
+ * - Explicit files such as `.../index.js`, `.../styles.module.css`, or
+ *   `.../data.json` should stay exact and must not broaden into nested
+ *   `index.*` or additional extension probes.
+ *
+ * Behavior:
+ * - Known extensions (`.js`, `.mjs`, `.cjs`, `.json`, `.css`, `.wasm`, `.node`, etc.)
+ *   return `true` and are fetched exactly.
+ * - Unknown suffix-style names such as `Expo.fx` or `uuid.types` return `false`
+ *   so the caller can still probe `Expo.fx.ts`, `uuid.types.ts`, and similar
+ *   conventions used by some ecosystems.
+ */
+export function hasRecognizedExplicitExtension(path: string): boolean {
+  const pathname = new URL(path).pathname;
+  const currentExt = extname(pathname);
+
+  return currentExt.length > 0 && _knownExtensions.includes(currentExt.slice(1));
+}
+
+/**
+ * Choose the suffix probe list for an HTTP URL.
+ *
+ * Mechanism:
+ * - If the URL already points at a recognized concrete file, only try `""`
+ *   so the fetch stays exact.
+ * - Otherwise, use the broader package-entry probe list so extensionless or
+ *   suffix-style paths can resolve.
+ *
+ * This keeps package-root fallback and suffix-style imports working without
+ * over-broadening explicit files.
+ */
+export function getEndingVariants(path: string): string[] {
+  if (hasRecognizedExplicitExtension(path)) {
+    return [""];
+  }
+
+  return AllEndingVariants;
+}
+
+/**
+ * Resolve a fetchable HTTP URL from an extensionless or suffix-style candidate.
+ *
+ * What this is trying to accomplish:
+ * - Support package roots that omit `main`/`exports` and rely on implicit
+ *   `index.*` files.
+ * - Support suffix-style specifiers used by some packages, such as `Expo.fx`
+ *   resolving to `Expo.fx.ts`.
+ * - Avoid broadening URLs that already name a concrete file.
+ *
+ * Mechanism:
+ * - Ask `getEndingVariants()` for the correct probe list.
+ * - Try the exact URL first.
+ * - If the path is extensionless or uses an unrecognized suffix, try a bounded
+ *   set of package-entry fallbacks.
+ * - Stop at the first successful HEAD/GET probe.
+ *
+ * Why the split with `getEndingVariants()` matters:
+ * - A URL like `.../spdx-exceptions@2.5.0` must be allowed to fan out into
+ *   `.../index.js` and `.../index.json`.
+ * - A URL like `.../styles.module.css` must stay exact.
  *
  * @param path Base path to probe
  * @param headersOnly If true, only fetch headers (faster for probing)
@@ -219,9 +309,11 @@ export async function determineExtension<T>(
   const scope = StateContext ? fromContext("scope", StateContext) : undefined;
 
   let firstError: Error | undefined;
+  const endingVariants = getEndingVariants(path);
+  const endingVariantsLength = endingVariants.length;
 
-  for (let i = 0; i < EndingVariantsLength; i++) {
-    const suffix = AllEndingVariants[i];
+  for (let i = 0; i < endingVariantsLength; i++) {
+    const suffix = endingVariants[i];
     const testUrl = path + suffix;
 
     // Skip URLs we've already tried and failed
@@ -245,7 +337,7 @@ export async function determineExtension<T>(
       if (i === 0) firstError = e as Error;
 
       // If we've exhausted all variants, throw
-      if (i >= EndingVariantsLength - 1) {
+      if (i >= endingVariantsLength - 1) {
         const error = firstError ?? e;
         dispatchEvent(LOGGER_ERROR, error as Error);
         throw error;

@@ -774,7 +774,14 @@ export function CdnResolution<T>(StateContext: Context<CdnResolutionState<T>>) {
           }
 
           if (resolutionResult.path) {
-            resultSubpath = normalizeResolvedPath(resolutionResult.path);
+            // Shared resolution uses `./index.js` as the legacy placeholder for
+            // "implicit package-root fallback". When that boolean is set we must
+            // probe from the package root and let HttpPlugin apply Node-style
+            // implicit fallback (`index.js`, `index.json`) instead of treating
+            // `./index.js` as an explicit concrete file URL.
+            resultSubpath = resolutionResult.usedDefaultRootFallback
+              ? ""
+              : normalizeResolvedPath(resolutionResult.path);
           }
 
           if (subpath && isSubpathDirectoryPackage) {

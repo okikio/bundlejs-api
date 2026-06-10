@@ -40,8 +40,11 @@ import {
   parseTarballUrl,
   stripPackagePrefix,
   resolvePackageEntry,
+  resolveAndProbeEntry,
   findTarballSplitInPathname,
 } from "../plugins/tar.ts";
+
+import { createDefaultFileSystem, setFile } from "../utils/filesystem.ts";
 
 import { getCDNStyle, getCDNOrigin, getPureImportPath, getCDNUrl } from "../utils/cdn-format.ts";
 import { getNpmTarballUrl, getPackageTarballUrl, getRegistryURL, escapePackageName } from "@bundle/utils/npm-search";
@@ -410,6 +413,33 @@ describe("19.5 — resolvePackageEntry with subpaths", () => {
     const result = resolvePackageEntry(manifest, "", defaultConditions);
     expect(result.excluded).toBe(false);
     expect(result.entryPath).toBe("/index.js");
+  });
+
+  test("root import can probe implicit index.json for tarball packages", async () => {
+    const manifest: Partial<PackageJson> = {
+      name: "spdx-exceptions-like",
+      version: "1.0.0",
+    };
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/pkg/index.json", '{"ok":true}');
+
+    const result = await resolveAndProbeEntry(manifest, "", defaultConditions, "/pkg", fs);
+    expect(result.excluded).toBe(false);
+    expect(result.resolvedPath).toBe("/pkg/index.json");
+  });
+
+  test("extensionless main can probe index.json for tarball packages", async () => {
+    const manifest: Partial<PackageJson> = {
+      name: "json-main-like",
+      version: "1.0.0",
+      main: "./index",
+    };
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/pkg/index.json", '{"ok":true}');
+
+    const result = await resolveAndProbeEntry(manifest, "", defaultConditions, "/pkg", fs);
+    expect(result.excluded).toBe(false);
+    expect(result.resolvedPath).toBe("/pkg/index.json");
   });
 });
 

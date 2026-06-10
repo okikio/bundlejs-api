@@ -34,7 +34,7 @@ import { dispatchEvent, LOGGER_INFO, LOGGER_WARN, LOGGER_ERROR } from "../config
 import { getResolverConditions, getLegacyMainFields } from "../../utils/resolve-conditions.ts";
 import { setFile, getFile } from "../utils/filesystem.ts";
 import { getCDNStyle } from "../utils/cdn-format.ts";
-import { RESOLVE_EXTENSIONS } from "../utils/loader.ts";
+import { PACKAGE_ENTRY_RESOLVE_EXTENSIONS, RESOLVE_EXTENSIONS } from "../utils/loader.ts";
 import {
   resolvePackageEntry as resolvePackageEntryShared,
   normalizeResolvedPath,
@@ -739,7 +739,7 @@ export function resolvePackageEntry(
 	subpath: string,
   conditions: ReturnType<typeof getResolverConditions>,
   args?: { kind: ESBUILD.ImportKind },
-): { entryPath: string; pathRemappings: Record<string, string | false> | null; excluded: boolean; error?: Error } {
+): { entryPath: string; pathRemappings: Record<string, string | false> | null; excluded: boolean; usedDefaultRootFallback: boolean; error?: Error } {
   // Compute legacy fields from the manifest + conditions
   const legacyFields = getLegacyMainFields(
     manifest,
@@ -765,6 +765,7 @@ export function resolvePackageEntry(
       entryPath: subpath || "/index.js",
       pathRemappings: result.pathRemappings,
       excluded: true,
+      usedDefaultRootFallback: false,
       error: result.error,
     };
 	}
@@ -785,6 +786,7 @@ export function resolvePackageEntry(
     entryPath,
     pathRemappings: result.pathRemappings,
     excluded: false,
+    usedDefaultRootFallback: result.usedDefaultRootFallback,
   };
 }
 
@@ -822,13 +824,25 @@ export async function resolveAndProbeEntry<T>(
 	}
 
   const candidatePath = join(packageRoot, resolution.entryPath);
+  // `usedDefaultRootFallback` means shared resolution returned the historical
+  // `./index.js` placeholder to represent an implicit package-root fallback,
+  // not an explicit filename chosen by package metadata. In that case we probe
+  // from `/index` with the bounded package-entry extension set so tarball
+  // packages get the same Node-style root fallback semantics as CDN packages.
+  const probeCandidate = resolution.usedDefaultRootFallback
+    ? join(packageRoot, "index")
+    : candidatePath;
+  const probeExtensions = resolution.usedDefaultRootFallback
+    ? PACKAGE_ENTRY_RESOLVE_EXTENSIONS
+    : RESOLVE_EXTENSIONS;
+  const enableIndexFallback = !resolution.usedDefaultRootFallback;
 
   // Probe VFS: exact match → extension probing → index.* fallback
   const probed = await resolveVfsPath(
     FileSystem,
-    candidatePath,
-    RESOLVE_EXTENSIONS,
-    true, // enableIndexFallback
+    probeCandidate,
+    probeExtensions,
+    enableIndexFallback,
   );
 
   return {

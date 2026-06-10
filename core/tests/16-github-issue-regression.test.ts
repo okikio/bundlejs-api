@@ -742,25 +742,19 @@ describe("16.9 — Complex real-world packages (Issues #41, #61, #68, #88)", () 
 describe("16.10 — Deep deps and edge cases (Issues #72, #83)", () => {
 
   describe("unit: extension probing completeness", () => {
-    test("AllEndingVariants covers .js, .mjs, .ts, .tsx extensions", () => {
-      // Extension probing is the #1 cause of "Do not know how to load path"
-      // Verify all important extensions are tried
+    test("AllEndingVariants covers Node-style implicit package entry fallbacks", () => {
+      // This probe table is intentionally narrower than the full explicit loader
+      // surface. It should match the automatic package-entry behavior we model.
       const hasJs = AllEndingVariants.some(v => v === ".js");
-      const hasMjs = AllEndingVariants.some(v => v === ".mjs");
-      const hasTs = AllEndingVariants.some(v => v === ".ts");
-      const hasTsx = AllEndingVariants.some(v => v === ".tsx");
-      const hasCjs = AllEndingVariants.some(v => v === ".cjs");
+      const hasJson = AllEndingVariants.some(v => v === ".json");
       const hasIndexJs = AllEndingVariants.some(v => v === "/index.js");
-      const hasIndexTs = AllEndingVariants.some(v => v === "/index.ts");
+      const hasIndexJson = AllEndingVariants.some(v => v === "/index.json");
       const hasEmpty = AllEndingVariants.some(v => v === "");
 
       expect(hasJs).toBe(true);
-      expect(hasMjs).toBe(true);
-      expect(hasTs).toBe(true);
-      expect(hasTsx).toBe(true);
-      expect(hasCjs).toBe(true);
+      expect(hasJson).toBe(true);
       expect(hasIndexJs).toBe(true);
-      expect(hasIndexTs).toBe(true);
+      expect(hasIndexJson).toBe(true);
       expect(hasEmpty).toBe(true);
     });
 

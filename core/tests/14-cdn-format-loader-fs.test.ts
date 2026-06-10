@@ -42,7 +42,7 @@ import {
 // =============================================================================
 // Imports: loader.ts
 // =============================================================================
-import { inferLoader, RESOLVE_EXTENSIONS } from "../utils/loader.ts";
+import { inferLoader, PACKAGE_ENTRY_RESOLVE_EXTENSIONS, RESOLVE_EXTENSIONS } from "../utils/loader.ts";
 
 // =============================================================================
 // Imports: side-effects.ts
@@ -1186,6 +1186,20 @@ describe("plugins/fs: resolveVfsPath", () => {
     expect(result).toBe("/src/index.ts");
   });
 
+  test("package entry fallback: /pkg root can resolve to /pkg/index.json", async () => {
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/pkg/index.json", '{"ok":true}');
+    const result = await resolveVfsPath(fs, "/pkg", RESOLVE_EXTENSIONS);
+    expect(result).toBe("/pkg/index.json");
+  });
+
+  test("package entry probing does not auto-resolve /pkg/index.cjs", async () => {
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/pkg/index.cjs", "module.exports = { ok: true };");
+    const result = await resolveVfsPath(fs, "/pkg/index", PACKAGE_ENTRY_RESOLVE_EXTENSIONS, false);
+    expect(result).toBe(null);
+  });
+
   test("nothing found → null", async () => {
     const fs = createDefaultFileSystem();
     const result = await resolveVfsPath(fs, "/missing", RESOLVE_EXTENSIONS);
@@ -1229,6 +1243,13 @@ describe("plugins/fs: resolveVfsPath", () => {
     await setFile(fs, "/lib.ts", "export const lib = 1;");
     const result = await resolveVfsPath(fs, "/lib.ts", RESOLVE_EXTENSIONS);
     expect(result).toBe("/lib.ts");
+  });
+
+  test("explicit filename does not broaden to sibling index.json", async () => {
+    const fs = createDefaultFileSystem();
+    await setFile(fs, "/index.json", '{"ok":true}');
+    const result = await resolveVfsPath(fs, "/index.js", RESOLVE_EXTENSIONS);
+    expect(result).toBe(null);
   });
 });
 
