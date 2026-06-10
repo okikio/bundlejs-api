@@ -87,7 +87,7 @@ the CDN URL. This is the boundary between "user code" and "CDN code".
 2. Require fallback (retry with `require: true` conditions)
 3. Legacy fields (`browser` → `module` → `main` → `unpkg` → `bin`)
 4. Direct subpath (if one was requested)
-5. `/index.js` (last resort)
+5. Implicit package-root fallback (historical marker `./index.js`, then bounded downstream probing)
 
 ### 7. `pluginData` contract
 

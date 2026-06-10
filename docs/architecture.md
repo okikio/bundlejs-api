@@ -393,7 +393,7 @@ Input URL: https://registry.npmjs.org/react/-/react-19.0.0.tgz/package/index.js
   Subpath + manifest
        │
        ▼
-  resolvePackageEntry()       ← modern exports → legacy fallback → literal → /index.js
+  resolvePackageEntry()       ← modern exports → legacy fallback → literal → implicit package-root marker
        │
        ▼
   resolveVfsPath()            ← exact match → extension probing → index.* fallback
@@ -403,6 +403,8 @@ Input URL: https://registry.npmjs.org/react/-/react-19.0.0.tgz/package/index.js
 ```
 
 An edge-case guard handles manifests with `main: "."` — after `normalizeResolvedPath(".")` produces `"/."`, `resolvePackageEntry()` maps `"/"` and `"/."` to `"/index.js"` instead of allowing esbuild to try reading a directory.
+
+When shared resolution returns the historical `./index.js` placeholder with `usedDefaultRootFallback = true`, downstream loaders do **not** treat that as a literal file choice. They reinterpret it as an implicit package-root fallback and probe the bounded CommonJS-style bundlejs subset: `index.js`, then `index.json`. Node.js also documents `index.node`, but bundlejs intentionally excludes native addons from implicit fallback because they are not browser-loadable.
 
 When entry resolution encounters an exclusion (a `package.json` field maps the entry to `false`), the TarballPlugin follows the `remapFalse.packageRemapFalse` policy — see [Remapping and Exclusion Behavior](#remapping-and-exclusion-behavior) for the full policy matrix.
 
@@ -838,7 +840,7 @@ With the object form, the entry comes from `main`. The object mappings are remap
 
 > **Edge runtime subtlety.** Some edge runtimes (Cloudflare Workers, Vercel Edge) include `"browser"` in their conditions for `exports` but set `browserField: false` — they want browser-optimized code paths from `exports` but not legacy browser field remapping swaps.
 
-If *all* legacy fields are missing, bundlejs applies a last-resort chain: `unpkg` field → `bin` field → `./index.js`.
+If *all* legacy fields are missing, bundlejs applies a last-resort chain: `unpkg` field → `bin` field → implicit package-root fallback. Internally this still uses the historical `./index.js` marker, but downstream probing interprets it as "probe `index.js`, then `index.json` from the package root" rather than "fetch exactly `./index.js`".
 
 
 ### Manifest Field Remapping for Relative Imports

@@ -1,6 +1,6 @@
 # Scenario 03 — Legacy Field Resolution
 
-> Tests packages without `exports` that rely on `main`, `module`, `browser` (string form), `unpkg`, `bin`, and `./index.js` fallback.
+> Tests packages without `exports` that rely on `main`, `module`, `browser` (string form), `unpkg`, `bin`, and the implicit package-root fallback.
 
 When a package has no `exports` field, bundlejs falls back to an older, less standardized resolution chain. Different bundlers disagree on the priority and semantics of these fields, so this area is rich with edge cases.
 
@@ -12,7 +12,7 @@ The legacy field priority in bundlejs (from `resolveLegacy()` in `cdn-resolution
 | node | `module` → `main` |
 | neutral | `module` → `main` |
 
-If *all* fields are missing: `unpkg` → `bin` → `./index.js`.
+If *all* fields are missing: `unpkg` → `bin` → implicit package-root fallback (`index.js`, then `index.json` in bundlejs).
 
 
 ## 3.1 — Only `main` field
@@ -142,9 +142,24 @@ Or synthesize the manifest directly:
 /?q=test-bare&config={"package.json":{"name":"test-bare","version":"1.0.0"}}
 ```
 
-Expected: no `exports`, no `main`, no `module`, no `browser` → try `unpkg` (missing) → try `bin` (missing) → last resort: `./index.js`.
+Expected: no `exports`, no `main`, no `module`, no `browser` → try `unpkg` (missing) → try `bin` (missing) → last resort: implicit package-root fallback. The shared resolver still returns the historical `./index.js` marker, but downstream probing may land on `index.js` or `index.json`.
 
-**Regression signal:** If the resolver errors out instead of trying `./index.js`, the last-resort fallback is missing.
+**Regression signal:** If the resolver errors out instead of entering the implicit package-root fallback path, the last-resort fallback is missing.
+
+### 3.4a — Data-only package root via `index.json`
+
+**What it tests:** Data-only packages that publish no `main`/`exports` can still resolve through the implicit package-root fallback.
+
+**Package:** `spdx-exceptions@2.5.0`
+
+Published root files include:
+- `index.json`
+- `deprecated.json`
+- `package.json`
+
+Expected: root package import enters the implicit fallback path and probes `index.json` successfully.
+
+**Regression signal:** If the resolver insists on a literal `index.js` fetch and never reaches `index.json`, data-only CommonJS-style packages break.
 
 
 ## 3.5 — `unpkg` and `jsdelivr` CDN fields

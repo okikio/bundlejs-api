@@ -182,6 +182,21 @@ import { drizzle } from "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.
 - Both imports share the same mount (deduplication via `getTarballKey`)
 - Different subpaths resolve to different entry points
 
+### 19.7a — Implicit package-root fallback inside tarballs
+
+When a tarball package has no usable `exports`, `main`, `module`, or `browser`
+entry, shared resolution returns the historical `./index.js` placeholder plus
+`usedDefaultRootFallback = true`.
+
+TarballPlugin does **not** treat that as a literal filename. Instead it probes
+from the extracted package root using bundlejs's bounded CommonJS-style fallback:
+- `index.js`
+- `index.json`
+
+This is what allows `spdx-exceptions`-style tarball packages and extensionless
+`main: "./index"` tarball packages to land on `index.json` without turning
+every explicit `index.js` path into a directory probe.
+
 ### 19.8 — Self-reference from within extracted tarball
 If `drizzle-orm/expo-sqlite/index.js` contains:
 ```ts
